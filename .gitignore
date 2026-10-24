@@ -1,0 +1,19 @@
+# Build output
+/bin/
+/dist/
+
+# Local environment (copy from .env.example)
+.env
+
+# Snapshots may contain query text; keep them out of version control
+*.snapshot.json
+/snapshots/
+
+# Test and coverage artefacts
+*.out
+coverage.*
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store

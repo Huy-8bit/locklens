@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "collected_at": "2026-10-24T09:16:24.806041Z",
+  "server_time": "2026-10-24T09:16:24.785069Z",
+  "tool": {
+    "name": "locklens",
+    "version": "787665e"
+  },
+  "collection": {
+    "duration_ms": 9,
+    "include_query": false,
+    "query_max_length": 200,
+    "min_tx_age_seconds": 1,
+    "atomic": false
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 55432,
+    "database": "locklens_demo",
+    "user": "locklens_observer",
+    "version": "17.11",
+    "version_num": 170011,
+    "read_all_stats": true,
+    "track_activities": true
+  },
+  "sessions": [
+    {
+      "pid": 116,
+      "leader_pid": null,
+      "database": "locklens_demo",
+      "user": "demo_app",
+      "application_name": "locklens-demo-A",
+      "client_addr": "192.168.158.1",
+      "backend_type": "client backend",
+      "state": "idle in transaction",
+      "wait_event_type": "Client",
+      "wait_event": "ClientRead",
+      "backend_start": "2026-10-24T09:16:21.17809Z",
+      "xact_start": "2026-10-24T09:16:21.181638Z",
+      "query_start": "2026-10-24T09:16:21.18412Z",
+      "state_change": "2026-10-24T09:16:21.184229Z",
+      "backend_xid": "746",
+      "details_visible": true,
+      "parallel_workers": 0,
+      "waiting_locks": []
+    },
+    {
+      "pid": 117,
+      "leader_pid": null,
+      "database": "locklens_demo",
+      "user": "demo_app",
+      "application_name": "locklens-demo-B",
+      "client_addr": "192.168.158.1",
+      "backend_type": "client backend",
+      "state": "active",
+      "wait_event_type": "Lock",
+      "wait_event": "transactionid",
+      "backend_start": "2026-10-24T09:16:21.185288Z",
+      "xact_start": "2026-10-24T09:16:21.187978Z",
+      "query_start": "2026-10-24T09:16:21.190189Z",
+      "state_change": "2026-10-24T09:16:21.190189Z",
+      "backend_xid": "747",
+      "details_visible": true,
+      "parallel_workers": 0,
+      "waiting_locks": [
+        {
+          "pid": 117,
+          "locktype": "transactionid",
+          "mode": "ShareLock",
+          "database": null,
+          "relation_oid": null,
+          "relation": null,
+          "page": null,
+          "tuple": null,
+          "virtualxid": null,
+          "transactionid": "746",
+          "classid": null,
+          "objid": null,
+          "objsubid": null,
+          "wait_start": "2026-10-24T09:16:21.19024Z"
+        }
+      ]
+    },
+    {
+      "pid": 118,
+      "leader_pid": null,
+      "database": "locklens_demo",
+      "user": "demo_app",
+      "application_name": "locklens-demo-C",
+      "client_addr": "192.168.158.1",
+      "backend_type": "client backend",
+      "state": "active",
+      "wait_event_type": "Lock",
+      "wait_event": "transactionid",
+      "backend_start": "2026-10-24T09:16:21.191339Z",
+      "xact_start": "2026-10-24T09:16:21.193954Z",
+      "query_start": "2026-10-24T09:16:21.195818Z",
+      "state_change": "2026-10-24T09:16:21.195818Z",
+      "backend_xid": "748",
+      "details_visible": true,
+      "parallel_workers": 0,
+      "waiting_locks": [
+        {
+          "pid": 118,
+          "locktype": "transactionid",
+          "mode": "ShareLock",
+          "database": null,
+          "relation_oid": null,
+          "relation": null,
+          "page": null,
+          "tuple": null,
+          "virtualxid": null,
+          "transactionid": "747",
+          "classid": null,
+          "objid": null,
+          "objsubid": null,
+          "wait_start": "2026-10-24T09:16:21.19587Z"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "blocker": 116,
+      "waiter": 117
+    },
+    {
+      "blocker": 117,
+      "waiter": 118
+    }
+  ],
+  "prepared_transactions": [],
+  "warnings": []
+}
