@@ -1,0 +1,16 @@
+[
+  {
+    "name": "lab-primary",
+    "description": "Lab primary (demo data only)",
+    "dsn_env": "LOCKLENS_LAB_PRIMARY_DSN",
+    "interval_seconds": 5,
+    "max_connections": 2
+  },
+  {
+    "name": "lab-standby",
+    "description": "Lab hot standby streaming from lab-primary (demo data only)",
+    "dsn_env": "LOCKLENS_LAB_STANDBY_DSN",
+    "interval_seconds": 10,
+    "max_connections": 2
+  }
+]

@@ -4,9 +4,16 @@
 locklens [global flags] <command> [flags]
 ```
 
-Commands: [`doctor`](#locklens-doctor), [`inspect`](#locklens-inspect),
-[`watch`](#locklens-watch), [`snapshot save`](#locklens-snapshot-save),
+Commands against one database: [`doctor`](#locklens-doctor),
+[`inspect`](#locklens-inspect), [`watch`](#locklens-watch),
+[`snapshot save`](#locklens-snapshot-save),
 [`snapshot show`](#locklens-snapshot-show), [`version`](#locklens-version).
+
+Server and monitoring store: [`server`](#locklens-server),
+[`migrate`](#locklens-migrate),
+[`admin hash-password`](#locklens-admin-hash-password),
+[`incident export`](#locklens-incident-export),
+[`incident report`](#locklens-incident-report).
 `locklens help [command]` and `--help` print built-in help.
 
 ## Connection and configuration
@@ -49,8 +56,8 @@ Durations use Go syntax: `500ms`, `30s`, `5m`, `1h30m`.
 | Code | Meaning |
 | --- | --- |
 | `0` | Success. Finding blocking is a successful result, not an error. `watch` also exits 0 after Ctrl+C or SIGTERM. |
-| `1` | Runtime failure: connection, authentication, permission, collection, timeout, or I/O error; `doctor` with a failed check. |
-| `2` | Invalid input: unknown command or flag, bad flag value, missing or unparsable DSN, `--out` file already exists without `--force`, missing/corrupt/unsupported snapshot file. |
+| `1` | Runtime failure: connection, authentication, permission, collection, timeout, or I/O error (including an unreadable snapshot file); `doctor` with a failed check; `inspect` or `snapshot save` stopped by Ctrl+C or SIGTERM (`locklens: error: interrupted`). |
+| `2` | Invalid input: unknown command or flag, bad flag value or duration, missing or unparsable DSN, `--out` file already exists without `--force`, snapshot file that is missing, a directory, corrupt, or of an unsupported schema version. |
 
 Errors are printed to stderr as `locklens: error: ...`, often followed by a
 `hint: ...` line.
@@ -238,12 +245,85 @@ locklens version
 locklens version --format json
 ```
 
+## `locklens server`
+
+Runs the monitoring server: HTTP API and web UI, background collectors for
+all enabled targets, the rule engine and incident recorder, and retention.
+Configuration comes from environment variables; see
+[configuration.md](configuration.md). `LOCKLENS_STORE_DSN` and
+`LOCKLENS_MASTER_KEY` are required, and `LOCKLENS_ADMIN_PASSWORD` (or
+`LOCKLENS_ADMIN_PASSWORD_HASH`) on the first start. Invalid configuration
+exits with code 2 and lists every problem.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--listen` | `LOCKLENS_LISTEN`, else `127.0.0.1:8080` | Listen address |
+
+Pending store migrations are applied at startup. SIGINT or SIGTERM stops the
+server gracefully (exit code 0).
+
+```bash
+LOCKLENS_STORE_DSN=... LOCKLENS_MASTER_KEY=... locklens server --listen 127.0.0.1:9090
+```
+
+## `locklens migrate`
+
+Applies pending monitoring store migrations to `LOCKLENS_STORE_DSN` and exits.
+Optional: `server` does the same at startup. Safe to run concurrently
+(advisory lock). Fails if the store has a newer schema than this build.
+
+## `locklens admin hash-password`
+
+Reads one line from standard input and prints a bcrypt hash for
+`LOCKLENS_ADMIN_PASSWORD_HASH`, so the plain password does not have to live in
+the server's environment. The password must be 12 to 72 bytes.
+
+```bash
+read -rs pw && printf '%s' "$pw" | locklens admin hash-password; unset pw
+```
+
+## `locklens incident export`
+
+Reads an incident from the monitoring store (`LOCKLENS_STORE_DSN`) and writes
+it as JSON or as a standalone HTML report. Does not need the server to run.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--id` | required | Incident ID (shown in the UI and API) |
+| `--format` | `json` | `json` or `html` |
+| `--out`, `-o` | required | Destination file; written atomically |
+| `--include-query` | `false` | Include query text, which only exists for targets that opted in |
+| `--force` | `false` | Overwrite an existing file |
+
+```bash
+locklens incident export --id 42 --format html --out incident-42.html
+```
+
+## `locklens incident report`
+
+Renders an exported incident JSON file as a standalone HTML report, offline.
+The file is validated (format, schema version, size up to 10 MiB, field
+lengths); invalid files exit with code 2.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--out`, `-o` | required | Destination HTML file |
+| `--force` | `false` | Overwrite an existing file |
+
+```bash
+locklens incident report incident-42.json --out incident-42.html
+```
+
+The JSON and HTML formats are described in [incidents.md](incidents.md#exports).
+
 ## Environment variables
 
 | Variable | Used by | Purpose |
 | --- | --- | --- |
 | `LOCKLENS_DSN` | all connecting commands | Connection string when `--dsn` is not given |
 | `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`, `PGSSLMODE`, `PGPASSFILE`, ... | pgx | Defaults for fields missing from the DSN |
+| `LOCKLENS_STORE_DSN`, `LOCKLENS_MASTER_KEY`, `LOCKLENS_ADMIN_*`, ... | `server`, `migrate`, `incident export` | See [configuration.md](configuration.md) |
 | `LOCKLENS_DEMO_DSN` | `locklens-demo` only | Role that creates demo contention |
-| `LOCKLENS_PG_VERSION`, `LOCKLENS_PG_PORT` | `docker compose`, `make` | Demo database image version and host port |
-| `LOCKLENS_IT_DEMO_DSN`, `LOCKLENS_IT_OBSERVER_DSN`, `LOCKLENS_IT_LIMITED_DSN` | integration tests only | Override test connection strings |
+| `LOCKLENS_LAB_DSN`, `LOCKLENS_LAB_ADMIN_DSN`, `LOCKLENS_LAB_STANDBY_ADMIN_DSN` | `locklens-lab` only | Lab scenario connections (set in deploy/compose.yaml) |
+| `LOCKLENS_PG_VERSION`, `LOCKLENS_PG_PORT`, `LOCKLENS_STANDBY_PORT`, `LOCKLENS_STORE_PORT`, `LOCKLENS_HTTP_PORT` | `docker compose`, `make` | Lab image version and host ports |
+| `LOCKLENS_IT_*` | integration tests only | Set by `scripts/integration-test.sh`; see [testing.md](testing.md#integration-environment) |

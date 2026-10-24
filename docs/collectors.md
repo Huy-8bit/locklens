@@ -1,0 +1,164 @@
+# Collectors
+
+`locklens server` runs one worker per enabled target. A worker owns a small
+connection pool (1–5 connections, default 2) and runs that target's collectors
+**one at a time**, so a slow collector delays the next one instead of piling up
+connections. A global semaphore (`LOCKLENS_MAX_CONCURRENT_COLLECTIONS`, default
+4) caps collector runs across all targets, so adding targets never increases
+concurrency against the store or the network without bound.
+
+Every collection runs in a `READ ONLY` transaction on sessions with
+`statement_timeout` (30 s), `lock_timeout` (2 s), and
+`idle_in_transaction_session_timeout` (60 s) set, under the
+application name `locklens`. LockLens' own backend PIDs are excluded from
+activity data. Collectors never run DDL or DML on targets, never call
+`pg_cancel_backend`/`pg_terminate_backend`, and never change settings.
+
+## Schedule
+
+`interval` is the target's activity interval (5–3600 s, default 10 s).
+
+| Collector | Interval | Timeout | Sources | Produces |
+| --- | --- | --- | --- | --- |
+| `activity` | `interval` | min(interval, 15 s) | `pg_stat_activity`, `pg_blocking_pids()`, `pg_locks` (waiting locks only), `pg_prepared_xacts`, `pg_stat_progress_vacuum`, `max_connections`, reserved connections | Session counts by state, connection usage, blocking graph, long transactions, vacuum progress; the full activity snapshot is stored for every collection with blocking or long transactions, and every 5 minutes otherwise |
+| `database` | max(interval, 15 s) | 15 s | `pg_stat_database`, `pg_stat_bgwriter`, `pg_stat_checkpointer` (17+), `pg_stat_io` (16+), WAL LSN, `pg_stat_archiver`, `pg_postmaster_start_time()` | Commit/rollback rates, cache hit ratio, temp files/bytes, deadlocks, checkpoints, background writer, I/O, WAL rate, archiver deltas |
+| `statements` | max(interval, 60 s); 15 s in demo mode | 30 s | `pg_stat_statements`, `pg_stat_statements_info` | Per-query deltas per collection; see [query-analysis.md](query-analysis.md) |
+| `replication` | max(interval, 30 s) | 15 s | `pg_stat_replication`, `pg_replication_slots`, `pg_stat_wal_receiver`, recovery functions | Role, replicas and lags, slots and retained WAL, standby receive/replay state |
+| `tables` | 5 min | 60 s | `pg_stat_user_tables`, `pg_stat_user_indexes`, `pg_class`, `pg_database` | Tuple estimates, vacuum/analyze times and counts, sizes (200 largest tables), XID age per database, database sizes |
+| `host` | max(interval, 15 s) | 10 s (5 s HTTP) | node_exporter `/metrics` (optional) | CPU, memory, disk and network throughput, filesystem usage |
+
+Database and table sizes run only in the 5-minute `tables` collector. Size
+functions take an `ACCESS SHARE` lock per relation; they run under a 250 ms
+`lock_timeout` and fall back to `relpages`-based estimates when a relation is
+locked exclusively, so a long-running DDL statement on a target never blocks
+LockLens (and LockLens never queues behind it for long).
+
+The first run of each collector is staggered by 300 ms per collector.
+
+## Capabilities
+
+On connect (and every 10 minutes), the worker detects:
+
+| Capability | How | Effect when missing |
+| --- | --- | --- |
+| Server version | `server_version_num` | Below 14: the target is rejected as unsupported |
+| Standby | `pg_is_in_recovery()` | Standby-specific replication view and metrics |
+| Full visibility | membership in `pg_read_all_stats` (or superuser) | Other roles' sessions show no query, state details, or statement rows; target is `degraded` with a `restricted_visibility` warning |
+| `track_activities` | setting | Activity data incomplete; target is `degraded` |
+| `pg_stat_io` | version ≥ 16 | I/O metrics absent |
+| `pg_stat_checkpointer` | version ≥ 17 | Checkpoint counters read from `pg_stat_bgwriter` instead |
+| `pg_stat_statements` | extension installed in the connected database **and** readable (probed under a savepoint) | Statements collector disabled with the exact reason, e.g. "extension pg_stat_statements is not installed in the database LockLens connects to" or the PostgreSQL error when it is not preloaded |
+
+A disabled collector is shown with its reason on the target settings and
+overview pages; it is not an error.
+
+## Counters, deltas, and resets
+
+PostgreSQL statistics are cumulative counters. LockLens stores derived values
+computed at ingest time against the previous sample of the same target:
+per-second rates (`*.per_s`) or per-collection changes (`*.delta`) for
+discrete events such as deadlocks.
+
+A change is **unknown** (stored as `NULL`, shown as a gap, never as `0`) when:
+
+| Reason | Detection |
+| --- | --- |
+| `first_sample` | No previous sample since the worker started |
+| `server_restart` | `pg_postmaster_start_time()` changed |
+| `stats_reset` | The scope's `stats_reset` timestamp changed |
+| `counter_decreased` | A counter went down |
+| `collection_gap` | More than 3 collector intervals passed since the previous sample |
+| `no_common_scopes` | No database/scope present in both samples |
+
+Deltas are computed per scope (each database, bgwriter, checkpointer, I/O,
+WAL, archiver), so dropping or creating a database does not corrupt the others.
+When a delta is unknown, a collection gap with the reason is recorded.
+
+The cache hit ratio is `blks_hit / (blks_hit + blks_read)` over the interval.
+It covers shared buffers only; reads served by the operating system cache count
+as misses.
+
+## Collection gaps
+
+History never hides missing data. A gap record (`collector`, `from`, `to`,
+`reason`) is written when:
+
+- a collector did not succeed for more than 2 intervals plus its timeout
+  (connection lost, timeouts, errors) — written when it next succeeds;
+- counters could not be compared (reasons above);
+- the store was unavailable long enough that the bounded write queue dropped
+  data ("data dropped: monitoring store unavailable or write queue full").
+
+Charts break their lines at gaps, and the metrics API returns gaps with the
+series.
+
+## Storage writes
+
+Collectors never write to the store directly. They enqueue batches to a single
+writer with a bounded queue (`LOCKLENS_WRITE_QUEUE`, default 2048 batches).
+When the store is down, writes are retried; when the queue is full, the
+**oldest** batch is dropped, counted in `locklens_store_dropped_batches_total`,
+and recorded as a gap once the store is back. Memory use is therefore bounded
+and the loss is visible.
+
+The in-memory view used for live pages keeps up to 360 points per metric and
+120 statement collections per target.
+
+## Target states
+
+| State | Criteria |
+| --- | --- |
+| `pending` | Never attempted a connection, or the activity collector has not run yet |
+| `healthy` | Connected, the last activity collection succeeded within 3 × interval + 15 s, no enabled collector reports an error, full visibility |
+| `degraded` | Connected and collecting, but an enabled collector's last run failed, or the role lacks `pg_read_all_stats`, or `track_activities` is off |
+| `unreachable` | The connection failed, or no successful activity collection within 3 × interval + 15 s |
+| `disabled` | Collection switched off in the target settings |
+
+`freshness_seconds` is the age of the last successful activity collection.
+Reconnects back off exponentially from the interval up to 1 minute. A failing
+target never affects other targets: each has its own worker, pool, and
+timeouts.
+
+## Host metrics (optional)
+
+PostgreSQL does not expose CPU, memory, or disk. If a target has a
+node_exporter URL, the `host` collector scrapes it (5 s timeout, responses larger
+than 8 MiB rejected) and derives CPU utilisation, available/total memory, disk and network
+throughput, and filesystem usage per mount point.
+
+Requirements and caveats:
+
+- node_exporter must run **on the database host** (or in the same VM/pod
+  network namespace as PostgreSQL); otherwise the numbers describe another
+  machine.
+- On Docker Desktop, OrbStack, and similar, a containerised node_exporter sees
+  the Linux VM, not the macOS or Windows host.
+- Managed services (RDS, Cloud SQL, Azure) do not offer node_exporter; use the
+  provider's metrics instead. The UI then shows host metrics as
+  "Unavailable" — never as zero.
+
+## Metrics
+
+Metric names available to `GET /api/v1/targets/{id}/metrics` and the charts.
+Per-label series (per database, replica, slot, mount point) are stored with a
+label.
+
+| Group | Metrics |
+| --- | --- |
+| Sessions | `sessions.active`, `sessions.idle`, `sessions.idle_in_transaction`, `sessions.waiting_lock`, `sessions.unknown_state`, `sessions.client_total` |
+| Connections | `connections.used`, `connections.max`, `connections.reserved`, `connections.usage_ratio` (used / (max − reserved)) |
+| Blocking | `blocking.blocked_sessions`, `blocking.root_blockers`, `blocking.max_lock_wait_seconds` |
+| Transactions | `transactions.open`, `transactions.long`, `transactions.oldest_age_seconds`, `transactions.idle_in_transaction_oldest_age_seconds` |
+| Throughput | `xact.commit.per_s`, `xact.rollback.per_s`, `blocks.read.per_s`, `blocks.hit.per_s`, `cache.hit_ratio` |
+| Temp files, deadlocks | `temp.files.per_s`, `temp.bytes.per_s`, `deadlocks.delta` |
+| Checkpoints, bgwriter | `checkpoints.timed.delta`, `checkpoints.requested.delta`, `checkpoint.buffers_written.per_s`, `bgwriter.buffers_clean.per_s`, `bgwriter.maxwritten_clean.delta`, `buffers.alloc.per_s`, `buffers.backend.per_s` (≤ 16) |
+| I/O (16+) | `io.reads.per_s`, `io.writes.per_s`, `io.extends.per_s` |
+| WAL, archiver | `wal.bytes.per_s` (primary), `wal.received_bytes.per_s` (standby), `archiver.archived.delta`, `archiver.failed.delta` |
+| Statements | `statements.calls.per_s`, `statements.exec_ms.per_s` |
+| Replication | `replication.replicas`, `replication.replay_lag_bytes{replica}`, `replication.max_replay_lag_bytes`, `slots.retained_bytes{slot}`, `slots.max_retained_bytes`, `standby.replay_delay_bytes` |
+| Databases | `db.size_bytes{database}`, `db.total_size_bytes`, `db.xid_age{database}` |
+| Host | `host.cpu_utilization_ratio`, `host.memory_available_bytes`, `host.memory_total_bytes`, `host.disk_read_bytes.per_s`, `host.disk_write_bytes.per_s`, `host.network_receive_bytes.per_s`, `host.network_transmit_bytes.per_s`, `host.filesystem_used_ratio{mountpoint}` |
+
+When a chart's range has more samples than 400 buckets, values are aggregated
+per bucket: `sum` for `*.delta`, `max` for `max_*`/`oldest*` gauges, `avg`
+otherwise. Each bucket reports how many samples it had and how many were known.

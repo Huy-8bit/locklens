@@ -3,7 +3,7 @@
 `locklens snapshot save` writes the raw observation as JSON. `snapshot show`,
 `inspect --format json`, and `watch --format json` embed the same object under
 the `snapshot` key of a report. The Go types are in
-[`internal/model/snapshot.go`](../internal/model/snapshot.go); this document
+[`backend/internal/model/snapshot.go`](../backend/internal/model/snapshot.go); this document
 describes the JSON they produce.
 
 ## Conventions

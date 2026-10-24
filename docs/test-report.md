@@ -1,0 +1,412 @@
+# Test report
+
+What was run, on what, and with which result. Test design:
+[testing.md](testing.md). Nothing below is marked PASS that was not run.
+
+- **Execution date:** 2026-10-24
+- **Code under test:** working tree on top of commit `db0d42a` (phase 2 not
+  yet committed)
+- **Scope:** phase 2 (monitoring server, UI, lab) in the first part; the
+  earlier phase 1 CLI QA run is kept as an appendix.
+
+## Phase 2 summary
+
+| Area | Command | Result |
+| --- | --- | --- |
+| Go formatting, vet, import separation, unit tests, race detector | `make check` | PASS |
+| Frontend typecheck, ESLint, Vitest (17 tests, axe-core) | `make web-check` | PASS |
+| Frontend production build, embedded UI, binaries | `make build-all` | PASS (bundle 801 KB, 233 KB gzip) |
+| Integration: CLI, collector, store, recorder, server suites | `scripts/integration-test.sh` | PASS on PostgreSQL 14.24, 15.19, 16.15, 17.11, 18.6 (see matrix) |
+| Browser E2E against the Docker stack, no API mocks | `make e2e` | PASS (1 test, 13 steps, 36.7 s on the final tree) |
+| Docker lab, nine scenarios | `make up`, `make lab SCENARIO=...`, `make lab-outage` | Each scenario produced the expected incident or finding (see below) |
+| UI review in a real browser | Playwright screenshots, 13 pages × light, dark, 390 px light, 390 px dark | No console errors, no horizontal overflow after fixes |
+| Performance smoke check | `scripts/perf-smoke.sh` (20 targets, 5 min) | See measurements |
+
+## Environment
+
+| Item | Value |
+| --- | --- |
+| Host | macOS 15.7.4, Apple M1 Pro (8 cores), 32 GiB RAM, arm64 |
+| Go | go1.26.0 darwin/arm64 |
+| Node.js / npm | 24.7.0 / 11.5.1 (Docker image build: `node:24-alpine`) |
+| Playwright | 1.64.0, Chromium |
+| Docker | Engine 29.8.2 via OrbStack, Docker Compose 5.5.0 |
+| PostgreSQL | official `postgres:<version>-alpine` images 14.24, 15.19, 16.15, 17.11, 18.6 (digests in the appendix); lab and store use 18.6 |
+
+## Integration matrix
+
+`scripts/integration-test.sh` with `LOCKLENS_IT_PG_VERSIONS="14.24 15.19
+16.15 17.11 18.6"`, race detector on, one isolated Compose project per version
+(primary with `pg_stat_statements` preloaded plus a streaming standby).
+
+| Package | Tests | 14.24 | 15.19 | 16.15 | 17.11 | 18.6 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `tests/e2e/cli` (CLI end to end) | 34 | PASS | PASS | PASS | PASS | PASS |
+| `backend/internal/postgres` (tag `integration`) | 1 | PASS | PASS | PASS | PASS | PASS |
+| `backend/internal/storage` (tag `integration`) | 6 | PASS | PASS | PASS | PASS | PASS |
+| `backend/internal/incidents` (tag `integration`) | 5 | PASS | PASS | PASS | PASS | PASS |
+| `tests/e2e/server` (server over HTTP) | 6 | PASS | PASS | PASS | PASS | PASS |
+
+In the first matrix run, `tests/e2e/server` failed to *build* on 14.24 and 15.19
+because a `make web` run in parallel replaced the embedded UI files during
+compilation (`embed ... no such file or directory`). That was interference
+from the test operator, not a product defect; both versions were re-run
+afterwards with nothing else touching the tree (results above).
+
+## Browser end-to-end
+
+`./scripts/e2e.sh`: isolated `deploy/compose.yaml` project on random loopback
+ports, Playwright Chromium, one test with 13 steps (sign-in, add and test a
+target, live data, lab `chain` scenario, incident evidence, HTML export,
+JSON export and re-import, offline report with JavaScript disabled and the
+network offline, remaining pages, theme switch, axe-core on every page,
+sign-out, no console errors or failed requests). Final run on the final tree: **PASS** (36.7 s), stack removed afterwards.
+
+Earlier E2E runs found issues that were fixed (defects 3, 4, 5, and 8 below).
+
+## Lab scenarios
+
+Run against the Docker lab (PostgreSQL 18.6 primary and standby, demo mode),
+observed through the API and UI:
+
+| Scenario | Observed |
+| --- | --- |
+| `healthy` (2 min) | Activity recorded (up to 22 commits/s), no current findings on either target, no open incidents |
+| `row-blocking` | `blocking.long_chain` incident; resolved ("condition cleared") after release |
+| `chain` | Blocking tree A → B → C (2 blocked in total); incident with pre-trigger samples and stored graphs |
+| `idle-blocker` | Critical `blocking.idle_in_tx_blocker` and `blocking.long_chain` incidents; `transactions.long` findings after 60 s |
+| `connection-pressure` | `connections.pressure` incident at 91% of available slots; resolved after the scenario |
+| `regression` | `queries.mean_regression` incident: same query 2.8× slower per call after the index was dropped; `queries.call_volume_increase` info finding |
+| `temp-files` | `temp_files.increase` finding (626 MiB per 2-minute window) |
+| `replication` | `replication.slot_retained_wal` incident (198 MiB retained by `lab_stale_slot`), `replication.replica_lag` findings on the primary and on the standby; all resolved after the scenario restored replay and dropped the slot |
+| `outage` (`make lab-outage`, also `TestOutageAndRecovery`) | Target `unreachable` during the outage, healthy afterwards, collection gap recorded |
+
+## UI review
+
+Screenshots of Fleet, Overview, Queries, Blocking, Sessions, Tables,
+Replication (primary and standby), Incidents, Incident detail, Settings,
+target form, and Lab guide in light and dark themes at 1440 px and 390 px,
+with real lab data during an `idle-blocker` scenario. The checker fails on
+console errors or warnings and on horizontal overflow. Issues found and fixed:
+grid columns overflowing at 390 px, fractional axis ticks on count charts,
+"unknown / unknown" truncated in tiles (defects 9–11). The final pass reported
+none. Three screenshots are in [images/](images/).
+
+## Performance measurements
+
+`scripts/perf-smoke.sh` with 20 targets (10 on the lab primary, 10 on the
+standby), 10 s interval, production collector intervals, concurrency limit 4,
+300 s, no scenario running:
+
+| Collector | Runs | Mean | p95 (histogram bucket) | Errors |
+| --- | --- | --- | --- | --- |
+| activity | 620 | 8.7 ms | ≤ 25 ms | 0 |
+| database | 420 | 5.9 ms | ≤ 25 ms | 0 |
+| statements | 120 | 5.6 ms | ≤ 10 ms | 0 |
+| replication | 220 | 4.4 ms | ≤ 10 ms | 0 |
+| tables | 40 | 12.1 ms | ≤ 25 ms | 0 |
+
+- Concurrent collector runs: max 4 (limit 4); write queue max 14 batches, no
+  drops, no store write errors.
+- Connections held by the server: 10 to the primary, 10 to the standby (one per
+  target, as configured), 8 to the store.
+- Resident memory 32.8 MiB; 3.1 s CPU time over 5 minutes.
+- Store growth 4.66 MiB in 5 minutes, about 2.8 MiB per target-hour.
+
+A longer demo-mode run (2 targets, 36 minutes, scenarios running) grew the
+store by about 7 MB ([storage-and-retention.md](storage-and-retention.md#storage-growth)).
+
+Limits: one laptop, one short run, small lab databases with few sessions and
+statements, loopback networking. These are smoke checks, not benchmarks or
+capacity guarantees.
+
+## Defects found and fixed in phase 2 verification
+
+| # | Defect | Fix | Regression test |
+| --- | --- | --- | --- |
+| 1 | An open incident was resolved as "condition cleared" while the condition persisted, when the root blocker changed or after a LockLens restart, because persistence-based rules need several samples before firing again; it was then reopened within the cooldown | "Clear" now means the trigger condition is absent from the current sample; insufficient data is not clear | `TestRootChangeDoesNotResolve`, `TestRestartRecovery` (both fail without the fix) |
+| 2 | A target's collector list lacked collectors that had not run yet (for example `statements` right after connecting), so the UI could not show why they were unavailable | Every collector's status is published when the worker starts and after capability detection | `TestTargetLifecycleBlockingIncidentAndExport` |
+| 3 | The new-target form requested `GET /api/v1/targets/0` (400 in the console) | The target query is not run for id 0 | E2E console and failed-request check |
+| 4 | Incident import existed only in the API | Import control on the Incidents page | E2E step "export JSON and import it again" |
+| 5 | The storage documentation referred to table sizes in the UI that did not exist | Monitoring store card on the Settings page | E2E settings step |
+| 6 | Integration packages ran in parallel against one server, so server tests created blocking that CLI tests saw | `go -C backend test -p 1` in the harness | Full matrix |
+| 7 | Server test decoded JSON polls into a reused struct, keeping stale pointers | Reset before each decode | — (test code) |
+| 8 | E2E expected stored graphs to render without the "Show blocking graph" click | Test clicks it | — (test code) |
+| 9 | Grid columns overflowed the viewport at 390 px (fleet cards, overview charts) | Grid items may shrink (`min-width: 0`) | Screenshot overflow check |
+| 10 | Count charts showed fractional or repeated axis ticks | Integer ticks for count series | Screenshot review |
+| 11 | Tiles showed a truncated "unknown / unknown" | A single "unknown" when both values are unknown | Screenshot review |
+
+New unit tests written during verification: `backend/internal/api` (time ranges,
+paging, downsampling bounds, body limits, path IDs, middleware),
+`backend/internal/hostmetrics` (parsing, rates, resets, size limit, URL rules),
+`backend/internal/targets` (validation without echoing DSNs).
+
+## Not run or not verified
+
+- **GitHub Actions** has not run: nothing was pushed. The workflow is
+  untested on GitHub's runners.
+- **TLS** to targets and the store was not exercised (lab servers run without
+  TLS). Built-in TLS termination does not exist.
+- **Host metrics with a real node_exporter** were tested with unit tests and
+  an HTTP test server only; `make up-host` was not exercised in this run.
+- **Managed services** (RDS, Cloud SQL, Azure) and PostgreSQL forks were not
+  tested.
+- **Long-running behaviour** (days of retention cleanup, large stores, many
+  targets beyond 20) was not measured.
+- **Browsers other than Chromium** were not tested.
+- Parallel-worker lock waits and a live `missing` placeholder remain
+  unverified end to end (see the appendix).
+
+## Reproduction
+
+```bash
+make check && make web-check
+make test-integration                                   # 14.24 and 18.6
+LOCKLENS_IT_PG_VERSIONS="14.24 15.19 16.15 17.11 18.6" ./scripts/integration-test.sh
+make e2e
+make up && ./scripts/perf-smoke.sh && make down
+```
+
+Every script removes only its own Compose project; nothing else is pruned.
+
+---
+
+## Appendix: phase 1 CLI QA run
+
+QA run of the CLI against real PostgreSQL servers earlier on 2026-10-24
+(commit `db0d42a` plus the fixes listed below). Checklist:
+[testing-plan.md](testing-plan.md).
+
+### Environment
+
+| Item | Value |
+| --- | --- |
+| Host | macOS 15.7.4, Apple M1 Pro (8 cores), 32 GiB RAM, arm64 |
+| Go | go1.26.0 darwin/arm64 (`backend/go.mod`: `go 1.26.0`); unit tests were also run with go1.27.3 in the previous verification round |
+| Docker | Engine 29.8.2 (linux/arm64) via OrbStack 2.2.4; Docker Compose 5.5.0 |
+| Latest stable PostgreSQL major | 18 (current minor 18.6), per [postgresql.org/support/versioning](https://www.postgresql.org/support/versioning/) on 2026-10-24; 19 was only available as beta/RC images |
+
+PostgreSQL images (official `postgres` images, pinned in the harness and CI):
+
+| Image tag | Digest | `SHOW server_version` |
+| --- | --- | --- |
+| `postgres:14.24-alpine` | `sha256:50fce0c9c54c43d8b02ce16cb9daff75eb94c09c4ee3d41c157852ebd9700c80` | 14.24 |
+| `postgres:15.19-alpine` | `sha256:a8e042598834300dfaa17a54f695b87b7f25d3490433bbbe2ef3bffbb9747f24` | 15.19 |
+| `postgres:16.15-alpine` | `sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36` | 16.15 |
+| `postgres:17.11-alpine` | `sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb` | 17.11 |
+| `postgres:18.6-alpine` | `sha256:898c60cb390d1085bc97bdd6a1ae968757421df394b071848b52b1c09c89d6a5` | 18.6 |
+
+Test databases: one isolated Compose project per version
+(`locklens-it-<version>-<run id>`), loopback-only dynamic host ports
+(observed 32768–32779), `tmpfs` data directory, generated passwords with a
+`cnry` canary prefix, `max_prepared_transactions=10`. No `.env` file was read
+and no other database was contacted.
+
+### Commands executed
+
+```bash
+gofmt -l .                                   # empty output
+go -C backend vet ./...
+go -C backend vet -tags integration ./...
+go -C backend test -count=1 ./...
+go -C backend test -race -count=1 ./...
+make check                                   # fmt-check, vet, check-separation, test, test-race
+make build                                   # bin/locklens, bin/locklens-demo
+make test-compat                             # integration suite on 14.24 15.19 16.15 17.11 18.6
+LOCKLENS_IT_PG_VERSIONS="14.24 18.6" ./scripts/integration-test.sh   # rounds while fixing defects, and a final run on the final tree (PASS on both)
+make demo && make db-down                    # demo Compose project, then removal
+script -q <file> bin/locklens watch --interval 1s --min-tx-age 1s    # pseudo-terminal check, then SIGINT
+docker compose ls -a --filter name=locklens-it                       # leftover check after every run
+```
+
+### Results
+
+#### Static checks and unit tests
+
+| Check | Result |
+| --- | --- |
+| `gofmt -l .` | PASS (no files) |
+| `go -C backend vet ./...`, `go -C backend vet -tags integration ./...` | PASS |
+| `go -C backend test -count=1 ./...` (8 packages with tests) | PASS |
+| `go -C backend test -race -count=1 ./...` | PASS |
+| `make check-separation` (CLI does not import `demo/`) | PASS |
+| Binary build (`make build`) | PASS |
+
+#### Integration matrix
+
+35 tests per version (34 in `tests/e2e/cli`, plus
+`TestSessionEndingMidCollection` in `backend/internal/postgres`; the unit test in that
+package also runs). All run with `-race`, against a binary built with `-race`.
+
+| Version | Tests | Result | Duration |
+| --- | --- | --- | --- |
+| 14.24 | 35 | PASS (35/35) | 105 s |
+| 15.19 | 35 | PASS (35/35) | 104 s |
+| 16.15 | 35 | PASS (35/35) | 104 s |
+| 17.11 | 35 | PASS (35/35) | 104 s |
+| 18.6 | 35 | PASS (35/35) | 103 s |
+
+#### Scenario matrix
+
+Status per version: P = PASS, B = BLOCKED, N = NOT RUN.
+
+| Area | Scenario (test) | 14 | 15 | 16 | 17 | 18 |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | Healthy database: doctor, inspect table/JSON, empty graph (`TestHealthyDatabase`) | P | P | P | P | P |
+| A | Own observer connections excluded (`TestOwnConnectionsExcluded`) | P | P | P | P | P |
+| B | Row blocking A → B, counts, disappears after release (`TestRowBlocking`) | P | P | P | P | P |
+| C | Chain A → B → C, ground truth first, unique counts (`TestBlockingChain`) | P | P | P | P | P |
+| D | Fan-out, four waiters (`TestFanOut`) | P | P | P | P | P |
+| D | Multiple blockers on one waiter (`TestMultipleBlockers`) | P | P | P | P | P |
+| D | Lock queue / soft block (`TestLockQueueSoftBlock`) | P | P | P | P | P |
+| E | Idle in transaction, ages, threshold (`TestIdleInTransactionAndThreshold`) | P | P | P | P | P |
+| E | Lock wait age from `waitstart`, not `query_start`/`state_change` (`TestLockWaitAgeComesFromWaitStart`) | P | P | P | P | P |
+| F | Plain role, then `pg_read_all_stats`, then `pg_monitor` (`TestRestrictedPermissions`) | P | P | P | P | P |
+| G | Prepared transaction (PID 0), `ROLLBACK PREPARED` verified (`TestPreparedTransactionBlocker`) | P | P | P | P | P |
+| H | Session churn during watch/inspect/in-process collections (`TestSessionsDisappearingDuringCollection`) | P | P | P | P | P |
+| H | Blocker terminated mid-collection, deterministic (`TestSessionEndingMidCollection`) | P | P | P | P | P |
+| — | Observer connected to another database (`TestCrossDatabaseObservation`) | P | P | P | P | P |
+| CLI | Help and version (`TestHelpAndVersion`) | P | P | P | P | P |
+| CLI | DSN precedence, missing DSN (`TestDSNPrecedence`) | P | P | P | P | P |
+| CLI | Invalid flags and durations exit 2 (`TestInvalidArgumentsExitTwoBeforeConnecting`) | P | P | P | P | P |
+| CLI | Connection refused (`TestConnectionRefused`) | P | P | P | P | P |
+| CLI | Authentication failure, URI and keyword/value; watch stops (`TestAuthenticationFailureURIAndKeyValue`) | P | P | P | P | P |
+| CLI | Keyword/value DSN works (`TestKeyValueDSNWorks`) | P | P | P | P | P |
+| CLI | Malformed DSN never echoed (`TestMalformedDSNIsNeverEchoed`) | P | P | P | P | P |
+| CLI | Connect timeout against a silent listener (`TestConnectTimeout`) | P | P | P | P | P |
+| CLI | Collection timeouts: `statement_timeout` and `lock_timeout` (`TestCollectionTimeouts`) | P | P | P | P | P |
+| CLI | JSON only on stdout (`TestStdoutCarriesOnlyJSON`) | P | P | P | P | P |
+| CLI | Unicode and terminal control characters, rune truncation (`TestUnicodeAndControlCharacters`) | P | P | P | P | P |
+| Security | Query-text canary in table, JSON, NDJSON, snapshot (`TestQueryTextCanary`) | P | P | P | P | P |
+| Security | Password/DSN canaries in every subprocess output (all tests, `checkOutput`) | P | P | P | P | P |
+| Snapshot | Save, strict schema, 0600, no overwrite, offline show (`TestSnapshotSaveAndShowOffline`) | P | P | P | P | P |
+| Snapshot | Malformed, future version, foreign JSON, wrong type, missing, directory (`TestSnapshotRejectsBadFiles`) | P | P | P | P | P |
+| Snapshot | Failed writes leave nothing behind (`TestSnapshotFailedWriteLeavesNothing`) | P | P | P | P | P |
+| Watch | Five NDJSON frames, SIGINT exit 0, empty stderr (`TestWatchNDJSONAndInterrupt`) | P | P | P | P | P |
+| Watch | Redirected table without escape codes, SIGTERM exit 0 (`TestWatchRedirectedTableHasNoEscapeCodes`) | P | P | P | P | P |
+| Watch | Connections bounded, no overlapping collections (`TestWatchConnectionsBoundedWithoutOverlap`) | P | P | P | P | P |
+| Watch | Container paused/unpaused: backoff and recovery (`TestWatchSurvivesTemporaryOutage`) | P | P | P | P | P |
+| Overhead | Repeated collections smoke check (`TestObserverOverheadSmoke`) | P | P | P | P | P |
+
+Manual checks (PostgreSQL 17.11 demo database, executed once):
+
+| Check | Result |
+| --- | --- |
+| `make demo`: A → B, A → B → C (1 direct, 2 total), idle in transaction (3 s) | PASS |
+| `watch` on a pseudo-terminal (`script`): screen cleared per frame (5 frames), SIGINT exit 0, no error text | PASS |
+| Documented cleanup command for a leftover `locklens-it-*` project removes it and its volumes; port bound to `127.0.0.1` | PASS |
+
+Graph shapes not reproduced on a live server (shared descendants, duplicate
+edges, cycles, self loops) are covered by unit tests in `backend/internal/graph`,
+`backend/internal/report`, and `backend/internal/render` (PASS). No scenario was BLOCKED.
+
+#### Selected observations
+
+- **Ground truth.** In every blocking scenario `pg_blocking_pids()` queried
+  directly matched LockLens' edges. In the lock-queue scenario PostgreSQL
+  reported C as blocked only by B (soft block), and LockLens showed A → B → C.
+- **Watch outage.** With the container paused, each version logged
+  `attempt=1 retry_in=500ms`, `attempt=2 retry_in=1s`, `attempt=3 retry_in=2s`
+  (timeouts after `--query-timeout 2s`), then `collection recovered
+  after_failures=3` within about 2 s of unpausing. LockLens connections after
+  recovery: peak 1.
+- **No overlap.** About 250–270 samples of `pg_stat_activity` per version
+  during a 6 s watch at 500 ms: at most 1 LockLens connection, at most 1 busy.
+  All connections closed after exit.
+- **Churn.** 909–1,199 reports per version while actors were terminated
+  repeatedly (437–542 contained edges): no failed collection, no invalid JSON,
+  no `missing` placeholder. See the consistency notes in
+  [postgresql-observation.md](postgresql-observation.md#consistency-of-a-collection).
+
+### Observer overhead smoke check
+
+`TestObserverOverheadSmoke`: one collector, 20 warm-up collections, then 300
+sequential collections against a quiet, isolated server (no contention,
+default `--query-max-length 200`, no query text), over Docker's loopback port
+publishing on the host described above. Latency is measured on the client
+around `Collect`.
+
+| Version | p50 ms | p95 ms | p99 ms | max ms | max LockLens connections | goroutines after warm-up → after run |
+| --- | --- | --- | --- | --- | --- | --- |
+| 14.24 | 1.63 | 2.09 | 2.84 | 6.22 | 1 | 3 → 3 |
+| 15.19 | 1.45 | 1.69 | 1.86 | 2.08 | 1 | 3 → 3 |
+| 16.15 | 1.81 | 2.59 | 5.11 | 36.72 | 1 | 3 → 3 |
+| 17.11 | 1.86 | 2.36 | 3.62 | 7.36 | 1 | 3 → 3 |
+| 18.6 | 1.88 | 3.31 | 10.84 | 47.19 | 1 | 3 → 3 |
+
+All LockLens connections were gone after `Close`. Limits of these numbers:
+a single run per version on a laptop with other workloads, a quiet server with
+a handful of backends, and a race-enabled test binary. Occasional maxima of
+36–47 ms are single outliers. They say nothing about servers with many
+backends or many waiting sessions (where `pg_blocking_pids()` is called once
+per waiting backend) and are **not** a benchmark or a performance guarantee.
+
+### Defects found and fixed
+
+| # | Defect | Kind | Fix | Regression test |
+| --- | --- | --- | --- | --- |
+| 1 | A lock on a relation in another database was rendered as `on relation relation OID 16384 in database x` (duplicated word); the unit test had codified the wrong text | Output defect | `DescribeLock` renders `on relation OID 16384 in database x` (also for `extend` locks) | `TestDescribeLock` (corrected and extended), `TestCrossDatabaseObservation` |
+| 2 | `snapshot show <directory>` exited 1 with `read ...: is a directory`, contradicting the documented exit code 2 for invalid input files | Exit-code defect | Directories are rejected as usage errors: `X is a directory, not a snapshot file` | `TestSnapshotShowBadFiles` (unit), `TestSnapshotRejectsBadFiles` (integration) |
+| 3 | Ctrl+C during the connection phase printed `connect to ...: context canceled`, while Ctrl+C during collection printed `interrupted` | Inconsistent message | Both report `locklens: error: interrupted` (exit 1); documented | `TestInterruptedDuringConnectIsReportedAsInterrupted` |
+| 4 | Documentation stated that sessions ending mid-collection become `missing` placeholders. Live testing showed PostgreSQL caches `pg_stat_activity` at its first read (inside the blocking query), so such sessions keep their metadata and edges; only their live `pg_locks` rows disappear | Documentation defect | Corrected postgresql-observation.md, limitations.md, blocking-graph.md, and the `missing_session` warning and placeholder texts | `TestSessionEndingMidCollection` (uses a new unexported test hook in the collector) |
+| 5 | The rollback that ends each collection used a context without a deadline, so a server freezing at that moment could hang the command | Robustness (found by review, not reproduced) | Rollback bounded to 5 s | None dedicated (the hang was not reproduced); the outage test still passes |
+
+Test infrastructure changes (not product defects):
+
+- The previous integration tests defaulted to the demo database on port
+  55432 when no DSN was set and shared it with the demo. They now run only
+  through `scripts/integration-test.sh` in isolated projects and refuse to run
+  without explicit DSNs.
+- `TestNoBlocking` previously skipped when other blocking existed; on an
+  isolated server it is now a strict assertion (`TestHealthyDatabase`).
+- `backend/demo/scenario` gained exported building blocks (`New`, `Begin`, `Exec`,
+  `ExecAsync`, `WaitDone`, `Release`, `Ident`) for custom scenarios.
+
+Missing functionality: none of the required MVP features was missing.
+
+### Remaining limitations
+
+- GitHub Actions has not run: nothing was pushed. The workflow uses the same
+  harness and version list but is untested on GitHub's runners.
+- Parallel-worker lock waits were not reproduced on a live server; the
+  folding of workers into leaders is implemented but untested end to end.
+- A `missing` placeholder could not be produced against a live server (see
+  defect 4); it is covered by unit tests only.
+- Connection timeouts were tested with a silent local listener, not with a real
+  network partition; the outage test pauses the container instead.
+- TLS (`sslmode=require`/`verify-full`) was not exercised: the test servers run
+  without TLS. LockLens leaves TLS to pgx and does not change `sslmode`.
+- Overhead figures are a local smoke check only (see above).
+- PostgreSQL 14 reaches end of life on 2026-11-12.
+
+### Reproduction and cleanup
+
+```bash
+git clone <repository> locklens && cd locklens
+make check                      # no database needed
+make test-integration           # PostgreSQL 14.24 and 18.6
+make test-compat                # 14.24 15.19 16.15 17.11 18.6
+```
+
+The harness removes each Compose project with `docker compose -p <project> down -v`
+on success, failure, or Ctrl+C, and logs to `test-results/`. If a run is killed
+hard, find and remove leftovers by exact name:
+
+```bash
+docker compose ls -a --filter name=locklens-it
+```
+
+```bash
+LOCKLENS_IT_IMAGE=x LOCKLENS_IT_ADMIN_USER=x LOCKLENS_IT_ADMIN_PASSWORD=x LOCKLENS_IT_DATABASE=x docker compose -p <project name> -f deploy/compose.test.yaml down -v
+```
+
+Demo:
+
+```bash
+make demo         # project "locklens" on 127.0.0.1:55432
+make db-down      # docker compose down -v for that project
+```
+
+After this run, `docker compose ls -a` listed no `locklens` or `locklens-it-*`
+projects and no volumes labelled with those projects remained. Unrelated
+Compose projects on the host were not touched.

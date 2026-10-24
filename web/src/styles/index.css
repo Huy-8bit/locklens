@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+/* Theme tokens. The UI reads only these variables, so dark and light themes
+   stay consistent. */
+@theme {
+  --color-bg: var(--ll-bg);
+  --color-panel: var(--ll-panel);
+  --color-panel2: var(--ll-panel2);
+  --color-border: var(--ll-border);
+  --color-fg: var(--ll-fg);
+  --color-muted: var(--ll-muted);
+  --color-accent: var(--ll-accent);
+  --color-accentfg: var(--ll-accent-fg);
+  --color-crit: var(--ll-crit);
+  --color-warn: var(--ll-warn);
+  --color-ok: var(--ll-ok);
+  --color-info: var(--ll-info);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root {
+  --ll-bg: #f6f7f9;
+  --ll-panel: #ffffff;
+  --ll-panel2: #f0f2f5;
+  --ll-border: #d9dde3;
+  --ll-fg: #161a1f;
+  --ll-muted: #5a6370;
+  --ll-accent: #1d4ed8;
+  --ll-accent-fg: #ffffff;
+  --ll-crit: #b42318;
+  --ll-warn: #9a5b00;
+  --ll-ok: #157f3b;
+  --ll-info: #1d4ed8;
+  --ll-chart-1: #1d4ed8;
+  --ll-chart-2: #c2410c;
+  --ll-chart-3: #15803d;
+  --ll-chart-4: #7e22ce;
+  --ll-chart-5: #0e7490;
+  --ll-grid: #e3e6ea;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --ll-bg: #0d1116;
+  --ll-panel: #151a21;
+  --ll-panel2: #1c232c;
+  --ll-border: #2a333e;
+  --ll-fg: #e6e9ee;
+  --ll-muted: #98a2af;
+  --ll-accent: #6c9cff;
+  --ll-accent-fg: #0d1116;
+  --ll-crit: #ff7b72;
+  --ll-warn: #f2b440;
+  --ll-ok: #4fc97a;
+  --ll-info: #79a7ff;
+  --ll-chart-1: #79a7ff;
+  --ll-chart-2: #ff9b5e;
+  --ll-chart-3: #5fd38d;
+  --ll-chart-4: #c79bff;
+  --ll-chart-5: #4fd1e4;
+  --ll-grid: #26303b;
+  color-scheme: dark;
+}
+
+html, body, #root { height: 100%; }
+body { background: var(--ll-bg); color: var(--ll-fg); font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; font-size: 14px; }
+
+:focus-visible { outline: 2px solid var(--ll-accent); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+}
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Grid items default to min-width: auto, so unbreakable text or a chart can
+   push a column wider than a phone screen. Let them shrink instead. */
+.grid > * { min-width: 0; }

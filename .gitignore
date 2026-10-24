@@ -17,3 +17,21 @@ coverage.*
 .idea/
 .vscode/
 .DS_Store
+
+# Integration harness logs and artefacts
+/test-results/
+
+# Embedded UI build output (make web)
+/backend/internal/webui/dist/*
+!/backend/internal/webui/dist/README.txt
+
+# Local dependencies, frontend output, and browser reports
+node_modules/
+/web/dist/
+/tests/e2e/playwright-report/
+/tests/e2e/test-results/
+*.tsbuildinfo
+
+# Local environment overrides
+.env.*
+!.env.example

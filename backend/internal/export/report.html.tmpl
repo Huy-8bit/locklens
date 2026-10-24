@@ -1,0 +1,106 @@
+{{define "tree"}}<li><span class="node">{{clean .Label}}</span>{{if .Note}} <em>({{.Note}})</em>{{end}}{{if .Details}}<ul class="details">{{range .Details}}<li>{{clean .}}</li>{{end}}</ul>{{end}}{{if .Children}}<ul class="tree">{{range .Children}}{{template "tree" .}}{{end}}</ul>{{end}}</li>{{end}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<title>LockLens incident #{{.E.Incident.ID}}: {{clean .E.Incident.Title}}</title>
+<style>
+:root { color-scheme: light dark; --fg:#1b1f24; --muted:#5b6470; --bg:#ffffff; --panel:#f5f7f9; --border:#d5dae0; --crit:#b42318; --warn:#a15c00; --info:#175cd3; }
+@media (prefers-color-scheme: dark) { :root { --fg:#e6e9ed; --muted:#9aa4b0; --bg:#0f1318; --panel:#171c22; --border:#2b333d; --crit:#f97066; --warn:#fdb022; --info:#84adff; } }
+* { box-sizing: border-box; }
+body { margin:0; padding:24px; font:14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color:var(--fg); background:var(--bg); }
+main { max-width: 1100px; margin: 0 auto; }
+h1 { font-size: 22px; margin: 0 0 4px; } h2 { font-size: 17px; margin: 28px 0 8px; border-bottom:1px solid var(--border); padding-bottom:4px; } h3 { font-size: 15px; margin: 16px 0 6px; }
+.muted { color: var(--muted); } .panel { background: var(--panel); border:1px solid var(--border); border-radius: 6px; padding: 12px 16px; margin: 8px 0; }
+.sev { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; font-weight:600; border:1px solid currentColor; }
+.sev-critical { color: var(--crit); } .sev-warning { color: var(--warn); } .sev-info { color: var(--info); }
+table { border-collapse: collapse; width: 100%; margin: 6px 0; } th, td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--border); vertical-align: top; }
+th { font-weight:600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+dl.meta { display:grid; grid-template-columns: max-content 1fr; gap: 2px 16px; margin: 8px 0; } dl.meta dt { color: var(--muted); }
+ul.tree, ul.tree ul.tree { list-style: none; padding-left: 20px; border-left: 1px dashed var(--border); margin: 4px 0; }
+ul.details { list-style: disc; color: var(--muted); margin: 2px 0 6px 18px; padding: 0; font-size: 13px; }
+.node { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
+.kind { font-family: ui-monospace, monospace; font-size: 12px; white-space: nowrap; }
+footer { margin-top: 32px; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+<header>
+<p class="muted">LockLens incident report · exported {{time .E.ExportedAt}} · LockLens {{clean .E.Tool.Version}}</p>
+<h1>#{{.E.Incident.ID}} {{clean .E.Incident.Title}}</h1>
+<p><span class="sev sev-{{lower .E.Incident.Severity}}">{{.E.Incident.Severity}}</span> · {{.E.Incident.State}}{{if .E.Incident.Truncated}} · <strong>truncated</strong> (size limit reached; lifecycle events kept){{end}}</p>
+<dl class="meta">
+<dt>Target</dt><dd>{{clean .E.Incident.TargetName}}</dd>
+<dt>Rule</dt><dd><code>{{.E.Incident.RuleID}}</code> version {{.E.Incident.RuleVersion}}</dd>
+<dt>Opened</dt><dd>{{time .E.Incident.OpenedAt}}</dd>
+<dt>Last seen</dt><dd>{{time .E.Incident.LastSeenAt}}</dd>
+<dt>Resolved</dt><dd>{{ptime .E.Incident.ResolvedAt}}{{if .E.Incident.Resolution}} ({{pstr .E.Incident.Resolution}}){{end}}</dd>
+<dt>Duration</dt><dd>{{.Duration}}</dd>
+<dt>Acknowledged</dt><dd>{{if .E.Incident.AcknowledgedAt}}{{ptime .E.Incident.AcknowledgedAt}} by {{pstr .E.Incident.AcknowledgedBy}}{{if .E.Incident.AckNote}}: {{pstr .E.Incident.AckNote}}{{end}}{{else}}no{{end}}</dd>
+<dt>Query text</dt><dd>{{if .E.QueryTextIncluded}}included where the target collected it{{else}}not included in this export{{end}}</dd>
+<dt>Source</dt><dd>{{.E.Incident.Source}}</dd>
+</dl>
+<p class="muted">All times are UTC. Findings describe observations and possible explanations; they are not confirmed root causes.</p>
+</header>
+
+<section>
+<h2>Trigger</h2>
+{{range .Lead}}
+<div class="panel">
+<h3><span class="sev sev-{{lower (print .Severity)}}">{{.Severity}}</span> {{clean .Title}}</h3>
+<p class="muted">Observed {{time .ObservedFrom}} – {{time .ObservedTo}}</p>
+{{if .Observed}}<p><strong>Observed</strong></p><ul>{{range .Observed}}<li>{{clean .}}</li>{{end}}</ul>{{end}}
+<p>{{clean .Explanation}}</p>
+{{if .PossibleExplanations}}<p><strong>Possible explanations</strong> (not confirmed)</p><ul>{{range .PossibleExplanations}}<li>{{clean .}}</li>{{end}}</ul>{{end}}
+{{if .NextChecks}}<p><strong>Next checks</strong></p><ul>{{range .NextChecks}}<li>{{clean .}}</li>{{end}}</ul>{{end}}
+<p class="muted"><strong>Limitations:</strong> {{clean .Limitations}}</p>
+</div>
+{{else}}<p class="muted">No trigger event in this export.</p>{{end}}
+</section>
+
+<section>
+<h2>Findings and evidence</h2>
+{{range .Findings}}
+<div class="panel">
+<h3><span class="sev sev-{{lower (print .Severity)}}">{{.Severity}}</span> {{clean .Title}} <span class="muted">· <code>{{.RuleID}}</code> v{{.RuleVersion}} · {{.Status}}</span></h3>
+<table><thead><tr><th>Evidence</th><th>Value</th><th>Source</th></tr></thead><tbody>
+{{range .Evidence}}<tr><td>{{clean .Label}}</td><td class="mono">{{value .Value .Unit}}</td><td class="muted">{{clean .Source}}</td></tr>{{end}}
+</tbody></table>
+<p class="muted"><strong>Limitations:</strong> {{clean .Limitations}}</p>
+</div>
+{{else}}<p class="muted">No findings linked to this incident.</p>{{end}}
+</section>
+
+<section>
+<h2>Blocking graphs</h2>
+<p class="muted">Edges come from pg_blocking_pids(); children are sessions waiting for their parent (blocker → waiter). A cycle in sampled data is not a confirmed deadlock.</p>
+{{range .Graphs}}
+<div class="panel">
+<h3>{{time .At}} · {{.Summary}}</h3>
+{{if .Roots}}<ul class="tree">{{range .Roots}}{{template "tree" .}}{{end}}</ul>{{else}}<p class="muted">No blocking in this snapshot.</p>{{end}}
+{{range .Warnings}}<p class="muted">⚠ {{clean .}}</p>{{end}}
+</div>
+{{else}}<p class="muted">No blocking snapshots were recorded for this incident.</p>{{end}}
+</section>
+
+<section>
+<h2>Timeline</h2>
+<table><thead><tr><th>Time (UTC)</th><th>Event</th><th>Details</th></tr></thead><tbody>
+{{range .Timeline}}<tr><td class="mono">{{time .At}}</td><td class="kind">{{.Kind}}</td><td>{{clean .Summary}}
+{{if .Metrics}}<details><summary class="muted">metrics</summary><table>{{range .Metrics}}<tr><td class="mono">{{.K}}</td><td class="mono">{{.V}}</td></tr>{{end}}</table></details>{{end}}
+{{if .Queries}}<table><thead><tr><th>queryid</th><th>database</th><th>user</th><th>calls</th><th>total</th><th>mean</th><th>share</th></tr></thead><tbody>
+{{range .Queries}}<tr><td class="mono">{{.QueryID}}</td><td>{{clean .Database}}</td><td>{{clean .User}}</td><td>{{.Calls}}</td><td>{{.Total}}</td><td>{{.Mean}}</td><td>{{.Share}}</td></tr>{{if .Text}}<tr><td colspan="7"><code>{{clean .Text}}</code></td></tr>{{end}}{{end}}
+</tbody></table>{{end}}
+</td></tr>{{end}}
+</tbody></table>
+</section>
+
+<footer>
+<p>Generated by LockLens. LockLens observes PostgreSQL and never changes it. Collected data is sampled at intervals and assembled from several catalog reads, so it is not an atomic picture of the server. This report contains no connection strings or credentials.</p>
+</footer>
+</main>
+</body>
+</html>

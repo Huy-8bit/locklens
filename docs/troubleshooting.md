@@ -123,18 +123,90 @@ This is why a refused connection may be reported twice per address.
   `ACCESS EXCLUSIVE` lock taken by a maintenance command). That session is
   likely your incident; check it with another tool or wait.
 
-## Docker and the demo
+## Server startup
+
+| Message | Fix |
+| --- | --- |
+| `LOCKLENS_STORE_DSN is required ...`, `LOCKLENS_MASTER_KEY is required ...` (exit 2) | Set the variables; see [configuration.md](configuration.md). All configuration problems are listed together. |
+| `LOCKLENS_MASTER_KEY ...` decoding error | The key must be 32 random bytes in base64: `openssl rand -base64 32` |
+| `no administrator configured: set LOCKLENS_ADMIN_PASSWORD ...` | First start of a new store: set `LOCKLENS_ADMIN_PASSWORD` (12–72 bytes) or `LOCKLENS_ADMIN_PASSWORD_HASH` |
+| `the admin password must be at least 12 characters long` | Use a longer password |
+| `monitoring store has schema version N, newer than this LockLens build supports` | The store was migrated by a newer LockLens; upgrade the binary |
+| `bootstrap target "x": no DSN (set VAR)` | The variable named in `dsn_env` is empty |
+| `listen on ...: address already in use` | Another process uses the port; set `LOCKLENS_LISTEN` or `--listen` |
+| `/readyz` returns 503 | The monitoring store is unreachable; check `LOCKLENS_STORE_DSN` and the store's health |
+
+## Targets in the UI
+
+- **`unreachable` with "cannot decrypt stored secret (wrong LOCKLENS_MASTER_KEY
+  or corrupted data)"**: the server runs with a different master key than the
+  one that encrypted the DSN. Restore the old key or re-enter the DSN.
+- **`unreachable` with a connection error**: use **Test connection** on the
+  target's settings page; it shows the same hints as `locklens doctor`.
+- **`degraded`**: an enabled collector failed (its error is shown under
+  Collectors), or the role lacks `pg_read_all_stats` (`restricted_visibility`),
+  or `track_activities` is off.
+- **Queries page says pg_stat_statements is unavailable**: follow the reason
+  shown. "not installed in the database LockLens connects to" means
+  `CREATE EXTENSION pg_stat_statements;` is missing in that database; an error
+  about `shared_preload_libraries` means the library is not loaded (server
+  restart required).
+- **Charts are empty or have breaks**: history needs a few samples; breaks are
+  real gaps (collection failed, LockLens was stopped, or counters were reset)
+  and are listed under the chart.
+- **Comparison says "too few calls" or low coverage**: the window is too short
+  or collection started recently; choose a longer range.
+- **Host metrics "Unavailable"**: no node_exporter URL is set, or it cannot be
+  reached from the LockLens server; the error is shown on the overview.
+- **The UI shows "The LockLens web UI is not built into this binary"**: build
+  with `make build-all` (or `make web` then `make build`).
+- **Signed out unexpectedly**: sessions end after `LOCKLENS_SESSION_IDLE` of
+  inactivity and when the configured admin password changes. Behind HTTPS set
+  `LOCKLENS_COOKIE_SECURE=true`; over plain HTTP on a non-loopback address the
+  cookie must not be `Secure`.
+- **Mutations fail with 403 "missing or invalid CSRF token" or
+  "cross-origin request rejected"**: reload the page (the token is held in
+  memory); a reverse proxy must preserve the `Host` header so the Origin check
+  matches.
+- **429 on login**: five failed attempts per minute; wait a minute.
+
+## Docker, the lab, and the demo
 
 - `Cannot connect to the Docker daemon`: start Docker Desktop, OrbStack, or the
   docker service.
-- `port is already allocated` for 55432: another service uses the port. Run
-  `make db-up LOCKLENS_PG_PORT=55433` and set `LOCKLENS_DSN` /
-  `LOCKLENS_DEMO_DSN` / `LOCKLENS_IT_*_DSN` to the new port.
+- `port is already allocated` for 8080 or 55432–55434: another service uses the
+  port. Set `LOCKLENS_HTTP_PORT`, `LOCKLENS_PG_PORT`, `LOCKLENS_STANDBY_PORT`,
+  or `LOCKLENS_STORE_PORT`, for example `LOCKLENS_HTTP_PORT=8081 make up`
+  (CLI demos then need `LOCKLENS_DSN` and `LOCKLENS_DEMO_DSN` with the new
+  port). The integration and E2E suites use dynamic ports.
+- The standby stays unhealthy: it clones the primary on first start; if the
+  primary was recreated, run `make down` and `make up` for fresh volumes.
+- A lab scenario left sessions or objects behind (for example after
+  `kill -9`): `make lab-status` shows them, `make lab-stop` removes them.
+- No incident appears during a scenario: the server must run in demo mode
+  (the lab does) for the short thresholds; check the target is healthy and see
+  [quickstart.md](quickstart.md) for expected timings.
 - The container keeps restarting after changing `LOCKLENS_PG_VERSION`: an old
-  data volume from another major version is being reused. Run `make db-down`
-  (or use `make db-up`, which renews anonymous volumes).
+  data volume from another major version is being reused. Run `make down`
+  first to delete the lab volumes.
+- `integration tests need explicit settings (LOCKLENS_IT_...)`: the tests were
+  started with plain `go -C backend test -tags integration`. Use
+  `make test-integration`, which provisions the database and passes the DSNs.
+- `docker compose up --wait` times out in the integration script: Docker is
+  slow to pull or start the image. Raise `LOCKLENS_IT_WAIT_TIMEOUT` (seconds)
+  or pull `postgres:<version>-alpine` beforehand. Logs are in `test-results/`.
 - Integration tests fail with `PREPARE TRANSACTION` errors: the server runs
-  without `max_prepared_transactions`; use the provided compose file.
+  without `max_prepared_transactions`; use `deploy/compose.test.yaml` through the
+  script.
+- A test run was killed (for example with `kill -9`) and left containers
+  behind: list them with `docker compose ls -a --filter name=locklens-it`
+  and remove each one by its exact project name. Compose needs the variables
+  of `deploy/compose.test.yaml` to parse it, but their values do not matter for
+  `down`:
+
+  ```bash
+  LOCKLENS_IT_IMAGE=x LOCKLENS_IT_ADMIN_USER=x LOCKLENS_IT_ADMIN_PASSWORD=x LOCKLENS_IT_DATABASE=x docker compose -p <project name> -f deploy/compose.test.yaml down -v
+  ```
 - `scenario: timed out after 15s waiting for ...`: the expected lock state
   never appeared, usually because the database is overloaded or another test
   run is using the same tables. Run one demo or test suite at a time.

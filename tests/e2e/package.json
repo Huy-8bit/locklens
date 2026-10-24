@@ -1,0 +1,16 @@
+{
+  "name": "locklens-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "install-browser": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "@types/node": "^24.10.1",
+    "axe-core": "4.14.0",
+    "typescript": "6.0.3"
+  }
+}

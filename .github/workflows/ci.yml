@@ -12,6 +12,7 @@ jobs:
   checks:
     name: Build, vet, unit tests (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         go: ["1.26.x", "1.27.x"]
@@ -20,6 +21,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
+          cache-dependency-path: |
+            backend/go.sum
+            tests/e2e/go.sum
       - name: Check formatting
         run: make fmt-check
       - name: Vet
@@ -27,41 +31,115 @@ jobs:
       - name: CLI does not import demo code
         run: make check-separation
       - name: Build
-        run: make build
+        run: make backend-build
       - name: Unit tests
-        run: go test ./...
+        run: go -C backend test -timeout 5m ./...
       - name: Unit tests with race detector
-        run: go test -race ./...
+        run: go -C backend test -race -timeout 5m ./...
+
+  web:
+    name: Frontend typecheck, lint, unit tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Unit and accessibility tests
+        run: npm test
+      - name: Build
+        run: npm run build
 
   integration:
     name: Integration tests (PostgreSQL ${{ matrix.postgres }})
     runs-on: ubuntu-latest
     needs: checks
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        # The versions LockLens is tested against. Keep docs/testing.md in sync.
-        postgres: ["14", "15", "16", "17", "18"]
-    env:
-      LOCKLENS_PG_VERSION: ${{ matrix.postgres }}
+        # Pinned image tags (postgres:<version>-alpine). 14 is the oldest
+        # supported major; 18 was the latest stable major when this list was
+        # last updated (2026-10-24). Keep docs/testing.md in sync.
+        postgres: ["14.24", "15.19", "16.15", "17.11", "18.6"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
-      - name: Start PostgreSQL
-        run: docker compose up -d --wait
-      - name: Doctor
-        run: |
-          make build
-          LOCKLENS_DSN='postgres://locklens_observer:observer-pw@127.0.0.1:55432/locklens_demo?sslmode=disable' bin/locklens doctor
-      - name: Integration tests
-        run: make test-integration
-      - name: Demo
-        run: bin/locklens-demo all
-      - name: Server logs on failure
-        if: failure()
-        run: docker compose logs postgres
-      - name: Stop PostgreSQL
+          cache-dependency-path: |
+            backend/go.sum
+            tests/e2e/go.sum
+      - name: Integration tests in an isolated Compose project
+        env:
+          LOCKLENS_IT_PG_VERSIONS: ${{ matrix.postgres }}
+          LOCKLENS_IT_GO_TIMEOUT: 15m
+          LOCKLENS_IT_WAIT_TIMEOUT: "120"
+        run: ./scripts/integration-test.sh
+      - name: Upload logs
         if: always()
-        run: docker compose down -v
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-pg${{ matrix.postgres }}
+          path: test-results/
+          if-no-files-found: ignore
+
+  e2e:
+    name: Browser end-to-end (Docker stack)
+    runs-on: ubuntu-latest
+    needs: [checks, web]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tests/e2e/package-lock.json
+      - name: Install dependencies and Chromium
+        working-directory: tests/e2e
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Docker image smoke test
+        run: make docker-smoke
+      - name: Playwright against an isolated Compose project
+        run: ./scripts/e2e.sh
+      - name: Upload report and traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e
+          path: test-results/
+          if-no-files-found: ignore
+
+  demo:
+    name: Demo scenarios
+    runs-on: ubuntu-latest
+    needs: checks
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: |
+            backend/go.sum
+            tests/e2e/go.sum
+      - name: Run all demo scenarios
+        run: make demo
+      - name: Stop the demo database
+        if: always()
+        run: make db-down

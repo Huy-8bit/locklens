@@ -40,7 +40,11 @@ the detailed explanation.
   `pg_blocking_pids()` are read live, and `pg_locks` itself is not fully
   consistent for fast-path locks. **A snapshot is not atomic.** See
   [postgresql-observation.md](postgresql-observation.md#consistency-of-a-collection).
-- Sessions that end mid-collection appear as `missing` placeholders.
+- A session that ends mid-collection is still shown with the metadata cached
+  at the start of the collection, and its lock request may already be missing
+  from `waiting_locks`. PIDs absent from the cached `pg_stat_activity` view
+  appear as `missing` placeholders. See
+  [postgresql-observation.md](postgresql-observation.md#consistency-of-a-collection).
 - A cycle in the observed data is labelled as such but is **not** a confirmed
   deadlock; PostgreSQL resolves real deadlocks after `deadlock_timeout`. See
   [blocking-graph.md](blocking-graph.md#cycle).
@@ -62,11 +66,48 @@ the detailed explanation.
 - The graph's transitive counts are O(V·(V+E)); see
   [blocking-graph.md](blocking-graph.md#complexity).
 
+## Server and monitoring
+
+- **Sampling.** Everything is sampled at the collector intervals. Blocking
+  shorter than the activity interval, short connection spikes, and brief
+  replication lag between samples are not seen.
+- **Workload analysis** depends on `pg_stat_statements`: only window means
+  (no percentiles or per-execution samples), only statements still in the
+  server's hash table (`pg_stat_statements.max`; evictions are reported but
+  their counts are lost), and `queryid` is not stable across major versions.
+  The first collection after a start is a baseline, so short windows right
+  after a start have little coverage.
+- **Table statistics** cover only the database LockLens connects to and only
+  the 200 largest tables; tuple counts are estimates, and a dead-tuple ratio is
+  not measured bloat.
+- **Findings are heuristics** with explicit evidence and limitations, not
+  confirmed root causes. Thresholds are generic defaults; tune them per
+  environment. Demo-mode thresholds are for the lab only.
+- **Incidents** keep at most 1,000 events or 5 MiB and stop after 2 hours;
+  the in-memory pre-trigger buffer is lost on restart, so an incident opened
+  shortly after a restart has little pre-trigger context.
+- **Restarts and store outages** leave holes in history. Batches dropped from
+  the bounded write queue are recorded as gaps, not recovered.
+- **Host metrics** require node_exporter on the database host; managed
+  services cannot provide them. In Docker Desktop and similar, node_exporter
+  sees the Linux VM.
+- **Single administrator**, no roles, SSO, or audit log; no in-place master key
+  rotation; no built-in TLS termination.
+- **Scale.** Tested locally with up to 20 targets on one machine
+  ([test-report.md](test-report.md)). Larger fleets have not been measured;
+  storage grows with the number of targets and their intervals
+  ([storage-and-retention.md](storage-and-retention.md#storage-growth)).
+- **One server per store.** Running two `locklens server` processes against
+  the same monitoring store collects every target twice and makes their
+  incident recorders compete; it is not supported.
+
 ## Unsupported behaviour
 
-- PostgreSQL older than 14 is rejected.
-- No kill, cancel, or terminate actions; no automatic remediation.
-- No configuration file, no persistent history beyond snapshot files you save.
+- PostgreSQL older than 14 is rejected (targets and the monitoring store).
+- No kill, cancel, or terminate actions; no configuration changes, index or
+  vacuum operations, failover, or any other automatic remediation.
+- The CLI has no configuration file and no history beyond snapshot files you
+  save; history lives only in the server's monitoring store.
 - Snapshot files are readable only by LockLens builds that support their
   `schema_version` (currently 1).
 - Only the database versions listed in [testing.md](testing.md) have been
@@ -83,4 +124,6 @@ the detailed explanation.
 - Snapshot files are `0600` but still contain operational metadata (user,
   application, database names, client addresses) and, with `--include-query`,
   SQL text. Handle them as sensitive.
-- See [SECURITY.md](../SECURITY.md).
+- The server's `/metrics`, `/healthz`, and `/readyz` are unauthenticated by
+  design; they expose no credentials or query text.
+- See [security.md](security.md) and [SECURITY.md](../SECURITY.md).

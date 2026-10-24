@@ -1,88 +1,125 @@
 # Implementation plan
 
-Live checklist for the LockLens MVP. Status markers:
+Live checklist. Status markers:
 
-- `[x]` done: implemented, checked, and documented
+- `[x]` done: implemented, verified, and documented
+- `[~]` in progress
 - `[ ]` pending
-- `[!]` blocked (reason given)
+- `[!]` blocked or not verified (reason given)
 
-## Foundations
+## Phase 1: CLI MVP (complete)
 
-- [x] Go module (`go 1.26.0`), dependencies limited to `pgx/v5` and `cobra`, Makefile, `.gitignore`, `.env.example`
-- [x] Build metadata (`version`, `commit`, `date`) injected with `-ldflags`, VCS fallback
-- [x] PostgreSQL semantics checked against the official docs before writing SQL:
-      `pg_blocking_pids` (hard/soft blocks, parallel duplicates, PID 0),
-      `pg_locks.waitstart` (PostgreSQL 14+, may be briefly NULL),
-      `pg_stat_activity` visibility rules and timestamp meanings,
-      `pg_monitor` membership. Sources linked in docs/postgresql-observation.md
+The read-only CLI (`doctor`, `inspect`, `watch`, `snapshot save/show`,
+`version`), the blocking graph, snapshot schema v1, the isolated integration
+harness, and the QA round are complete. Evidence: [test-report.md](test-report.md).
 
-## Core logic (no database)
+- [x] Edges only from `pg_blocking_pids`; parallel workers folded into leaders; PID 0 prepared transactions; cycle-safe graph
+- [x] Transaction, query, and lock wait ages kept distinct; lock wait only from `pg_locks.waitstart`
+- [x] Read-only sessions, own-PID exclusion, credential redaction, opt-in query text, terminal sanitising
+- [x] Integration suite on PostgreSQL 14.24, 15.19, 16.15, 17.11, 18.6
 
-- [x] `internal/model`: snapshot schema v1 (raw data only)
-- [x] `internal/graph`: blocker → waiter graph, deduplication, direct/transitive counts, roots, iterative Tarjan cycle detection, components
-- [x] `internal/report`: node kinds, transaction/query/state/lock-wait ages, long transactions, analysis warnings
-- [x] `internal/textsafe`: rune-safe truncation, control/bidi neutralisation
-- [x] `internal/config`: DSN precedence, observer runtime parameters, exact-value redaction, unparsable DSNs never echoed
-- [x] `internal/snapshot`: atomic no-clobber save (hard link), `--force` rename, mode 0600, versioned load with clear errors
+## Phase 2: monitoring and incident investigation application
 
-## PostgreSQL collection
+### Architecture decisions
 
-- [x] Read-only pool (max 2 connections; `application_name=locklens`, `default_transaction_read_only=on`, `statement_timeout`, `lock_timeout`, `idle_in_transaction_session_timeout`)
-- [x] Own backends excluded by PID captured in pool hooks
-- [x] Edges only from `pg_blocking_pids`, called once per waiting backend found in ungranted `pg_locks` rows; parallel workers folded into leaders; duplicates removed
-- [x] Session metadata from `pg_stat_activity`; query text only with `--include-query`, cut on the server and again by runes
-- [x] Waiting-lock description and `waitstart`; relation names only for the current database
-- [x] PID 0 kept as a `prepared_transaction` node; `pg_prepared_xacts` listed as context
-- [x] `missing` placeholders for PIDs that vanished between reads
-- [x] Visibility detection (`pg_has_role`), `restricted_visibility` and `track_activities_off` warnings
-- [x] Server clock read after all sources; ages clamped at zero
-- [x] Versions below 14 rejected explicitly
+- One Go binary: the existing CLI plus `locklens server` (REST API, SSE,
+  background collectors, embedded React UI). No separate services.
+- Monitoring store: a dedicated PostgreSQL 14+ database (`LOCKLENS_STORE_DSN`),
+  versioned SQL migrations embedded in the binary. Never the monitored database.
+- Targets: DSNs encrypted with AES-256-GCM using `LOCKLENS_MASTER_KEY` (env only).
+  Collectors use small per-target pools, read-only sessions, own-PID exclusion.
+- Scheduler: one worker goroutine per target running its collectors
+  sequentially (no overlap per target), a global semaphore bounding concurrent
+  collections, per-collector intervals (light: activity; medium: counters,
+  statements, replication; heavy: table and database sizes).
+- Counters stored as derived rates/deltas computed at ingest against the
+  previous sample, with explicit handling of restarts, stats resets, negative
+  deltas, and gaps (unknown is stored as NULL, never 0).
+- Query identity: (target, server major version, database, user, toplevel,
+  queryid). Text stored once per identity and only when the target opts in.
+- Rules: deterministic Go functions with stable IDs and versions; findings
+  carry evidence, explanation, next checks, and limitations.
+- Incidents: per-target recorder with a bounded in-memory pre-trigger buffer,
+  persistence thresholds, cooldown/regrouping, duration and size limits,
+  restart recovery from the store.
+- Single admin, bcrypt password hash, server-side sessions in the store
+  (HttpOnly SameSite=Strict cookie), CSRF token header plus Origin check.
+- Frontend: React + TypeScript + Vite, React Router, TanStack Query,
+  Recharts, Tailwind CSS; built assets embedded in the Go binary.
 
-## CLI
+### Milestones
 
-- [x] `doctor` (connection, version, source access, visibility, `track_activities`, query text, test collection; table/JSON)
-- [x] `inspect`
-- [x] `watch` (TTY-only screen clearing, NDJSON, sequential collections, bounded exponential backoff, fatal-error stop, clean Ctrl+C/SIGTERM)
-- [x] `snapshot save` / `snapshot show`
-- [x] `version`
-- [x] Exit codes 0 / 1 / 2, errors on stderr with hints
+1. [x] Audit, architecture, acceptance checklist (this file)
+2. [x] Storage, migrations, configuration, authentication, target management
+3. [x] Collectors, health overview API, React shell
+4. [x] Query workload analysis and query UI
+5. [x] Blocking investigation and session UI
+6. [x] Vacuum/table health and replication/WAL
+7. [x] Incident recorder, rules, incident UI
+8. [x] Host metrics, exports (JSON/HTML), Prometheus metrics
+9. [x] Docker incident lab (store, primary, standby, LockLens image, lab runner, nine scenarios)
+10. [x] Browser E2E, performance checks, documentation, final verification
 
-## Demo and tests
+Evidence for every item: [test-report.md](test-report.md).
 
-- [x] Docker Compose PostgreSQL (`LOCKLENS_PG_VERSION`, port 55432 on loopback, `max_prepared_transactions`) with demo roles
-- [x] Demo orchestrator (`demo/`): row lock, chain, idle in transaction; polling with timeout; ordered cleanup; `--hold`
-- [x] CLI/demo separation enforced by `make check-separation`
-- [x] Unit tests (graph, report, render, textsafe, config, snapshot, cli, postgres hints)
-- [x] Integration tests against real PostgreSQL (13 tests)
-- [x] GitHub Actions workflow (Go 1.26.x/1.27.x checks; PostgreSQL 14–18 integration matrix)
+### Acceptance checklist
 
-## Documentation
+Backend and storage
+- [x] Versioned migrations with advisory lock; idempotent startup (`TestMigrationsConcurrentAndIdempotent`)
+- [x] Retention cleanup in batches; incident retention separate from raw history (`TestRetentionInBatches`)
+- [x] Bounded write buffering on store outage with drop accounting and recorded gaps (writer unit tests, `TestOutageAndRecovery`)
+- [x] Liveness, readiness, request IDs, body/range/page limits, structured logs (`backend/internal/api` tests, `TestAuthAndSecurityHeaders`)
 
-- [x] README.md
-- [x] docs/architecture.md
-- [x] docs/postgresql-observation.md
-- [x] docs/blocking-graph.md
-- [x] docs/cli-reference.md
-- [x] docs/snapshot-format.md (example is a real snapshot, verified by a unit test)
-- [x] docs/development.md
-- [x] docs/testing.md
-- [x] docs/troubleshooting.md
-- [x] docs/limitations.md
-- [x] CONTRIBUTING.md, SECURITY.md, LICENSE (MIT)
+Security
+- [x] Localhost bind by default; admin bootstrap from environment
+- [x] bcrypt hashes; server-side sessions; CSRF protection; same-origin by default (`backend/internal/auth` tests, server and E2E tests)
+- [x] DSNs encrypted at rest; responses, logs, exports never contain DSNs or passwords (credential checks in every server-test response and E2E export)
+- [x] Query text off by default; per-target opt-in; never in metric labels (`TestRestrictedRoleAndQueryTextOptIn`, `TestPgStatStatementsAvailable`, obs tests)
+- [x] Import size limits and validation; HTML escaping; terminal sanitising (export tests, E2E import)
 
-## Verification record (2026-10-24, macOS arm64)
+Targets
+- [x] Add, edit, disable, delete (soft delete with explicit purge), test connection
+- [x] Version and capability detection; per-target interval and connection limit
+- [x] Status: healthy, degraded, unreachable, disabled (documented criteria); freshness
+- [x] Failures isolated per target and per collector (healthy and unreachable targets side by side in `TestTargetLifecycleBlockingIncidentAndExport`)
 
-- [x] `gofmt -l .` empty; `go vet ./...` and `go vet -tags integration ./...` clean
-- [x] `go test ./...` and `go test -race ./...` pass (Go 1.26.0); `go vet` and `go test ./...` also pass with Go 1.27.3
-- [x] Integration suite with `-race` passes on PostgreSQL 14.24, 15.19, 16.15, 17.11, 18.6 (Docker images `postgres:<major>-alpine`)
-- [x] From a clean copy of the tree: `make demo` (fresh database) shows A → B, A → B → C with counts 1/2, and idle in transaction; `make check` passes
-- [x] `snapshot save` during the chain demo, database stopped with `docker compose stop`, then `snapshot show` (table and JSON) renders the chain offline; `inspect` with the database stopped exits 1 with a hint
-- [x] `watch` under a pseudo-terminal (`script`) clears the screen per frame and exits 0 on SIGINT with no error output; piped table and NDJSON output verified by integration tests
-- [x] Documentation checks: repository-relative links and anchors (script), external PostgreSQL doc URLs and anchors (HTTP 200, anchors present), every flag and default in docs/cli-reference.md compared with `--help`, JSON code blocks parse, the snapshot example decodes with unknown fields disallowed and re-encodes identically, no non-English project text
-- [!] GitHub Actions has not run: nothing was pushed (out of scope by instruction). The workflow file is untested on GitHub's runners
+Collectors and views
+- [x] Health metrics, version-aware checkpointer/bgwriter, `pg_stat_io` (16+), database sizes on the slow interval, long transactions
+- [x] Query workload: windows, sorting, filtering, pagination, drill-down, equal-window comparison, flags with minimum calls
+- [x] Blocking: graph/tree, sessions, node details, roots, counts, historical snapshots
+- [x] Table/vacuum: tuple estimates, vacuum/analyze times, progress, sizes, XID age
+- [x] Replication/WAL: role, replicas and LSN lags, time lag fields, slots and retained WAL, archiver deltas, WAL trends
+- [x] Host metrics from an optional node_exporter (timeouts, size limit, "Unavailable" when absent)
 
-## Pending (roadmap, not part of the MVP)
+Incidents and rules
+- [x] Thirteen rules with IDs, versions, evidence, limitations; missing data never passes
+- [x] Five incident triggers; pre/during/post capture; cooldown and grouping; limits; acknowledge as metadata only (`backend/internal/incidents` integration tests)
+- [x] Restart recovery of incident metadata (`TestRestartRecovery`, server restart test)
 
-- [ ] Display-only enrichment of the lock a blocker holds
-- [ ] `snapshot diff`
-- [ ] Release binaries
+CLI, exports, metrics
+- [x] Existing CLI unchanged and passing; `server`, `migrate`, `admin hash-password`, `incident export`, `incident report`
+- [x] Incident JSON (versioned) and standalone HTML (no CDN, escaped, no credentials), opened offline in E2E
+- [x] `/metrics` with bounded labels
+
+UI
+- [x] Twelve pages; dark/light; responsive; keyboard and labels; loading/empty/partial/error/disconnected states; time range in URL; timezone and freshness; confirmations; reduced motion (screenshots in light, dark, and mobile widths; axe-core in unit and E2E tests)
+
+Lab and tests
+- [x] One-command Docker demo with healthchecks and isolated volumes (`make up`)
+- [x] Nine lab scenarios with start/stop/status, bounded duration, cleanup
+- [x] Go unit, race, integration (store, collectors, recorder, primary/standby, outage, restart) on PostgreSQL 14.24, 15.19, 16.15, 17.11, 18.6
+- [x] Frontend typecheck, lint, unit, build, accessibility checks
+- [x] Playwright E2E against the real stack, offline report check
+- [x] Performance smoke checks (collection duration, connections, memory, storage growth, concurrency limit)
+
+Not done in this phase (see [limitations.md](limitations.md)): CI has not run on
+GitHub (nothing pushed); no multi-user access control; no master key rotation
+command; TLS and a real node_exporter were not exercised.
+
+## Pending ideas (not planned)
+
+- Display-only enrichment of the lock a blocker holds
+- `snapshot diff`
+- Release binaries
+- Code-splitting the UI bundle (about 800 KB minified, 233 KB gzip)
+- Master key rotation command; multiple users and roles

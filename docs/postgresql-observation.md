@@ -1,5 +1,11 @@
 # PostgreSQL observation
 
+> This page covers the activity collection shared by the CLI and the server
+> (sessions, locks, blocking). The server's other sources (statistics
+> counters, `pg_stat_statements`, replication, tables, host metrics) are
+> described in [collectors.md](collectors.md) and
+> [query-analysis.md](query-analysis.md).
+
 This document explains what LockLens reads from PostgreSQL, what each value
 means, and what it deliberately does not conclude. Links point to the official
 PostgreSQL documentation for the current release; the behaviour described here
@@ -14,7 +20,7 @@ applies to PostgreSQL 14 and later unless noted.
 | [`pg_stat_activity`](https://www.postgresql.org/docs/current/monitoring-stats.html#MONITORING-PG-STAT-ACTIVITY-VIEW) | Session metadata: user, database, application, state, wait event, timestamps, optional query text | every role, but other roles' details need `pg_read_all_stats` |
 | [`pg_prepared_xacts`](https://www.postgresql.org/docs/current/view-pg-prepared-xacts.html) | Context for blockers reported as PID 0 | every role |
 
-The SQL lives in [`internal/postgres/sql/`](../internal/postgres/sql/), one
+The SQL lives in [`backend/internal/postgres/sql/`](../backend/internal/postgres/sql/), one
 commented file per query.
 
 ## How a collection works
@@ -47,7 +53,11 @@ another *waiter* ahead of it, a "soft block"), and it misses parallel query
 groups. PostgreSQL documents `pg_blocking_pids()` as returning sessions that
 hold a conflicting lock (hard block) or wait ahead in the queue for a
 conflicting lock (soft block). LockLens uses it as the only source of edges and
-uses `pg_locks` only to describe the request.
+uses `pg_locks` only to describe the request. The integration suite checks
+both kinds on a live server: `TestLockQueueSoftBlock` shows an `ACCESS SHARE`
+request reported as blocked only by a pending `ACCESS EXCLUSIVE` request ahead
+of it, and `TestMultipleBlockers` shows one waiter blocked by two compatible
+`SHARE` holders.
 
 Waiters are found from `pg_locks` rather than from
 `pg_stat_activity.wait_event_type = 'Lock'` because `pg_locks` is visible to
@@ -151,16 +161,31 @@ is a cycle of waits; PostgreSQL's deadlock detector runs after
 
 - `pg_stat_activity` is read once and cached for the rest of the transaction
   ([cumulative statistics docs](https://www.postgresql.org/docs/current/monitoring-stats.html#MONITORING-STATS-VIEWS)).
+  The first access happens inside the blocking query (it joins
+  `pg_stat_activity` for `leader_pid`), so session metadata reflects the moment
+  that query started.
 - `pg_locks` and `pg_blocking_pids()` are read live, and `pg_locks` itself "is
   not guaranteed to be entirely consistent" (fast-path locks are gathered per
   backend).
 - PostgreSQL also states that `pg_stat_activity` columns of one backend are not
   synchronised with each other.
 
-So a session can end between two reads. A PID that appears in an edge but has
-no `pg_stat_activity` row is kept as a `missing` placeholder with a warning
-instead of being dropped or crashing the report. The snapshot records
-`"atomic": false`.
+Consequences, verified against PostgreSQL 14.24, 15.19, 16.15, 17.11, and 18.6
+by `TestSessionEndingMidCollection` (which terminates a blocker in the middle
+of a collection):
+
+- A session that ends while LockLens collects is still reported, with its
+  metadata as of the cached `pg_stat_activity` read, and the edges read before
+  it ended are kept. Its live `pg_locks` data may already be gone, so a waiter
+  can appear in an edge without a `waiting_locks` entry.
+- A PID that appears in an edge but has no row in that cached view (possible
+  only for a backend that started after the view was read, or in a snapshot
+  file edited by hand) is kept as a `missing` placeholder with a
+  `missing_session` warning instead of being dropped or crashing the report.
+  In 900 to 1,200 collections per tested version under heavy session churn,
+  no placeholder was produced.
+
+The snapshot records `"atomic": false`.
 
 ## Required privileges
 
@@ -213,8 +238,12 @@ Every LockLens connection sets, through startup parameters:
 
 ## Supported versions
 
-PostgreSQL 14 or later. Every column LockLens reads exists from 14 on (the
-newest is `pg_locks.waitstart`, added in 14), so there is no per-version SQL.
+PostgreSQL 14 or later. Every column the activity collection (CLI and server)
+reads exists from 14 on (the newest is `pg_locks.waitstart`, added in 14), so
+it has no per-version SQL. The server's other collectors are version-aware:
+`pg_stat_io` is read from 16, `pg_stat_checkpointer` from 17 (checkpoint
+counters come from `pg_stat_bgwriter` before that); see
+[collectors.md](collectors.md#capabilities).
 Older servers are rejected with an explicit error rather than producing a
 silently degraded report. Versions actually tested are listed in
 [testing.md](testing.md#postgresql-versions).

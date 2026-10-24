@@ -1,0 +1,68 @@
+# Isolated PostgreSQL for the LockLens integration suite.
+#
+# Do not run this file by hand with a shared project name. Use
+# scripts/integration-test.sh, which gives every run its own Compose project,
+# generates throwaway credentials, waits for the health check, passes explicit
+# DSNs to the tests, and removes the project with `down -v` afterwards.
+#
+# All values come from the env file written by the script; nothing is read from
+# a .env file of the repository or of any other project.
+
+services:
+  postgres:
+    image: ${LOCKLENS_IT_IMAGE:?LOCKLENS_IT_IMAGE must be set by scripts/integration-test.sh}
+    environment:
+      POSTGRES_USER: ${LOCKLENS_IT_ADMIN_USER:?}
+      POSTGRES_PASSWORD: ${LOCKLENS_IT_ADMIN_PASSWORD:?}
+      POSTGRES_DB: ${LOCKLENS_IT_DATABASE:?}
+    command:
+      - postgres
+      # Prepared transactions are needed for the PID 0 test and are enabled
+      # only in this disposable test server.
+      - -c
+      - max_prepared_transactions=10
+      # pg_stat_statements is preloaded, but the extension is created only in
+      # the locklens_pgss database, so tests cover both availability states.
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - max_connections=100
+    ports:
+      # Loopback only; Docker picks a free host port.
+      - "127.0.0.1::5432"
+    # Data lives in memory and disappears with the container: no volume.
+    tmpfs:
+      - /var/lib/postgresql:size=512m
+    healthcheck:
+      # TCP check: the entrypoint's temporary init server listens only on the
+      # Unix socket, so this passes only once the real server is up.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 1s
+      timeout: 3s
+      retries: 90
+
+  # Hot standby for replication tests (profile "replication"). Cloned from the
+  # primary with pg_basebackup after the harness has created the replicator
+  # role and allowed replication connections.
+  standby:
+    image: ${LOCKLENS_IT_IMAGE:?}
+    profiles: ["replication"]
+    user: postgres
+    entrypoint: ["/usr/local/bin/standby-entrypoint.sh"]
+    command: ["postgres", "-c", "hot_standby=on", "-c", "max_connections=100", "-c", "max_prepared_transactions=10",
+              "-c", "shared_preload_libraries=pg_stat_statements"]
+    environment:
+      POSTGRES_PASSWORD: ${LOCKLENS_IT_ADMIN_PASSWORD:?}
+      PRIMARY_HOST: postgres
+      REPLICATION_PASSWORD: ${LOCKLENS_IT_REPLICATION_PASSWORD:-unused}
+    volumes:
+      - ../demo/postgres/standby-entrypoint.sh:/usr/local/bin/standby-entrypoint.sh:ro
+    ports:
+      - "127.0.0.1::5432"
+    tmpfs:
+      - /var/lib/postgresql:size=512m,uid=70,gid=70
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\""]
+      interval: 1s
+      timeout: 3s
+      retries: 120

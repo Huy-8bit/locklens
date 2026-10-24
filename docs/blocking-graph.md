@@ -1,8 +1,8 @@
 # Blocking graph
 
-The graph logic lives in [`internal/graph`](../internal/graph/graph.go). It is
+The graph logic lives in [`backend/internal/graph`](../backend/internal/graph/graph.go). It is
 pure Go with no database dependency, so every case below is covered by unit
-tests in [`graph_test.go`](../internal/graph/graph_test.go).
+tests in [`graph_test.go`](../backend/internal/graph/graph_test.go).
 
 ## Model
 
@@ -13,14 +13,14 @@ tests in [`graph_test.go`](../internal/graph/graph_test.go).
 - Edges come only from `pg_blocking_pids()`; see
   [postgresql-observation.md](postgresql-observation.md).
 
-Node kinds are assigned by [`internal/report`](../internal/report/report.go),
+Node kinds are assigned by [`backend/internal/report`](../backend/internal/report/report.go),
 not by the graph:
 
 | Kind | Meaning |
 | --- | --- |
 | `session` | The PID has a `pg_stat_activity` row in the snapshot |
 | `prepared_transaction` | PID 0: a prepared transaction holds the conflicting lock |
-| `missing` | The PID is in an edge but has no `pg_stat_activity` row, usually because the session ended between catalog reads. It stays in the graph as a placeholder so the observed relation is not lost |
+| `missing` | The PID is in an edge but has no row in the `pg_stat_activity` view LockLens read (for example a backend that started while the collection ran). It stays in the graph as a placeholder so the observed relation is not lost; see [postgresql-observation.md](postgresql-observation.md#consistency-of-a-collection) |
 
 ## Computed values
 

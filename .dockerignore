@@ -1,0 +1,14 @@
+.git
+**/node_modules
+**/dist
+**/test-results
+**/playwright-report
+bin
+.env
+.env.*
+!.env.example
+*.snapshot.json
+snapshots
+*.out
+coverage.*
+.DS_Store

@@ -1,0 +1,157 @@
+# LockLens local lab: the LockLens server, its monitoring store, a PostgreSQL
+# primary and hot standby to monitor, an on-demand scenario runner, and an
+# optional node_exporter.
+#
+#   make up        start everything (http://127.0.0.1:8080, user admin)
+#   make down      stop and delete the lab's containers and volumes
+#
+# Every credential below is a fake, local-only value for this lab. Configure a
+# real deployment through environment variables (docs/configuration.md).
+name: locklens
+
+x-postgres-image: &pg-image postgres:${LOCKLENS_PG_VERSION:-18.6}-alpine
+
+services:
+  store:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_USER: locklens_store
+      POSTGRES_PASSWORD: lab-store-pw
+      POSTGRES_DB: locklens
+    ports:
+      - "127.0.0.1:${LOCKLENS_STORE_PORT:-55434}:5432"
+    volumes:
+      - store-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U locklens_store -d locklens"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  primary:
+    image: *pg-image
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: lab-postgres-pw
+      POSTGRES_DB: locklens_demo
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - track_io_timing=on
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+      - -c
+      - max_prepared_transactions=10
+      # Small on purpose so the connection-pressure scenario stays light.
+      - -c
+      - max_connections=60
+      - -c
+      - log_lock_waits=on
+    ports:
+      - "127.0.0.1:${LOCKLENS_PG_PORT:-55432}:5432"
+    volumes:
+      - ../demo/postgres/01-roles.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
+      - ../demo/postgres/02-replication-hba.sh:/docker-entrypoint-initdb.d/02-replication-hba.sh:ro
+      - primary-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d locklens_demo"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  standby:
+    image: *pg-image
+    depends_on:
+      primary:
+        condition: service_healthy
+    user: postgres
+    entrypoint: ["/usr/local/bin/standby-entrypoint.sh"]
+    # Hot standby requires these to be at least the primary's values.
+    command: ["postgres", "-c", "hot_standby=on", "-c", "max_connections=60", "-c", "max_prepared_transactions=10",
+              "-c", "max_wal_senders=10", "-c", "max_replication_slots=10", "-c", "shared_preload_libraries=pg_stat_statements",
+              "-c", "track_io_timing=on"]
+    environment:
+      POSTGRES_PASSWORD: lab-postgres-pw
+      REPLICATION_PASSWORD: replicator-pw
+    ports:
+      - "127.0.0.1:${LOCKLENS_STANDBY_PORT:-55433}:5432"
+    volumes:
+      - ../demo/postgres/standby-entrypoint.sh:/usr/local/bin/standby-entrypoint.sh:ro
+      - standby-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d locklens_demo"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+
+  locklens:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        VERSION: ${LOCKLENS_VERSION:-lab}
+    image: locklens:lab
+    depends_on:
+      store:
+        condition: service_healthy
+      primary:
+        condition: service_healthy
+      standby:
+        condition: service_healthy
+    environment:
+      LOCKLENS_LISTEN: 0.0.0.0:8080
+      LOCKLENS_STORE_DSN: postgres://locklens_store:lab-store-pw@store:5432/locklens?sslmode=disable
+      # Fake demo key. Generate a real one with: openssl rand -base64 32
+      LOCKLENS_MASTER_KEY: bG9ja2xlbnMtbGFiLW9ubHktbm90LWEtcmVhbC1rZXk=
+      LOCKLENS_ADMIN_USER: admin
+      LOCKLENS_ADMIN_PASSWORD: locklens-lab-admin
+      # The lab serves plain HTTP on loopback.
+      LOCKLENS_COOKIE_SECURE: "false"
+      LOCKLENS_DEMO_MODE: "true"
+      LOCKLENS_BOOTSTRAP_TARGETS_FILE: /etc/locklens/targets.json
+      LOCKLENS_LAB_PRIMARY_DSN: postgres://locklens_observer:observer-pw@primary:5432/locklens_demo?sslmode=disable
+      LOCKLENS_LAB_STANDBY_DSN: postgres://locklens_observer:observer-pw@standby:5432/locklens_demo?sslmode=disable
+    volumes:
+      - ../demo/targets.json:/etc/locklens/targets.json:ro
+    ports:
+      - "127.0.0.1:${LOCKLENS_HTTP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  # Scenario runner, started on demand: make lab SCENARIO=row-blocking
+  lab:
+    image: locklens:lab
+    profiles: ["lab"]
+    entrypoint: ["locklens-lab"]
+    depends_on:
+      primary:
+        condition: service_healthy
+    environment:
+      LOCKLENS_LAB_DSN: postgres://demo_app:demo-app-pw@primary:5432/locklens_demo?sslmode=disable
+      LOCKLENS_LAB_ADMIN_DSN: postgres://postgres:lab-postgres-pw@primary:5432/locklens_demo?sslmode=disable
+      LOCKLENS_LAB_STANDBY_ADMIN_DSN: postgres://postgres:lab-postgres-pw@standby:5432/locklens_demo?sslmode=disable
+
+  # Optional host metrics: make up-host, then set the target's node_exporter
+  # URL to http://node-exporter:9100/metrics. On Docker Desktop and OrbStack
+  # this observes the Linux VM, not the macOS or Windows host.
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    profiles: ["host"]
+    command: ["--path.rootfs=/host"]
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+
+volumes:
+  store-data:
+  primary-data:
+  standby-data:
