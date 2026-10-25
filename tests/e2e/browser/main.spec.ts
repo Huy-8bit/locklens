@@ -104,7 +104,7 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
       await expect(page.getByRole('heading', { name: card, exact: true })).toBeVisible()
     }
     // Replication is observed, not configured: the standby appears under its primary.
-    await expect(page.getByRole('list', { name: 'Standbys of lab-primary' }).getByText('lab-standby')).toBeVisible({ timeout: 90_000 })
+    await expect(page.getByRole('list', { name: 'Standbys of lab-primary' }).getByText('lab-standby', { exact: true })).toBeVisible({ timeout: 90_000 })
     await expectAccessible(page, 'overview')
   })
 
@@ -303,9 +303,10 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
 
   await test.step('remaining pages', async () => {
     await page.goto('/databases')
-    await expect(page.getByRole('heading', { name: 'lab-standby' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'lab-standby', exact: true })).toBeVisible()
     await expectAccessible(page, 'databases')
-    await page.getByRole('link', { name: /lab-standby/ }).click()
+    // Exact names: the lab can have more standbys (lab-standby-2, …).
+    await page.getByRole('link').filter({ has: page.getByRole('heading', { name: 'lab-standby', exact: true }) }).click()
     await page.getByRole('link', { name: 'Replication', exact: true }).click()
     await expect(page.getByText('streaming').first()).toBeVisible({ timeout: 60_000 })
     await expectAccessible(page, 'standby replication')
