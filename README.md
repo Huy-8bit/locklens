@@ -1,290 +1,216 @@
+<div align="center">
+
 # LockLens
 
-Open-source PostgreSQL monitoring and incident investigation.
+**Open-source PostgreSQL monitoring and incident investigation.**
 
-LockLens watches your PostgreSQL instances, explains what is wrong right now —
-blocking chains, idle-in-transaction blockers, connection pressure, slow
-queries, vacuum and replication trouble — and records incidents with the
-evidence you need afterwards. It is one Go binary: a web UI and API with
-background collectors (`locklens server`) and a command-line tool for
-one-off investigations (`locklens inspect`).
+See what your databases are doing right now, find out who is blocking whom,
+and keep the evidence when something goes wrong.
 
-LockLens **only observes**. It connects with a read-only role in read-only
-transactions and never cancels queries, terminates sessions, changes
-configuration, creates or drops indexes, runs `VACUUM`, or fails over.
+[![CI](https://github.com/Huy-8bit/locklens/actions/workflows/ci.yml/badge.svg)](https://github.com/Huy-8bit/locklens/actions/workflows/ci.yml)
+[![Docker pulls](https://img.shields.io/docker/pulls/johnnynguyen882/locklens)](https://hub.docker.com/r/johnnynguyen882/locklens)
+[![Image size](https://img.shields.io/docker/image-size/johnnynguyen882/locklens/latest)](https://hub.docker.com/r/johnnynguyen882/locklens)
+![PostgreSQL 14–18](https://img.shields.io/badge/PostgreSQL-14%E2%80%9318-336791)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-![Overview of the lab environment](docs/images/overview.png)
+[Quick start](#quick-start) · [Features](#features) · [Documentation](#documentation) · [Docker Hub](https://hub.docker.com/r/johnnynguyen882/locklens) · [Contributing](#contributing)
+
+![LockLens overview](docs/images/overview.png)
+
+</div>
+
+## Why LockLens
+
+- **One screen for the whole fleet.** Connections, query throughput and
+  latency, replication, slow queries, sessions, blocking, and incidents for
+  every instance of an environment.
+- **Answers, not just charts.** Blocking chains with their root blocker,
+  queries grouped by statement type, and findings that show the evidence,
+  possible explanations, and what to check next.
+- **Observe-only by design.** LockLens connects with a read-only role. It
+  never cancels queries, terminates sessions, changes configuration, or runs
+  DDL/DML on your databases.
+- **One small binary.** Web UI, API, collectors, and a CLI in a single Go
+  binary or Docker image. Its only dependency is a PostgreSQL database for its
+  own history.
 
 ## Features
 
-- **The whole environment on one screen**: databases monitored, active
-  connections, query throughput and latency, replication health, slow queries,
-  and incidents; read/write operations, host resources, the replication
-  topology, top queries, active sessions, blocking, and a compact explorer and
-  SQL editor. An environment selector (production, staging, lab, …), a time
-  range, a Live switch, and ⌘K search across databases, queries, and incidents.
-- **What each database is doing now**: one overview per instance with
-  connections, running queries, queries and transactions per second, cache hit
-  ratio, rows read and written, blocking, oldest transaction, size, and
-  replication lag, plus history charts.
-- **Queries by type**: every statement from `pg_stat_statements` classified as
-  SELECT, INSERT, UPDATE, DELETE, DDL, transaction control, and so on, with
-  executions per second, time, and rows per type over time, and the full
-  normalised SQL of each statement.
-- **Explorer**: schemas, tables, views, functions, types, columns, indexes,
-  constraints, triggers, and the rows themselves (paged, sortable, filterable),
-  through a separate least-privileged role that is switched off by default.
-- **Read-only SQL editor**: one statement at a time in a read-only transaction
-  that is always rolled back, bounded results, and the execution plan drawn as a
-  graph; off by default, through the same separate role.
-- **Topology, sessions, and connections**: primaries and the standbys
-  streaming from them with replay lag; every client session across instances;
-  who is connected, grouped by database, user, application, and client.
-- **Health**: sessions by state, connections versus the limit, commit and
-  rollback rates, cache hit ratio, temp files, deadlocks, WAL rate,
-  checkpoints and background writer (version-aware), `pg_stat_io` on 16+,
-  database sizes, oldest transactions.
-- **Blocking investigation**: blocking trees from `pg_blocking_pids()`, root
-  blockers, direct and transitive counts, lock modes and waiting relations,
-  lock wait age from `pg_locks.waitstart`, prepared transactions, history of
-  stored snapshots, offline analysis of CLI snapshot files.
-- **Query workload** from `pg_stat_statements`: per-window totals, sorting,
-  filtering, drill-down, comparison with the previous equal window, regression
-  and volume flags with minimum-call thresholds, and explicit coverage
-  (resets, evictions, gaps).
-- **Vacuum and tables**: dead-tuple estimates, last (auto)vacuum/analyze,
-  vacuum progress, sizes, transaction ID age.
-- **Replication and WAL**: role, replicas with LSN and time lags, slots and
-  retained WAL, standby receive/replay state, archiver failures.
-- **Host metrics** (optional) from node_exporter.
-- **Evidence-based findings** from 13 deterministic rules: what was observed,
-  the evidence and its source, possible explanations (never a claimed root
-  cause), next checks, and limitations. Missing data is reported as
-  "insufficient data", never as "OK".
-- **Incident recorder**: pre-trigger buffer, timeline of samples and blocking
-  graphs, cooldown regrouping, size and duration limits, restart recovery,
-  acknowledgement as metadata only.
-- **Exports**: incident JSON (versioned, importable) and standalone HTML
-  reports that open offline without LockLens.
-- **Operations**: Prometheus `/metrics`, liveness and readiness probes,
-  retention in batches, bounded buffering when the store is down, visible
-  collection gaps.
-- **Security**: single administrator with bcrypt and server-side sessions,
-  CSRF protection, encrypted connection strings, row browsing and SQL off by
-  default and through a separate role.
+| | |
+| --- | --- |
+| **Monitor** | Fleet overview with environments (production, staging, …) · per-instance dashboards · sessions, transactions, cache, WAL, temp files, vacuum · replication topology with replay lag · host metrics from node_exporter |
+| **Queries** | Every statement from `pg_stat_statements`, classified as SELECT, INSERT, UPDATE, DELETE, DDL, … · rate, time, and rows per type over time · top queries across instances · comparison with the previous period |
+| **Investigate** | Blocking trees from `pg_blocking_pids()` with lock modes and wait times · idle-in-transaction blockers · 13 evidence-based rules · incident recorder with a timeline and stored blocking graphs |
+| **Explore** *(opt-in)* | Browse schemas, tables, views, functions, types, indexes, and triggers · preview rows · read-only SQL editor with an execution-plan graph — through a separate SELECT-only role |
+| **Operate** | Incident export to JSON and standalone HTML · Prometheus `/metrics` · health and readiness probes · retention · bounded buffering when the store is down |
 
-![Queries by statement type](docs/images/queries.png)
+<table>
+  <tr>
+    <td width="33%"><img src="docs/images/queries.png" alt="Queries by statement type"></td>
+    <td width="33%"><img src="docs/images/explorer.png" alt="Explorer with a table preview"></td>
+    <td width="33%"><img src="docs/images/sql.png" alt="SQL editor with an execution plan"></td>
+  </tr>
+  <tr>
+    <td align="center">Queries by type</td>
+    <td align="center">Explorer</td>
+    <td align="center">SQL editor and plan</td>
+  </tr>
+</table>
 
-![Explorer](docs/images/explorer.png)
+## Quick start
 
-![SQL editor with an execution plan](docs/images/sql.png)
+### Try the demo lab
 
-## Try it in about 10 minutes
-
-Requirements: Docker with Compose v2 and `make`. Ports 8080 and 55432–55434 on
-127.0.0.1 must be free.
+Requires Docker with Compose v2 and `make`. It starts LockLens with a
+PostgreSQL primary, two streaming standbys, and a background workload, all on
+127.0.0.1 with fake, local-only credentials.
 
 ```sh
-git clone <this repository> locklens && cd locklens
-make up                      # builds the image and starts the lab (first build: a few minutes)
+git clone https://github.com/Huy-8bit/locklens.git && cd locklens
+make up                          # first build takes a few minutes
 ```
 
-Open <http://127.0.0.1:8080> and sign in as **admin** / **locklens-lab-admin**
-(fake, local-only lab credentials). Two targets — a primary and a streaming
-standby — are already registered. Then create a problem:
+Open <http://127.0.0.1:8080> and sign in as `admin` / `locklens-lab-admin`.
+Then create a problem and watch LockLens explain it:
 
 ```sh
-make lab SCENARIO=chain      # A -> B -> C blocking chain for 3 minutes
+make lab SCENARIO=chain          # an A → B → C blocking chain for 3 minutes
+make lab-list                    # all scenarios
+make down                        # remove the lab and its data
 ```
 
-Watch it on the **Overview** and under **Blocking**; within about 20 seconds
-an incident appears under **Incidents**. For a realistic mix of SELECT,
-INSERT, UPDATE, and DELETE traffic, run `make lab SCENARIO=shop` and open
-**Queries**; browse the demo `shop` schema under **Explorer** and query it in
-the **SQL Editor** (read-only). Other
-scenarios: `row-blocking`, `idle-blocker`, `connection-pressure`,
-`regression`, `temp-files`, `replication`, `healthy`, and `make lab-outage`.
-When done:
+See the [quickstart](docs/quickstart.md) for every scenario and what to expect.
+
+### Run the Docker image
+
+LockLens stores its history in its own PostgreSQL database (the *store*),
+never in the databases it monitors.
 
 ```sh
-make down                    # removes the lab's containers and volumes
+export LOCKLENS_MASTER_KEY="$(openssl rand -base64 32)"   # keep it: it encrypts stored connection strings
+
+docker network create locklens
+docker run -d --name locklens-store --network locklens \
+  -e POSTGRES_USER=locklens -e POSTGRES_PASSWORD=change-me -e POSTGRES_DB=locklens \
+  -v locklens-store:/var/lib/postgresql postgres:18-alpine
+
+docker run -d --name locklens --network locklens -p 127.0.0.1:8080:8080 \
+  -e LOCKLENS_LISTEN=0.0.0.0:8080 \
+  -e LOCKLENS_STORE_DSN='postgres://locklens:change-me@locklens-store:5432/locklens?sslmode=disable' \
+  -e LOCKLENS_MASTER_KEY \
+  -e LOCKLENS_ADMIN_PASSWORD='choose-a-long-password' \
+  -e LOCKLENS_COOKIE_SECURE=false \
+  johnnynguyen882/locklens:latest
 ```
 
-Step-by-step guide with expected results per scenario:
-[docs/quickstart.md](docs/quickstart.md).
+Use a released tag (`X.Y.Z`) in production, and put LockLens behind HTTPS
+before exposing it beyond your machine (then drop `LOCKLENS_COOKIE_SECURE`).
+All settings: [configuration](docs/configuration.md).
 
-## Run it on your databases
+### Connect your databases
 
-```sh
-make build-all               # Go 1.26+, Node.js 24.15+ (or 22.22.2+); produces bin/locklens with the UI embedded
-
-export LOCKLENS_STORE_DSN='postgres://locklens_store:…@store-host:5432/locklens?sslmode=verify-full'
-export LOCKLENS_MASTER_KEY="$(openssl rand -base64 32)"    # keep it safe: it encrypts stored DSNs
-read -rs LOCKLENS_ADMIN_PASSWORD && export LOCKLENS_ADMIN_PASSWORD
-bin/locklens server          # http://127.0.0.1:8080
-```
-
-The monitoring store is a separate PostgreSQL 14+ database that LockLens owns.
 Monitored servers need PostgreSQL 14 or later and a login role with
-`pg_read_all_stats`; `pg_stat_statements` is optional:
+`pg_read_all_stats` (no superuser). `pg_stat_statements` is optional but
+recommended.
 
 ```sql
 CREATE ROLE locklens_observer LOGIN PASSWORD '…';
 GRANT pg_read_all_stats TO locklens_observer;
 ```
 
-Add instances in **Settings → Add instance**. All settings:
-[docs/configuration.md](docs/configuration.md). Before exposing the UI
-beyond your machine, read [docs/security.md](docs/security.md).
+Add the instance in **Settings → Add instance**.
+
+### Build from source
+
+Requires Go 1.26+ and Node.js 24.15+ (or 22.22.2+).
+
+```sh
+make build                       # bin/locklens with the web UI embedded
+bin/locklens server              # needs LOCKLENS_STORE_DSN, LOCKLENS_MASTER_KEY, LOCKLENS_ADMIN_PASSWORD
+```
 
 ## Command line
 
-The CLI works without the server, directly against a database:
+The CLI works directly against a database, without the server:
 
 ```sh
 export LOCKLENS_DSN='postgres://observer@db.example.internal:5432/app?sslmode=verify-full'
-locklens doctor                                   # connectivity, version, privileges
-locklens inspect                                  # blocking chains and long transactions, once
-locklens watch                                    # refresh every 2 s
-locklens snapshot save --out incident.json        # save for later (mode 0600)
-locklens snapshot show incident.json              # offline
+locklens doctor                              # connectivity, version, privileges
+locklens inspect                             # blocking chains and long transactions
+locklens watch                               # live view, refreshed every 2 s
+locklens snapshot save --out incident.json   # capture now, analyse offline later
 ```
-
-and with the monitoring store:
-
-```sh
-locklens server                                   # API, UI, collectors, incident recorder
-locklens migrate                                  # apply store migrations and exit
-locklens admin hash-password                      # bcrypt hash for LOCKLENS_ADMIN_PASSWORD_HASH
-locklens incident export --id 42 --format html --out incident-42.html
-locklens incident report incident-42.json --out incident-42.html   # offline rendering
-```
-
-Example: part of `locklens inspect` output during a blocking chain:
 
 ```text
 Blocking chains (blocker -> waiter)
   Incident 1: root blocker pid 116 blocks 1 directly, 2 in total
     pid 116  idle in transaction  tx 3s  user=demo_app  app=locklens-demo-A  blocks 1 directly, 2 in total
-    └─ pid 117  active  lock wait 3s  tx 3s  user=demo_app  app=locklens-demo-B  blocks 1 directly, 1 in total
-          waiting for ShareLock on transaction 746 (typically a row lock held by that transaction)
+    └─ pid 117  active  lock wait 3s  tx 3s  user=demo_app  app=locklens-demo-B
        └─ pid 118  active  lock wait 3s  tx 3s  user=demo_app  app=locklens-demo-C
-             waiting for ShareLock on transaction 747 (typically a row lock held by that transaction)
 ```
 
-Reference: [docs/cli-reference.md](docs/cli-reference.md). Exit codes: `0`
-success (including when blocking was found), `1` runtime failure, `2` invalid
-usage or input.
+Reference: [CLI](docs/cli-reference.md).
 
 ## How it works
 
 ```text
- PostgreSQL targets ──(read-only, per-target pool)──► collectors ──► bounded write queue ──► monitoring store
-                                                          │                                     │
-                                                          ▼                                     ▼
-                                                 rules + incident recorder              REST API + SSE ──► React UI
+PostgreSQL targets ──read-only──► collectors ──► write queue ──► monitoring store
+                                      │                                │
+                                      ▼                                ▼
+                           rules + incident recorder         REST API + live events ──► web UI
 ```
 
-One worker per target runs its collectors sequentially (activity every
-interval, counters ≥ 15 s, statements ≥ 60 s, replication ≥ 30 s, table
-sizes every 5 minutes) under a global concurrency limit. Counters become
-rates at ingest, with restarts, statistics resets, and gaps stored as unknown
-rather than zero. Details: [docs/architecture.md](docs/architecture.md),
-[docs/collectors.md](docs/collectors.md).
+One worker per target runs its collectors on a schedule under a global
+concurrency limit. Counters become rates at ingest; restarts, statistics
+resets, and gaps are stored as *unknown*, never as zero. More in
+[architecture](docs/architecture.md) and [collectors](docs/collectors.md).
 
-## Privacy and safety
+## Security and privacy
 
-- SQL text is **collected by default** so the Queries and Sessions pages
-  can show it; it can be switched off per instance. Normalised statements
-  replace literal values with `$1, $2, …`, but running queries can contain
-  literals. SQL text never appears in logs or metric labels, and exports
-  include it only when explicitly requested.
-- **Table rows** are readable only after an administrator configures a
-  separate, SELECT-only role for an instance and enables row browsing; every
-  access is audited without the data.
-- Connection strings are encrypted at rest (AES-256-GCM) and never returned by
-  the API or shown in the UI, logs, exports, or snapshots.
-- The server listens on 127.0.0.1 by default; cookies are `HttpOnly` and
-  `SameSite=Strict`; mutations require a CSRF token.
-- Findings describe observations and possible explanations. Blocking is
-  sampled and snapshots are not atomic; a cycle in sampled data is not called
-  a confirmed deadlock.
+- Connection strings are encrypted at rest (AES-256-GCM) and never returned
+  by the API or shown in the UI, logs, or exports.
+- Single administrator with bcrypt, server-side sessions, `HttpOnly` +
+  `SameSite=Strict` cookies, and CSRF tokens. Listens on 127.0.0.1 by default.
+- SQL text is collected by default and can be switched off per instance.
+- Row browsing and the SQL editor are off by default and use a separate,
+  SELECT-only role inside read-only transactions.
 
-## Repository structure and development
-
-```text
-locklens/
-├── backend/            # Go module: cmd/, internal/, migrations/, demo/
-├── web/                # React: src/pages, components, api, lib
-├── deploy/             # Dockerfile and Compose definitions
-├── demo/               # PostgreSQL fixtures and bootstrap targets
-├── scripts/            # development, test, smoke, and lab entrypoints
-├── tests/e2e/          # CLI, HTTP server, and browser tests
-├── docs/
-├── .github/workflows/
-├── Makefile
-├── README.md
-├── CONTRIBUTING.md
-├── SECURITY.md
-└── LICENSE
-```
-
-Run these commands from the repository root (Go 1.26+, Node.js 24.15+ (or 22.22.2+), npm,
-Docker Compose v2, make, Python 3, and curl):
-
-```sh
-make dev          # local API on :18080 + Vite on :5173 + lab databases
-make build        # build React, embed its assets, build all binaries in bin/
-make test         # backend unit tests + frontend typecheck, lint, unit tests
-make demo         # CLI scenarios against the lab primary
-make docker-smoke # isolated image build, migrations, HTTP/UI/CLI smoke checks
-```
-
-The development UI uses the lab login **admin** / **locklens-lab-admin**.
-Ctrl-C stops the local development processes; `make down` removes the lab
-containers and volumes. Use `make up` for the complete containerized app.
-
-Unit tests stay beside their implementation. PostgreSQL package integration
-tests also stay in `backend/internal/`; only cross-system tests live in
-`tests/e2e/`. Frontend assets are generated into
-`backend/internal/webui/dist/` before compiling Go, so embedding never reaches
-outside a Go package. `make backend-build` is available for Go-only work;
-`make build-all` remains an alias of `make build`.
-See [development](docs/development.md) for package boundaries and setup.
-
-## Testing
-
-```sh
-make check               # gofmt, go vet, unit tests, race detector, import separation
-make web-check           # frontend typecheck, lint, unit and accessibility tests
-make test-integration    # real PostgreSQL 14.24 and 18.6 in disposable Docker projects
-make e2e                 # Playwright against the full Docker stack, no API mocks
-```
-
-Monorepo verification: [docs/monorepo-refactor.md](docs/monorepo-refactor.md).
-Earlier functional test results: [docs/test-report.md](docs/test-report.md).
+Details in [security](docs/security.md). To report a vulnerability, see
+[SECURITY.md](SECURITY.md).
 
 ## Documentation
 
-- [UI guide](docs/ui-design.md): pages, what each one answers, and how to read the charts
-
-| Topic | Document |
+| | |
 | --- | --- |
-| Getting started | [quickstart](docs/quickstart.md), [configuration](docs/configuration.md), [troubleshooting](docs/troubleshooting.md), [local workload sandbox](docs/local-lab.md) |
-| Concepts | [architecture](docs/architecture.md), [collectors](docs/collectors.md), [PostgreSQL observation](docs/postgresql-observation.md), [blocking graph](docs/blocking-graph.md), [query analysis](docs/query-analysis.md), [rules](docs/rules.md), [incidents](docs/incidents.md) |
-| Operations | [storage and retention](docs/storage-and-retention.md), [security](docs/security.md), [limitations](docs/limitations.md) |
-| Reference | [HTTP API](docs/api.md), [CLI](docs/cli-reference.md), [snapshot format](docs/snapshot-format.md) |
-| Development | [development](docs/development.md), [testing](docs/testing.md), [test report](docs/test-report.md), [implementation plan](docs/implementation-plan.md), [CONTRIBUTING](CONTRIBUTING.md), [SECURITY](SECURITY.md) |
+| **Getting started** | [Quickstart](docs/quickstart.md) · [Configuration](docs/configuration.md) · [UI guide](docs/ui-design.md) · [Troubleshooting](docs/troubleshooting.md) |
+| **Concepts** | [Architecture](docs/architecture.md) · [Collectors](docs/collectors.md) · [PostgreSQL observation](docs/postgresql-observation.md) · [Blocking graph](docs/blocking-graph.md) · [Query analysis](docs/query-analysis.md) · [Rules](docs/rules.md) · [Incidents](docs/incidents.md) · [Explorer and SQL](docs/investigation-workspace.md) |
+| **Operations** | [Storage and retention](docs/storage-and-retention.md) · [Security](docs/security.md) · [Limitations](docs/limitations.md) |
+| **Reference** | [HTTP API](docs/api.md) · [CLI](docs/cli-reference.md) · [Snapshot format](docs/snapshot-format.md) |
+| **Development** | [Development](docs/development.md) · [Testing](docs/testing.md) · [Test report](docs/test-report.md) |
 
-## Status
+## Contributing
 
-LockLens is young. Every test suite has passed locally against PostgreSQL
-14.24, 15.19, 16.15, 17.11, and 18.6 (see the
-[test report](docs/test-report.md)); it has not been run in production
-environments yet. Performance
-figures in the docs come from a local lab and are not guarantees. Known
-limitations are listed in [docs/limitations.md](docs/limitations.md).
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first; the
+usual loop is:
+
+```sh
+make dev            # Go API, Vite dev server, and lab databases
+make check          # gofmt, vet, Go unit tests with the race detector
+make web-check      # frontend typecheck, lint, unit and accessibility tests
+make test-integration && make e2e   # real PostgreSQL and browser tests (slower)
+```
+
+Repository layout: `backend/` (Go), `web/` (React), `deploy/` (Docker),
+`demo/` (lab fixtures), `tests/e2e/` (CLI, server, and browser tests),
+`docs/`.
+
+## Project status
+
+LockLens is young. The test suites pass against PostgreSQL 14 through 18 in a
+local lab ([test report](docs/test-report.md)), but it has not yet been run in
+production environments, and performance figures in the docs are lab
+measurements, not guarantees. Known gaps: [limitations](docs/limitations.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+[MIT](LICENSE) © The LockLens contributors
