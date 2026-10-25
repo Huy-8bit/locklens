@@ -5,6 +5,10 @@ import type {
   CommandsResponse,
   FindingRow,
   FleetEntry,
+  FleetLiveResponse,
+  FleetMetricsResponse,
+  FleetQueriesResponse,
+  SystemResponse,
   GridResult,
   Incident,
   IncidentEvent,
@@ -20,7 +24,7 @@ import type {
   Thresholds,
   WorkspacePolicy,
 } from './types'
-import type { Range } from '../lib/time'
+import { liveState, type Range } from '../lib/scope'
 
 // Query keys: ['t', targetId, 'live' | 'hist', ...]. The event stream
 // invalidates a target's 'live' keys after each collection; history keys
@@ -29,8 +33,11 @@ import type { Range } from '../lib/time'
 const LIVE = 15_000
 const HIST = 30_000
 
+/** A refetch interval that pauses while the Live switch is off. */
+const every = (ms: number) => () => (liveState.on ? ms : false)
+
 export function useFleet() {
-  return useQuery({ queryKey: ['fleet'], queryFn: () => api<{ targets: FleetEntry[]; generated_at: string }>('/api/v1/fleet'), refetchInterval: LIVE })
+  return useQuery({ queryKey: ['fleet'], queryFn: () => api<{ targets: FleetEntry[]; generated_at: string }>('/api/v1/fleet'), refetchInterval: every(LIVE) })
 }
 
 export function useTargets() {
@@ -38,26 +45,26 @@ export function useTargets() {
 }
 
 export function useTarget(id: number) {
-  return useQuery({ queryKey: ['t', id, 'live', 'target'], queryFn: () => api<Target>(`/api/v1/targets/${id}`), enabled: id > 0, refetchInterval: LIVE })
+  return useQuery({ queryKey: ['t', id, 'live', 'target'], queryFn: () => api<Target>(`/api/v1/targets/${id}`), enabled: id > 0, refetchInterval: every(LIVE) })
 }
 
 export function useOverview(id: number) {
-  return useQuery({ queryKey: ['t', id, 'live', 'overview'], queryFn: () => api<OverviewResponse>(`/api/v1/targets/${id}/overview`), refetchInterval: LIVE })
+  return useQuery({ queryKey: ['t', id, 'live', 'overview'], queryFn: () => api<OverviewResponse>(`/api/v1/targets/${id}/overview`), refetchInterval: every(LIVE) })
 }
 
 export function useActivity(id: number) {
-  return useQuery({ queryKey: ['t', id, 'live', 'activity'], queryFn: () => api<ActivityResponse>(`/api/v1/targets/${id}/activity`), refetchInterval: 10_000 })
+  return useQuery({ queryKey: ['t', id, 'live', 'activity'], queryFn: () => api<ActivityResponse>(`/api/v1/targets/${id}/activity`), refetchInterval: every(10_000) })
 }
 
 export function useTables(id: number) {
-  return useQuery({ queryKey: ['t', id, 'live', 'tables'], queryFn: () => api<TablesResponse>(`/api/v1/targets/${id}/tables`), refetchInterval: 60_000 })
+  return useQuery({ queryKey: ['t', id, 'live', 'tables'], queryFn: () => api<TablesResponse>(`/api/v1/targets/${id}/tables`), refetchInterval: every(60_000) })
 }
 
 export function useReplication(id: number) {
   return useQuery({
     queryKey: ['t', id, 'live', 'replication'],
     queryFn: () => api<{ source: string; replication: Replication | null; observed_at?: string }>(`/api/v1/targets/${id}/replication`),
-    refetchInterval: LIVE,
+    refetchInterval: every(LIVE),
   })
 }
 
@@ -70,7 +77,7 @@ export function useMetrics(id: number, names: string[], range: Range) {
     queryKey: ['t', id, 'hist', 'metrics', names.join(','), range],
     queryFn: () => api<MetricsResponse>(`/api/v1/targets/${id}/metrics${qs({ names: names.join(','), range })}`),
     placeholderData: keepPreviousData,
-    refetchInterval: HIST,
+    refetchInterval: every(HIST),
   })
 }
 
@@ -79,7 +86,7 @@ export function useCommands(id: number, range: Range, includeMonitoring = false)
     queryKey: ['t', id, 'hist', 'commands', range, includeMonitoring],
     queryFn: () => api<CommandsResponse>(`/api/v1/targets/${id}/queries/commands${qs({ range, include_monitoring: includeMonitoring || undefined })}`),
     placeholderData: keepPreviousData,
-    refetchInterval: HIST,
+    refetchInterval: every(HIST),
   })
 }
 
@@ -103,7 +110,7 @@ export function useQueries(id: number, p: QueryParams) {
         `/api/v1/targets/${id}/queries${qs({ range: p.range, sort: p.sort, order: p.order, page: p.page, page_size: p.pageSize ?? 25, q: p.q, command: p.command, compare: p.compare || undefined, include_monitoring: p.includeMonitoring || undefined })}`,
       ),
     placeholderData: keepPreviousData,
-    refetchInterval: HIST,
+    refetchInterval: every(HIST),
   })
 }
 
@@ -112,7 +119,7 @@ export function useQueryDetail(id: number, qid: number, range: Range) {
     queryKey: ['t', id, 'hist', 'query', qid, range],
     queryFn: () => api<QueryDetailResponse>(`/api/v1/targets/${id}/queries/${qid}${qs({ range })}`),
     placeholderData: keepPreviousData,
-    refetchInterval: HIST,
+    refetchInterval: every(HIST),
   })
 }
 
@@ -120,7 +127,7 @@ export function useIncidents(params: { state?: string; target?: number; page?: n
   return useQuery({
     queryKey: ['incidents', params],
     queryFn: () => api<{ incidents: Incident[]; total: number; page_size: number; rules: string[] }>(`/api/v1/incidents${qs({ state: params.state, target: params.target, page: params.page })}`),
-    refetchInterval: LIVE,
+    refetchInterval: every(LIVE),
   })
 }
 
@@ -201,8 +208,8 @@ export function usePolicy(id: number) {
 export function useSavePolicy(id: number) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (p: { metadata_enabled: boolean; data_enabled: boolean; dsn?: string }) =>
-      api<WorkspacePolicy>(`/api/v1/targets/${id}/workspace/policy`, { method: 'PUT', json: { ...p, sql_enabled: false, history_enabled: false } }),
+    mutationFn: (p: { metadata_enabled: boolean; data_enabled: boolean; sql_enabled?: boolean; dsn?: string }) =>
+      api<WorkspacePolicy>(`/api/v1/targets/${id}/workspace/policy`, { method: 'PUT', json: { sql_enabled: false, ...p, history_enabled: false } }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['t', id] }),
   })
 }
@@ -276,4 +283,54 @@ export function useTableData(id: number, enabled: boolean, req: DataRequest) {
     retry: retryBusy,
     retryDelay: (n) => 500 * 2 ** n,
   })
+}
+
+// Fleet views: all enabled targets of one environment ('' = all).
+
+export function useFleetMetrics(env: string, names: string[], range: Range) {
+  return useQuery({
+    queryKey: ['fleet', 'metrics', env, names.join(','), range],
+    queryFn: () => api<FleetMetricsResponse>(`/api/v1/fleet/metrics${qs({ names: names.join(','), range, environment: env })}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: every(HIST),
+  })
+}
+
+export function useFleetQueries(env: string, range: Range, sort: string, limit = 10, q = '', command = '') {
+  return useQuery({
+    queryKey: ['fleet', 'queries', env, range, sort, limit, q, command],
+    queryFn: () => api<FleetQueriesResponse>(`/api/v1/fleet/queries${qs({ range, sort, limit, environment: env, q, command })}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: every(HIST),
+  })
+}
+
+export function useFleetLive(env: string) {
+  return useQuery({
+    queryKey: ['fleet', 'live', env],
+    queryFn: () => api<FleetLiveResponse>(`/api/v1/fleet/live${qs({ environment: env })}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: every(10_000),
+  })
+}
+
+export function useSystem() {
+  return useQuery({ queryKey: ['system'], queryFn: () => api<SystemResponse>('/api/v1/system'), refetchInterval: every(LIVE) })
+}
+
+export function useExplain(id: number) {
+  return useMutation({
+    mutationFn: ({ sql, schema, signal }: { sql: string; schema: string; signal?: AbortSignal }) => runWorkspace<GridResult>(id, { action: 'explain', sql, schema }, signal),
+  })
+}
+
+export function useRunSql(id: number) {
+  return useMutation({
+    mutationFn: ({ sql, schema, requestId, signal }: { sql: string; schema: string; requestId: string; signal?: AbortSignal }) =>
+      api<GridResult>(`/api/v1/targets/${id}/workspace/run`, { method: 'POST', json: { request_id: requestId, action: 'sql', sql, schema }, signal }),
+  })
+}
+
+export function cancelSql(id: number, requestId: string) {
+  return api<{ cancelled: boolean }>(`/api/v1/targets/${id}/workspace/cancel`, { method: 'POST', json: { request_id: requestId } })
 }

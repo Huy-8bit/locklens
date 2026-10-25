@@ -1,33 +1,59 @@
 # UI guide
 
-The web UI answers one question first: **what is this PostgreSQL instance
-doing right now, and how did it get here?** Everything else (queries, data,
-replication, alerts) is one click away for the same instance.
+The web UI answers one question first: **what are my PostgreSQL databases
+doing right now, and how did they get here?** The Overview shows a whole
+environment on one screen; every card leads to a page with the detail.
 
 ## Layout
 
-- **Sidebar**: the instance selector (switching keeps the current page and time
-  range), the pages of that instance, then **All instances** and **Settings**.
+- **Sidebar**: Overview, Databases, Topology, Queries, Sessions, Blocking,
+  Explorer, SQL Editor, Incidents (with the number of open incidents),
+  Connections, Settings. At the bottom, **System status**: the monitoring
+  store, the collectors, alerts, and the store writer, from `GET /api/v1/system`.
   Below 1024 px the sidebar becomes a menu.
-- **Top bar**: the instance's state, address, PostgreSQL version and role, how
-  long ago it was last sampled, the live event-stream status, the theme
-  switch, and sign-out.
-- **Time range** (history charts only): 15 minutes (default), 1 hour, 6 hours,
-  24 hours, 7 days. It is kept in the URL (`?range=`), so a view can be shared.
+- **Top bar**: search (⌘K / Ctrl+K) over pages, databases, open incidents, and
+  statement text; the **environment** selector; the **time range**; the
+  **Live** switch; notifications (open incidents); and the account menu with the
+  signed-in administrator, the theme switch, Settings, and sign-out. Below
+  768 px the environment and time range move to a bar under the top bar.
+- **Environment**: every instance has an environment label (`production`,
+  `staging`, `lab`, … default `default`). Fleet pages show the instances of the
+  selected environment, or all of them.
+- **Time range** (history charts): 15 minutes, 1 hour (default), 6 hours, 24
+  hours, 7 days.
+- **Live**: when on, current-state views refresh after every collection (event
+  stream) and on a short interval; when off, nothing refreshes until it is
+  switched back on. Environment, range, and Live are remembered per browser.
+
+## Overview
+
+| Row | Cards |
+| --- | --- |
+| KPIs | **Databases monitored** (and their states), **Active connections** (sum of used connections, trend over the range, sum of `max_connections`), **Query throughput** (statement executions per second, trend, mean latency), **Replication health** (standbys in sync / observed standbys), **Slow queries** (statements with a mean execution time above 1 s in the range), **Incidents** (open, by severity). Each card opens its page. |
+| Activity | **Read / write operations** (rows read vs. written per second, or commits vs. rollbacks), **Query throughput & latency** (executions per second and mean latency as two stacked panes on one time axis), **System resources** (CPU, memory, fullest filesystem from node_exporter, deduplicated per exporter; disk I/O as text) |
+| State | **Database topology** (primaries and the standbys streaming from them, with replay lag and its history), **Top queries** (ranked by total time, calls, mean latency, or rows, across instances), **Active sessions** (running a query or holding a transaction) |
+| Investigation | **Blocking transactions** (blocker → waiting sessions), **Database explorer** and **SQL editor** for one instance (selectable) |
+
+Trend labels compare the first and last known value of the range. A trend is
+green or red only where a direction is good or bad (none of the KPIs above
+claims that; they are shown in neutral gray); the arrow and the number carry
+the meaning without color.
 
 ## Pages
 
 | Page | Answers | Main sources |
 | --- | --- | --- |
-| **Overview** | Is the instance healthy, how busy is it, what kind of work is it doing? Twelve current values (connections, running queries, queries/s, transactions/s, cache hit ratio, size, blocked sessions, oldest transaction, rows read/written per second, temp files, replica lag), queries by type over time, transactions, connections by state, rows read and written, execution time, cache hit ratio, WAL, temp files; the query mix, the longest-running queries now, the most expensive queries, alerts, and collector status | latest samples, metric history, `pg_stat_statements` |
-| **Live activity** | Who is connected and doing what right now? Counts by state, the blocking tree ("who is blocking whom"), and sessions that run a query, hold a transaction open, or take part in blocking, with their SQL; a session panel shows everything about one backend | latest activity sample (`pg_stat_activity`, `pg_blocking_pids()`, `pg_locks`) |
-| **Queries** | How many queries run, of which type, how fast? Totals and coverage, executions/time/rows per second **by statement type** over time, a breakdown table per type (click to filter), and every statement with its normalised SQL, calls, rate, total and average time, rows; optional comparison with the previous period. A statement page shows the formatted SQL, its rate and average time over time, and the comparison | `pg_stat_statements` deltas |
-| **Data explorer** | What is in the database? Databases with sizes, the largest tables (statistics), and, with browsing access, schemas → tables → **Data** (rows, paged, sortable, filterable; NULL and empty strings stay distinct; a cell opens in full, JSON pretty-printed), **Columns**, **Indexes** (size, scans), **Constraints** | table statistics; catalog and rows through the separate browsing role |
-| **Replication** | Is replication keeping up? Role, standbys with byte and time lag, slots and retained WAL, standby receive/replay state, lag and WAL charts, archiving | replication collector |
-| **Alerts** | What has gone wrong? Incidents (open or all) and current findings with evidence, possible explanations, next checks, limitations; rules that could not be evaluated are listed separately | rules and incident recorder |
-| **Incident** | The recorded evidence: timeline (pre-trigger samples, trigger, stored blocking graphs, resolution), JSON and standalone HTML export, acknowledgement as a note | incident store |
-| **All instances** | Every monitored server with state, connections, queries/s, transactions/s, blocked sessions, cache hit ratio, size, open incidents | latest samples |
-| **Settings** | Instances (add, edit, test connection, delete), alert thresholds, monitoring store size | configuration |
+| **Databases** | Every monitored server of the environment with state, connections, queries/s, transactions/s, blocked sessions, cache hit ratio, size, open incidents | latest samples |
+| **Database** (`/databases/:id`) | One instance, in tabs: **Overview** (twelve current values, queries by type, transactions, connections by state, rows, execution time, cache, WAL, temp files, query mix, longest-running queries, most expensive queries, alerts, collectors), **Queries** (by type, every statement with SQL), **Activity** (sessions and the blocking tree), **Replication** (role, standbys, slots, WAL, archiving), **Alerts** (incidents and findings) | latest samples, metric history, `pg_stat_statements` |
+| **Topology** | How replication is laid out and whether it keeps up: the replication graph, streaming standbys with byte and time lag and a health label, slots and retained WAL, instances outside any observed pair | replication collector |
+| **Queries** | The most expensive statements across instances (top 50 by total time, calls, mean latency, or rows), filterable by type and SQL text. A statement page (`/queries/:target/:id`) shows the formatted SQL, rate and mean time over time, and the comparison with the previous period | `pg_stat_statements` deltas |
+| **Sessions** | Who is connected and doing what, across instances: counts by state and every client session that runs a query, holds a transaction, or waits, with its SQL; a panel shows everything about one backend | latest activity samples |
+| **Blocking** | Who waits on whose lock: blocker → waiter cards, the full tree per instance with lock modes and objects, long-running transactions | `pg_blocking_pids()`, `pg_locks` |
+| **Explorer** | What is in a database: schema objects (tables, views, functions, types) and, for a table or view, **Data preview** (rows, paged, sortable, filterable; NULL and empty strings stay distinct; a cell opens in full, JSON pretty-printed), **Schema** (columns, constraints), **Indexes** (size, scans), **Triggers**. Without browsing access: databases with sizes and the largest tables from statistics | catalog and rows through the separate browsing role |
+| **SQL Editor** | Read-only investigation: one statement at a time, results (at most 500 rows or 1 MiB), the **execution plan** as a graph from `EXPLAIN (FORMAT JSON)` (no ANALYZE: the statement is planned, not run), and messages with PostgreSQL's error code and position | separate browsing role |
+| **Incidents** | Every recorded incident (open or all) with instance, duration, and acknowledgement; an incident page shows the timeline, stored blocking graphs, JSON and standalone HTML export | incident store |
+| **Connections** | Connection usage per instance (used / max, reserved), client sessions by state over time, and who is connected: sessions grouped by database, user, application, client address, and state, with the oldest in each group | `pg_stat_activity` (grouped, LockLens's own connections excluded) |
+| **Settings** | Instances (add, edit, environment, test connection, delete), alert thresholds, incident import, monitoring store size | configuration |
 
 ## Statement types
 
@@ -45,39 +71,53 @@ collection time; the text itself is stored only when SQL text collection is on.
 - **Unknown is not zero.** A missing sample, a counter reset, or a server
   restart breaks the line; it is never drawn as zero. Values that cannot be
   computed show "—".
+- **Across instances**, rates, counts, and sizes are summed; ratios are
+  averaged over the instances that report them; lag and peaks keep the
+  maximum. A bucket is unknown when no instance has a value in it.
+- **Mean latency** is execution time per second divided by executions per
+  second in the same bucket (an execution-weighted mean), unknown when idle.
 - **Rates by type** divide each bucket's executions by the collection time the
   bucket actually covers. A covered bucket with no statements of a type is
   zero; a bucket without collections is a gap.
-- **One axis per chart.** Measures with different units (calls per second and
-  average milliseconds) are separate charts.
+- **One axis per chart.** Measures with different units (executions per second
+  and milliseconds) are separate panes that share the time axis.
 - **Colors** follow the statement type or the series, never their rank:
   SELECT is always blue, INSERT orange, UPDATE green, DELETE yellow, MERGE
   pink, COPY dark green, DDL violet, and the rare types share a neutral gray
   ("Other"). The palette is a validated colorblind-safe categorical order in
   both themes. Health colors (green, amber, red) are reserved for state and
-  always come with an icon and a word.
+  always come with an icon or a word.
+- **Replication health**: a time lag under 1 s is healthy and under 30 s a
+  warning; without a time lag (an idle primary reports none), under 16 MiB of
+  WAL not yet replayed is healthy and under 256 MiB a warning; a standby that is
+  not streaming is critical. These are display thresholds, not alert rules.
 - Charts with two or more series have a legend with each series' latest value;
-  hovering shows a crosshair tooltip with exact values. Breakdown tables next
-  to the charts carry the same numbers as text.
+  hovering shows a crosshair tooltip with exact values.
 - Collection gaps recorded by the server are shaded.
 
 ## Accessibility and states
 
 - Every page has loading, empty, error, and partial states; nothing shows
-  placeholder data.
-- Controls are native elements with labels; tables have captions; dialogs and
-  panels close with Escape and return focus.
+  placeholder data. Values the lab cannot provide (for example disk I/O when
+  node_exporter has no disk statistics) say "unavailable".
+- Controls are native elements with labels; tables have captions; dialogs,
+  panels, and the search palette close with Escape and return focus.
 - Light and dark themes are chosen values, not an automatic inversion; the
   choice is remembered per browser. Motion is disabled under
   `prefers-reduced-motion`.
-- Pages are checked with axe-core in unit tests and in the browser E2E suite,
-  and screenshot-checked at 1440 px and 390 px in both themes.
+- Pages are checked with axe-core (including color contrast) in unit tests and
+  in the browser E2E suite, and screenshot-checked at 1600 px and 390 px in
+  both themes.
 
 ## Privacy in the UI
 
 - SQL text is shown because the instance collects it (the default). It can be
   switched off per instance in **Settings**; pages then show query IDs.
-- Table rows are visible only after an administrator configures a separate
-  SELECT-only role and enables row browsing for that instance (with a
-  confirmation). There is no free-form SQL editor in the UI.
+- Table rows and the SQL editor are available only after an administrator
+  configures a separate SELECT-only role for that instance and enables
+  **Browse table rows** or **Read-only SQL editor** (with a confirmation). The
+  editor runs one statement inside a read-only transaction that is always
+  rolled back, with row, byte, and time limits; statements and results are never
+  stored. It cannot kill sessions, cancel other queries, or change the server.
+- SQL drafts are kept in memory only (they survive navigation, not a reload).
 - Connection strings are write-only fields and are never displayed.

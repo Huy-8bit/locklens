@@ -195,3 +195,31 @@ func TestMetricStepBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestFleetAggregation(t *testing.T) {
+	for metric, want := range map[string]string{
+		"statements.calls.per_s":           "sum",
+		"connections.used":                 "sum",
+		"db.total_size_bytes":              "sum",
+		"cache.hit_ratio":                  "mean",
+		"host.cpu_utilization_ratio":       "mean",
+		"replication.max_replay_lag_bytes": "max",
+		"standby.replay_delay_bytes":       "max",
+		"transactions.oldest_age_seconds":  "max",
+	} {
+		if got := fleetAggregation(metric); got != want {
+			t.Errorf("fleetAggregation(%s) = %s, want %s", metric, got, want)
+		}
+	}
+}
+
+func TestFleetRoutesRequireAuth(t *testing.T) {
+	s := newTestServer(t)
+	for _, p := range []string{"/api/v1/fleet/metrics?names=x", "/api/v1/fleet/queries", "/api/v1/fleet/live", "/api/v1/system"} {
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, p, nil))
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s: %d", p, w.Code)
+		}
+	}
+}

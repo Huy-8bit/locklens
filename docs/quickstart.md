@@ -42,12 +42,17 @@ These credentials, the database passwords, and the master key in
 [deploy/compose.yaml](../deploy/compose.yaml) are fake, local-only lab values.
 Never use them elsewhere.
 
-You land on the **Overview** of `lab-primary`; **All instances** lists it and
-`lab-standby`. Within about 20 seconds both should be `healthy`, with current
-values and charts filling as samples arrive. The lab primary also contains a
-small demo shop (`shop` schema: customers, products, orders, order_items) that
-you can browse under **Data explorer**; browsing uses a separate SELECT-only
-role that the lab configures for you.
+You land on the **Overview** of the whole environment; **Databases** lists
+`lab-primary` and `lab-standby` (environment `lab`). Within about 20 seconds
+both should be `healthy`, with current values and charts filling as samples
+arrive, and **Topology** shows the standby streaming from the primary. The lab
+primary also contains a small demo shop (`shop` schema: customers, products,
+orders, order_items, a view, a function, an enum type, and a trigger) that you
+can browse under **Explorer** and query read-only in the **SQL Editor**; both
+use a separate SELECT-only role that the lab configures for you. The lab also
+runs a node_exporter inside Docker, so **System resources** shows the Docker
+VM's CPU, memory, and filesystem (not your computer's; `make up-host` adds an
+exporter that reads the host on Linux).
 
 ### 3. Run scenarios
 
@@ -67,14 +72,14 @@ make lab-stop                          # end every lab session and undo lab chan
 | --- | --- | --- | --- | --- |
 | `healthy` | 10 min | Light reads and small updates | Overview, Queries | Charts with activity, no findings |
 | `shop` | 10 min | Mixed shop traffic: product and order reads, new orders, status updates, deletes of cancelled orders (~40 statements/s) | Queries, Overview | SELECT, INSERT, UPDATE, DELETE, and transaction control each visible per type over time |
-| `row-blocking` | 3 min | A updates a row and keeps working; B waits (A → B) | Live activity | `blocking.long_chain` incident after ~20 s |
-| `chain` | 3 min | A → B → C on two rows | Live activity | Tree with root A blocking 2 in total; incident |
-| `idle-blocker` | 3 min | A stays idle in transaction holding a row lock; B and C wait | Live activity | Critical `blocking.idle_in_tx_blocker` incident; `transactions.long` after 60 s |
-| `connection-pressure` | 3 min | Idle connections up to ~92% of available slots | Overview | `connections.pressure` incident |
+| `row-blocking` | 3 min | A updates a row and keeps working; B waits (A → B) | Blocking, Sessions | `blocking.long_chain` incident after ~20 s |
+| `chain` | 3 min | A → B → C on two rows | Blocking | Tree with root A blocking 2 in total; incident |
+| `idle-blocker` | 3 min | A stays idle in transaction holding a row lock; B and C wait | Blocking, Sessions | Critical `blocking.idle_in_tx_blocker` incident; `transactions.long` after 60 s |
+| `connection-pressure` | 3 min | Idle connections up to ~92% of available slots | Connections, Overview | `connections.pressure` incident |
 | `regression` | 6 min | A query runs with an index, then the index is dropped (restored at the end) | Queries (compare windows) | `queries.mean_regression` incident after the second phase starts |
 | `temp-files` | 5 min | Sorts with `work_mem=64kB` spill to temp files | Overview (temp files) | `temp_files.increase` finding |
-| `replication` | 4 min | Standby replay paused, an inactive slot created, WAL written | Replication (both targets) | `replication.slot_retained_wal` incident, `replication.replica_lag` findings |
-| `outage` | 60 s | `make lab-outage` stops the primary, then starts it again | All instances, Overview | `lab-primary` becomes `unreachable`, then recovers; the gap is shown in charts |
+| `replication` | 4 min | Standby replay paused, an inactive slot created, WAL written | Topology, Database → Replication | `replication.slot_retained_wal` incident, `replication.replica_lag` findings |
+| `outage` | 60 s | `make lab-outage` stops the primary, then starts it again | Databases, Overview | `lab-primary` becomes `unreachable`, then recovers; the gap is shown in charts |
 
 Timings are approximate and assume demo mode (`LOCKLENS_DEMO_MODE=true`),
 which lowers thresholds so findings appear within minutes. Production

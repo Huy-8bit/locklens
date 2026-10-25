@@ -90,7 +90,7 @@ tablet layout, chart tooltips and overflow. Test screenshots use only synthetic 
   fleet requires navigation/pagination work, not silent background fan-out.
 - Replication mappings are administrator-provided and corroborated by observations;
   automatic cryptographic cluster identity discovery is not implemented.
-- Live activity samples open transactions and blocking participants, not every execution
+- Sessions and Activity sample open transactions and blocking participants, not every execution
   or every idle pooled session. Historical charts do not replay live activity/topology.
 - No DML/DDL editor, EXPLAIN ANALYZE, backend termination, application tracing, automatic
   query-to-table graph, or persisted application-row history was added.

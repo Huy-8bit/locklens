@@ -2,19 +2,19 @@ import { useState } from 'react'
 import { Link } from 'react-router'
 import { useFindings, useIncidents } from '../api/hooks'
 import { FindingCard } from '../components/FindingCard'
-import { PageHeader, useInstanceId } from '../components/Shell'
+import { SectionHeader, useNumParam } from '../components/Shell'
 import { tableCls, tdCls, Th, trCls } from '../components/Table'
 import { Badge, Card, Empty, Load, Segmented, SeverityBadge } from '../components/ui'
 import { seconds, time } from '../lib/format'
 
 export default function AlertsPage() {
-  const id = useInstanceId()
+  const id = useNumParam('id')
   const [state, setState] = useState<'open' | 'all'>('open')
   const incidents = useIncidents({ target: id, state: state === 'open' ? 'open' : undefined })
   const findings = useFindings(id)
   return (
     <>
-      <PageHeader title="Alerts" subtitle="Incidents are recorded automatically when a problem persists; findings describe what the rules observe, with evidence. Possible explanations are never presented as confirmed causes." />
+      <SectionHeader title="Alerts" subtitle="Incidents are recorded automatically when a problem persists; findings describe what the rules observe, with evidence. Possible explanations are never presented as confirmed causes." />
       <div className="space-y-3">
         <Card pad={false} title="Incidents" actions={<Segmented label="Incident state" value={state} onChange={setState} items={[{ value: 'open', label: 'Open' }, { value: 'all', label: 'All' }]} />}>
           <Load q={incidents} label="Loading incidents">

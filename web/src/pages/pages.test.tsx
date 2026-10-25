@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AuthProvider } from '../auth'
-import type { CommandsResponse, OverviewResponse, Target } from '../api/types'
+import type { CommandsResponse, FleetLiveResponse, OverviewResponse, Target } from '../api/types'
 import { axeViolations, mockFetch, renderAt } from '../test/utils'
 import { LoginPage } from './LoginPage'
 import OverviewPage from './OverviewPage'
+import { DatabaseOverview } from './DatabasePage'
+import SqlPage from './SqlPage'
 import ExplorerPage from './ExplorerPage'
 import QueriesPage from './QueriesPage'
 
@@ -24,6 +26,7 @@ const target: Target = {
   query_text_enabled: true,
   max_connections: 2,
   node_exporter_url: null,
+  environment: 'lab',
   created_at: '2026-10-24T00:00:00Z',
   updated_at: '2026-10-24T00:00:00Z',
   status: { state: 'healthy', server_version: '18.6', is_standby: false, capabilities: null, collectors: {}, last_attempt_at: null, last_success_at: null, last_error: null, last_error_at: null, freshness_seconds: 1 },
@@ -45,6 +48,25 @@ const commands: CommandsResponse = {
   monitoring_hidden: true,
   available: true,
 }
+
+const live: FleetLiveResponse = {
+  generated_at: '2026-10-24T12:15:00Z',
+  targets: [
+    {
+      target,
+      connected: true,
+      observed_at: '2026-10-24T12:15:00Z',
+      latest: { 'connections.used': { at: '', value: 7 }, 'connections.max': { at: '', value: 100 } },
+      counts: null,
+      report: null,
+      replication: null,
+      connection_groups: [],
+      host: null,
+    },
+  ],
+}
+
+const sqlPolicy = { target_id: 1, metadata_enabled: false, data_enabled: false, sql_enabled: true, history_enabled: false, configured: true, updated_at: '' }
 
 const metrics = { body: { from: '2026-10-24T12:00:00Z', to: '2026-10-24T12:15:00Z', step_seconds: 60, series: [], gaps: [] } }
 
@@ -68,7 +90,7 @@ describe('LoginPage', () => {
   })
 })
 
-describe('OverviewPage', () => {
+describe('DatabaseOverview', () => {
   it('shows unknown values as unknown and the query mix by type', async () => {
     const overview: OverviewResponse = { target, latest: { 'connections.used': { at: '', value: 12 }, 'connections.max': { at: '', value: 100 }, 'statements.calls.per_s': { at: '', value: null } }, connected: true, findings: [], open_incidents: [], open_incident_count: 0 }
     mockFetch({
@@ -78,9 +100,8 @@ describe('OverviewPage', () => {
       '/api/v1/targets/1/activity': () => ({ body: { source: 'none', report: null } }),
       '/api/v1/targets/1/metrics': () => metrics,
     })
-    const { container } = renderAt('/i/1/overview', '/i/:id/overview', <OverviewPage />)
-    expect(await screen.findByRole('heading', { name: /orders-db/ })).toBeInTheDocument()
-    const qps = screen.getByText('Queries per second').closest('div')?.parentElement
+    const { container } = renderAt('/databases/1', '/databases/:id', <DatabaseOverview />)
+    const qps = (await screen.findByText('Queries per second')).closest('div')?.parentElement
     expect(qps && within(qps).getByText('—')).toBeInTheDocument()
     expect(screen.getByText('12')).toBeInTheDocument()
     expect(await screen.findAllByRole('table', { name: 'Workload by statement type' })).not.toHaveLength(0)
@@ -95,14 +116,15 @@ describe('ExplorerPage', () => {
       '/api/v1/targets/1/workspace/policy': (init) =>
         init?.method === 'PUT' ? { status: 400, body: { error: { code: 'invalid_dsn', message: 'Use the target host, port and database with a separate least-privilege role.' } } } : { body: { target_id: 1, metadata_enabled: false, data_enabled: false, sql_enabled: false, history_enabled: false, configured: false, updated_at: '' } },
       '/api/v1/targets/1/tables': () => ({ body: { source: 'none', tables: null } }),
+      '/api/v1/fleet/live': () => ({ body: live }),
     })
-    renderAt('/i/1/explorer', '/i/:id/explorer', <ExplorerPage />)
+    renderAt('/explorer/1', '/explorer/:targetId', <ExplorerPage />)
     expect(await screen.findByText('Set up data access')).toBeInTheDocument()
     const user = userEvent.setup()
     await user.type(screen.getByLabelText(/Connection string of the browsing role/), 'postgres://reader:secret@db/app')
     await user.click(screen.getByRole('checkbox', { name: /Browse table rows/ }))
     await user.click(screen.getByRole('button', { name: 'Save access' }))
-    expect(screen.getByRole('alertdialog', { name: 'Allow browsing table rows?' })).toBeInTheDocument()
+    expect(screen.getByRole('alertdialog', { name: 'Allow reading data?' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Allow' }))
     expect(await screen.findByText(/separate least-privilege role/)).toBeInTheDocument()
     const put = calls.find((c) => c.method === 'PUT')
@@ -131,13 +153,68 @@ describe('QueriesPage', () => {
         },
       }),
     })
-    const { container } = renderAt('/i/1/queries', '/i/:id/queries', <QueriesPage />)
+    const { container } = renderAt('/databases/1/queries', '/databases/:id/queries', <QueriesPage />)
     expect(await screen.findByTitle('UPDATE items SET qty = $1 WHERE id = $2')).toBeInTheDocument()
     const group = screen.getByRole('group', { name: 'Statement type' })
     // Only types present in the window are offered.
     expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['All types', 'SELECT', 'UPDATE'])
     await userEvent.setup().click(within(group).getByRole('button', { name: 'UPDATE' }))
     await waitFor(() => expect(calls.some((c) => c.url.startsWith('/api/v1/targets/1/queries?') && c.url.includes('command=update'))).toBe(true))
+    expect(await axeViolations(container)).toEqual([])
+  })
+})
+
+describe('OverviewPage', () => {
+  it('summarises the fleet without inventing values', async () => {
+    mockFetch({
+      '/api/v1/fleet/live': () => ({ body: live }),
+      '/api/v1/fleet/metrics': () => ({ body: { from: '2026-10-24T12:00:00Z', to: '2026-10-24T12:15:00Z', step_seconds: 60, targets: 1, series: [] } }),
+      '/api/v1/fleet/queries': () => ({ body: { from: '', to: '', sort: 'total_time', items: [], targets: 1 } }),
+      '/api/v1/incidents': () => ({ body: { incidents: [], total: 0, page_size: 50, rules: [] } }),
+      '/api/v1/targets/1/workspace/policy': () => ({ body: { ...sqlPolicy, sql_enabled: false, configured: false } }),
+    })
+    const { container } = renderAt('/overview', '/overview', <OverviewPage />)
+    const dbs = (await screen.findByText('Databases monitored')).parentElement
+    expect(dbs && within(dbs).getByText('1')).toBeInTheDocument()
+    expect(screen.getByText('All healthy')).toBeInTheDocument()
+    expect(screen.getByText('7')).toBeInTheDocument()
+    expect(screen.getByText('Max 100')).toBeInTheDocument()
+    // No throughput samples: unknown, never zero.
+    const qps = screen.getByText('Query throughput').parentElement
+    expect(qps && within(qps).getByText('—')).toBeInTheDocument()
+    expect(screen.getByText('No replication observed')).toBeInTheDocument()
+    expect(await screen.findByText('The SQL editor is off for this instance')).toBeInTheDocument()
+    expect(await axeViolations(container)).toEqual([])
+  })
+})
+
+describe('SqlPage', () => {
+  it('runs a statement and draws its plan', async () => {
+    const plan = [{ Plan: { 'Node Type': 'Limit', 'Total Cost': 10, 'Plan Rows': 5, Plans: [{ 'Node Type': 'Seq Scan', 'Relation Name': 'orders', Alias: 'orders', 'Total Cost': 8, 'Plan Rows': 100 }] } }]
+    const calls = mockFetch({
+      '/api/v1/fleet/live': () => ({ body: live }),
+      '/api/v1/targets/1/workspace/policy': () => ({ body: sqlPolicy }),
+      '/api/v1/targets/1/workspace/run': (init) => {
+        const req = JSON.parse(String(init?.body)) as { action: string }
+        return req.action === 'explain'
+          ? { body: { columns: [{ name: 'QUERY PLAN', type_oid: 114 }], rows: [[JSON.stringify(plan)]], truncated: false, cell_truncated: false, bytes: 10, duration_ms: 1 } }
+          : { body: { columns: [{ name: 'id', type_oid: 20 }, { name: 'status', type_oid: 25 }], rows: [['1', 'paid'], ['2', null]], truncated: false, cell_truncated: false, bytes: 20, duration_ms: 3 } }
+      },
+    })
+    const { container } = renderAt('/sql/1', '/sql/:targetId', <SqlPage />)
+    const editor = await screen.findByLabelText('SQL statement')
+    const user = userEvent.setup()
+    await user.clear(editor)
+    await user.type(editor, 'SELECT id, status FROM orders LIMIT 5')
+    await user.click(screen.getByRole('button', { name: /Run/ }))
+    expect(await screen.findByRole('table', { name: 'Statement result' })).toBeInTheDocument()
+    expect(screen.getByText('paid')).toBeInTheDocument()
+    expect(screen.getByText('NULL')).toBeInTheDocument()
+    const run = calls.find((c) => c.url.endsWith('/workspace/run'))
+    expect(run && JSON.parse(run.body ?? '{}')).toMatchObject({ action: 'sql', sql: 'SELECT id, status FROM orders LIMIT 5', schema: 'public' })
+    await user.click(screen.getByRole('button', { name: /Explain/ }))
+    expect(await screen.findByRole('img', { name: /Execution plan: Limit/ })).toBeInTheDocument()
+    expect(screen.getByText('on orders')).toBeInTheDocument()
     expect(await axeViolations(container)).toEqual([])
   })
 })

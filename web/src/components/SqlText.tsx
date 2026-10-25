@@ -11,7 +11,7 @@ const KEYWORDS = new Set(
 )
 
 /** Lightweight lexical highlighting of SQL text (display only). */
-function highlight(sql: string): ReactNode[] {
+export function highlight(sql: string): ReactNode[] {
   const out: ReactNode[] = []
   const re = /(--[^\n]*|\/\*[\s\S]*?\*\/)|('(?:[^']|'')*')|(\$\d+)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][A-Za-z0-9_]*)|(\s+|.)/g
   let m: RegExpExecArray | null

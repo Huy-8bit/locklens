@@ -64,11 +64,15 @@ Series: `locklens_collect_duration_seconds{collector}`,
 | Method and path | Description |
 | --- | --- |
 | `GET /api/v1/fleet` | All targets with status, latest key metrics, and counts of open incidents and current findings. |
+| `GET /api/v1/fleet/metrics?names=a,b` | Metric series combined across the enabled targets (1h default range; 1–12 names; `environment` filters). Each series names its `aggregation`: `sum` (rates, counts, sizes), `mean` (names ending in `_ratio`, over the targets that report them), or `max` (lag, delay, `max_`, oldest, `_seconds`). Points are `{t, v, targets}`: `v` is null when no target has a value in the bucket; `targets` says how many contributed. |
+| `GET /api/v1/fleet/queries` | Statements across targets (1h default): `sort` (`total_time`, `calls`, `mean_time`, `rows`), `limit` (1–50, default 10), `command`, `q` (SQL text), `include_text`, `environment`. Items are query rows plus `target_id` and `target_name`; the monitoring role's own statements are excluded. |
+| `GET /api/v1/fleet/live` | Current state of every enabled target of the `environment`: `connected`, `observed_at`, latest values, session counts, the activity report (at most 200 sessions per target), replication, `connection_groups` (client sessions grouped by `database`, `user`, `application`, `client_addr`, `state`, with `count` and `oldest_seconds`; at most 200 groups, LockLens's own connections excluded), and host metrics. |
+| `GET /api/v1/system` | LockLens itself: `version`, `demo_mode`, store reachability and schema version, writer queue and errors, targets by state, enabled and failing collectors, open and critical incidents. |
 | `GET /api/v1/targets` | Targets with status. |
-| `POST /api/v1/targets` | Create. Body: `name`, `description`, `dsn`, `enabled`, `interval_seconds`, `max_connections`, `query_text_enabled` (default `true`), `node_exporter_url`. `201` with the target; `422` with `fields`; `409` on a duplicate name. |
+| `POST /api/v1/targets` | Create. Body: `name`, `description`, `dsn`, `enabled`, `interval_seconds`, `max_connections`, `query_text_enabled` (default `true`), `node_exporter_url`, `environment` (lowercase letters, digits, `-`, `_`, at most 40 characters; default `default`). `201` with the target; `422` with `fields`; `409` on a duplicate name. |
 | `POST /api/v1/targets/test` | Test a DSN without saving it. Body `{"dsn"}`. |
 | `GET /api/v1/targets/{id}` | One target. |
-| `PUT /api/v1/targets/{id}` | Update (same body as create; an empty `dsn` keeps the stored one). Switching `query_text_enabled` off deletes the target's stored statement texts. |
+| `PUT /api/v1/targets/{id}` | Update (same body as create; an empty `dsn` keeps the stored one, an empty `environment` keeps the stored one). Switching `query_text_enabled` off deletes the target's stored statement texts. |
 | `DELETE /api/v1/targets/{id}` | Soft delete (history kept until retention). `?purge=true` deletes its history now; with `&keep_incidents=false` its incidents are deleted too (kept by default). |
 | `POST /api/v1/targets/{id}/test` | Test the stored connection: `{"ok","duration_ms","target","capabilities","checks":[...],"error","hint"}`. |
 
@@ -214,8 +218,11 @@ never URL query strings. See [execution and permissions](investigation-workspace
   `data_enabled`, `sql_enabled`, `history_enabled`) and optional write-only `dsn` on PUT.
 - `POST /api/v1/targets/{id}/workspace/run`: `action` is `metadata`, `data`, `sql` or
   `explain`; every request needs a unique `request_id` (8–80 characters).
-  Metadata uses `kind` (`databases`, `schemas`, `relations`, `detail`), `schema`, `relation`.
-  SQL uses `sql` and `schema`. Data uses a `data` object with `schema`, `relation`,
+  Metadata uses `kind` (`databases`, `schemas`, `relations`, `functions`, `types`,
+  `detail`), `schema`, `relation`; `detail` returns `columns`, `constraints`, `indexes`,
+  `triggers`, and `partitions` of one relation.
+  SQL uses `sql` and `schema`; `explain` returns one row with the `EXPLAIN (FORMAT JSON)`
+  plan text (the statement is planned, not executed). Data uses a `data` object with `schema`, `relation`,
   `columns`, `sort`, `desc`, `filter_column`, `filter_op`, `filter_value`, `limit`,
   `offset` and optional primary-key `after` cursor.
 - `POST /api/v1/targets/{id}/workspace/cancel`: owned `request_id`; returns `cancelled`.

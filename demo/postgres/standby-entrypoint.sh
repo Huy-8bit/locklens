@@ -1,6 +1,6 @@
 #!/bin/sh
 # Entry point of the lab standby: on first start, clone the primary with
-# pg_basebackup (creating the physical slot standby1_slot), then start
+# pg_basebackup (creating a dedicated physical replication slot), then start
 # PostgreSQL in hot-standby mode. Readiness of the primary is polled with a
 # bounded timeout; there is no fixed sleep.
 set -eu
@@ -19,7 +19,8 @@ if [ ! -s "$PGDATA/PG_VERSION" ]; then
   done
   echo "standby: cloning the primary"
   # The container runs as the postgres user (see docker-compose.yml).
-  PGPASSWORD="$REPLICATION_PASSWORD" pg_basebackup -h "$PRIMARY_HOST" -p 5432 -U replicator -D "$PGDATA" -R -X stream -C -S standby1_slot -c fast
+  REPLICATION_SLOT=${REPLICATION_SLOT:-standby1_slot}
+  PGPASSWORD="$REPLICATION_PASSWORD" pg_basebackup -h "$PRIMARY_HOST" -p 5432 -U replicator -D "$PGDATA" -R -X stream -C -S "$REPLICATION_SLOT" -c fast
 fi
 
 exec docker-entrypoint.sh "$@"

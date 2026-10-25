@@ -42,3 +42,15 @@ func TestCardinalityGuard(t *testing.T) {
 		t.Fatalf("series = %d, want <= 1000", n)
 	}
 }
+
+func TestTotals(t *testing.T) {
+	r := NewRegistry()
+	c := r.NewCounter("c_total", "C.", "kind")
+	c.Inc("a")
+	c.Add(2, "b")
+	g := r.NewGauge("g", "G.")
+	g.Set(7)
+	if c.Total() != 3 || g.Total() != 7 {
+		t.Fatalf("totals = %v, %v", c.Total(), g.Total())
+	}
+}

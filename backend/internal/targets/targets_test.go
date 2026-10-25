@@ -8,12 +8,12 @@ import (
 
 func TestValidateDefaultsAndDisplayFields(t *testing.T) {
 	s := &Service{}
-	in := Input{Name: "  orders  ", DSN: "postgres://observer:cnrypw@db.internal:6432/orders?sslmode=disable"}
+	in := Input{Name: "  orders  ", DSN: "postgres://observer:cnrypw@db.internal:6432/orders?sslmode=disable", Environment: " Production "}
 	tgt, err := s.validate(&in, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if in.Name != "orders" || in.IntervalSeconds != 10 || in.MaxConnections != 2 {
+	if in.Name != "orders" || in.IntervalSeconds != 10 || in.MaxConnections != 2 || in.Environment != "production" {
 		t.Errorf("defaults not applied: %+v", in)
 	}
 	if tgt.Host != "db.internal" || tgt.Port != 6432 || tgt.Database != "orders" || tgt.User != "observer" {
@@ -38,6 +38,8 @@ func TestValidateRejectsWithoutEchoingSecrets(t *testing.T) {
 		{Input{Name: "a", NodeExporterURL: &bad, DSN: "postgres://h/db"}, "node_exporter_url"},
 		{Input{Name: "a"}, "dsn"},
 		{Input{Name: "a", DSN: "postgres://u:cnrysecret@h:notaport/db"}, "dsn"},
+		{Input{Name: "a", DSN: "postgres://h/db", Environment: "Prod uction"}, "environment"},
+		{Input{Name: "a", DSN: "postgres://h/db", Environment: "-prod"}, "environment"},
 	}
 	for _, c := range cases {
 		_, err := s.validate(&c.in, true)

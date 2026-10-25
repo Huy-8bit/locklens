@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -40,7 +41,13 @@ type Input struct {
 	QueryTextEnabled *bool   `json:"query_text_enabled"`
 	MaxConnections   int     `json:"max_connections"`
 	NodeExporterURL  *string `json:"node_exporter_url"`
+	// Environment labels the target (production, staging, …); empty means
+	// "default" on create and keeps the stored value on update.
+	Environment string `json:"environment"`
 }
+
+// envPattern matches the store's CHECK constraint on targets.environment.
+var envPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
 
 // ValidationError lists problems with an input, keyed by field.
 type ValidationError struct {
@@ -69,6 +76,7 @@ type View struct {
 	QueryTextEnabled bool       `json:"query_text_enabled"`
 	MaxConnections   int        `json:"max_connections"`
 	NodeExporterURL  *string    `json:"node_exporter_url"`
+	Environment      string     `json:"environment"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 	Status           StatusView `json:"status"`
@@ -134,6 +142,10 @@ func (s *Service) validate(in *Input, requireDSN bool) (config.Target, error) {
 	if in.MaxConnections == 0 {
 		in.MaxConnections = 2
 	}
+	in.Environment = strings.ToLower(strings.TrimSpace(in.Environment))
+	if in.Environment != "" && !envPattern.MatchString(in.Environment) {
+		fields["environment"] = "lowercase letters, digits, - or _, at most 40 characters"
+	}
 	if in.MaxConnections < 1 || in.MaxConnections > 5 {
 		fields["max_connections"] = "must be between 1 and 5"
 	}
@@ -180,7 +192,7 @@ func (s *Service) Create(ctx context.Context, in Input) (View, error) {
 	t, err := s.store.CreateTarget(ctx, storage.Target{Name: in.Name, Description: in.Description, DSNCiphertext: ct,
 		DisplayHost: tgt.Host, DisplayPort: int(tgt.Port), DisplayDatabase: tgt.Database, DisplayUser: tgt.User,
 		Enabled: enabled, IntervalSeconds: in.IntervalSeconds, QueryTextEnabled: in.QueryTextEnabled == nil || *in.QueryTextEnabled,
-		MaxConnections: in.MaxConnections, NodeExporterURL: in.NodeExporterURL})
+		MaxConnections: in.MaxConnections, NodeExporterURL: in.NodeExporterURL, Environment: in.Environment})
 	if err != nil {
 		return View{}, err
 	}
@@ -204,6 +216,9 @@ func (s *Service) Update(ctx context.Context, id int64, in Input) (View, error) 
 	t.MaxConnections, t.NodeExporterURL = in.MaxConnections, in.NodeExporterURL
 	if in.QueryTextEnabled != nil {
 		t.QueryTextEnabled = *in.QueryTextEnabled
+	}
+	if in.Environment != "" {
+		t.Environment = in.Environment
 	}
 	if in.Enabled != nil {
 		t.Enabled = *in.Enabled
@@ -284,7 +299,7 @@ func toView(t storage.Target, st storage.TargetStatus) View {
 	v := View{ID: t.ID, Name: t.Name, Description: t.Description, Host: t.DisplayHost, Port: t.DisplayPort,
 		Database: t.DisplayDatabase, User: t.DisplayUser, Enabled: t.Enabled, IntervalSeconds: t.IntervalSeconds,
 		QueryTextEnabled: t.QueryTextEnabled, MaxConnections: t.MaxConnections, NodeExporterURL: t.NodeExporterURL,
-		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt}
+		Environment: t.Environment, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt}
 	v.Status.State = st.State
 	if v.Status.State == "" {
 		v.Status.State = collector.StatePending
@@ -394,9 +409,11 @@ type BootstrapEntry struct {
 
 // BootstrapWorkspace is the investigation access of a bootstrap target.
 type BootstrapWorkspace struct {
-	Metadata bool   `json:"metadata"`
-	Data     bool   `json:"data"`
-	DSNEnv   string `json:"dsn_env"`
+	Metadata bool `json:"metadata"`
+	Data     bool `json:"data"`
+	// SQL enables read-only SQL execution (the SQL editor).
+	SQL    bool   `json:"sql"`
+	DSNEnv string `json:"dsn_env"`
 }
 
 // Bootstrap creates targets that do not exist yet (matched by name). It is

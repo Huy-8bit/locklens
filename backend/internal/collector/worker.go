@@ -437,9 +437,13 @@ func (w *worker) collectActivity(ctx context.Context) error {
 	}
 	var counts observe.ActivityCounts
 	var vacuum []observe.VacuumProgress
+	var groups []observe.ConnectionGroup
 	if err := w.obs.ReadOnly(ctx, func(ctx context.Context, tx pgx.Tx, own []int32) error {
 		var err error
 		if counts, err = readActivityCounts(ctx, tx, own); err != nil {
+			return err
+		}
+		if groups, err = readConnectionGroups(ctx, tx, own); err != nil {
 			return err
 		}
 		vacuum, err = readVacuumProgress(ctx, tx)
@@ -451,7 +455,7 @@ func (w *worker) collectActivity(ctx context.Context) error {
 	// All server-side series use LockLens' clock so that collectors of one
 	// target line up; ages inside the report still use the server clock.
 	at := snap.CollectedAt
-	act := &observe.Activity{At: at, Snapshot: snap, Counts: counts, Vacuum: vacuum}
+	act := &observe.Activity{At: at, Snapshot: snap, Counts: counts, Vacuum: vacuum, Groups: groups}
 	points := activityPoints(counts, rep)
 
 	w.state.mu.Lock()

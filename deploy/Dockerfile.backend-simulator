@@ -1,0 +1,13 @@
+FROM golang:1.26-alpine AS build
+WORKDIR /src/backend
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/backend-simulator ./demo/workload
+
+FROM alpine:3.22
+RUN adduser -D -H -u 10002 workload
+COPY --from=build /out/backend-simulator /usr/local/bin/backend-simulator
+USER workload
+EXPOSE 8091
+ENTRYPOINT ["backend-simulator"]

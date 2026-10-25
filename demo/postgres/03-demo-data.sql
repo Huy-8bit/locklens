@@ -70,5 +70,25 @@ UPDATE shop.orders AS o SET total_cents = s.total
 FROM (SELECT order_id, sum(quantity * price_cents) AS total FROM shop.order_items GROUP BY order_id) AS s
 WHERE s.order_id = o.id;
 
+-- Objects for the explorer's views, functions, types, and triggers.
+CREATE TYPE shop.priority AS ENUM ('low', 'normal', 'high');
+ALTER TABLE shop.orders ADD COLUMN priority shop.priority NOT NULL DEFAULT 'normal';
+ALTER TABLE shop.orders ADD COLUMN updated_at timestamptz;
+
+CREATE FUNCTION shop.touch_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.updated_at := now();
+    RETURN NEW;
+END $$;
+CREATE TRIGGER orders_touch_updated_at BEFORE UPDATE ON shop.orders
+    FOR EACH ROW EXECUTE FUNCTION shop.touch_updated_at();
+
+CREATE FUNCTION shop.customer_order_count(customer bigint) RETURNS bigint LANGUAGE sql STABLE
+    AS $$ SELECT count(*) FROM shop.orders WHERE customer_id = customer $$;
+
+CREATE VIEW shop.order_summary AS
+SELECT o.id, c.email, o.status, o.priority, o.total_cents, o.created_at
+FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id;
+
 RESET ROLE;
 ANALYZE;

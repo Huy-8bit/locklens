@@ -2,14 +2,13 @@ import { Link, useSearchParams } from 'react-router'
 import { Search } from 'lucide-react'
 import { useCommands, useQueries, type QueryParams } from '../api/hooks'
 import { CommandMix, CommandsChart } from '../components/Commands'
-import { RangePicker } from '../components/RangePicker'
-import { PageHeader, useInstanceId } from '../components/Shell'
+import { SectionHeader, useNumParam } from '../components/Shell'
 import { SqlText } from '../components/SqlText'
 import { Pager, tableCls, tdCls, tdNum, Th, trCls } from '../components/Table'
 import { Badge, Card, Empty, inputCls, Load, Notice, Stat } from '../components/ui'
 import { commandColor, COMMAND_LABEL, COMMANDS } from '../lib/commands'
 import { compact, ms, num, pct, rate, seconds } from '../lib/format'
-import { useRange } from '../lib/time'
+import { useRange } from '../lib/scope'
 
 function useQueryState(): [QueryParams, (patch: Partial<QueryParams>) => void] {
   const [params, setParams] = useSearchParams()
@@ -46,8 +45,8 @@ function useQueryState(): [QueryParams, (patch: Partial<QueryParams>) => void] {
 }
 
 export default function QueriesPage() {
-  const id = useInstanceId()
-  const [range, setRange] = useRange()
+  const id = useNumParam('id')
+  const [range] = useRange()
   const [st, set] = useQueryState()
   const commands = useCommands(id, range, st.includeMonitoring)
   const list = useQueries(id, st)
@@ -55,7 +54,7 @@ export default function QueriesPage() {
 
   return (
     <>
-      <PageHeader title="Queries" subtitle="Every statement the server executed (pg_stat_statements), grouped by type, with its full SQL." actions={<RangePicker value={range} onChange={setRange} />} />
+      <SectionHeader title="Queries" subtitle="Every statement the server executed (pg_stat_statements), grouped by type, with its full SQL." />
       <Load q={commands} label="Loading workload">
         {(c) => {
           if (c.available === false) return <Notice tone="warn">{c.unavailable_reason || 'pg_stat_statements is not available on this instance.'} Query statistics need the extension in shared_preload_libraries and CREATE EXTENSION in the monitored database.</Notice>
@@ -148,7 +147,7 @@ export default function QueriesPage() {
                       {d.items.map((it) => (
                         <tr key={it.identity_id} className={trCls}>
                           <td className={tdCls}>
-                            <Link to={`/i/${id}/queries/${it.identity_id}?range=${range}`} className="block hover:underline">
+                            <Link to={`/queries/${id}/${it.identity_id}`} className="block hover:underline">
                               {it.query_text ? <SqlText sql={it.query_text} clamp /> : <span className="font-mono text-xs">queryid {it.queryid}</span>}
                             </Link>
                             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted">

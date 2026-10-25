@@ -12,6 +12,9 @@ LDFLAGS   := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(
 
 # Lab primary published by deploy/compose.yaml. Fake, local-only credentials.
 export LOCKLENS_PG_PORT ?= 55432
+export LOCKLENS_STANDBY_PORT ?= 55433
+export LOCKLENS_STANDBY2_PORT ?= 55436
+export LOCKLENS_BACKEND_PORT ?= 8091
 DEMO_DSN ?= postgres://demo_app:demo-app-pw@127.0.0.1:$(LOCKLENS_PG_PORT)/locklens_demo?sslmode=disable
 OBSERVER_DSN ?= postgres://locklens_observer:observer-pw@127.0.0.1:$(LOCKLENS_PG_PORT)/locklens_demo?sslmode=disable
 
@@ -119,11 +122,11 @@ check: fmt-check vet check-separation backend-test test-race ## All Go checks th
 ## ---- lab (deploy/compose.yaml, project "locklens")
 
 .PHONY: up
-up: ## Start LockLens, its store, the lab primary and standby (http://127.0.0.1:8080)
+up: ## Start LockLens, its store, primary, two standbys and backend workload (http://127.0.0.1:8080)
 	$(COMPOSE) up -d --build --wait --wait-timeout 300
 
 .PHONY: up-host
-up-host: ## Same as up, plus the optional node_exporter
+up-host: ## Same as up, plus a node_exporter that reads the real host (/ mounted read-only)
 	$(COMPOSE) --profile host up -d --build --wait --wait-timeout 300
 
 .PHONY: down

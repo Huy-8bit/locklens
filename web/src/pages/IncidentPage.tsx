@@ -47,7 +47,7 @@ export default function IncidentPage() {
         return (
           <>
             {i.target_id && (
-              <Link to={`/i/${i.target_id}/alerts`} className="mb-2 inline-flex items-center gap-1 text-sm text-accent hover:underline">
+              <Link to={`/databases/${i.target_id}/alerts`} className="mb-2 inline-flex items-center gap-1 text-sm text-accent hover:underline">
                 <ArrowLeft aria-hidden className="h-4 w-4" /> Alerts of {i.target_name}
               </Link>
             )}

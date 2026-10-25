@@ -6,7 +6,7 @@ import type { Target, TargetInput, TestResult } from '../api/types'
 import { PageHeader } from '../components/Shell'
 import { Badge, Button, Card, ErrorBox, Field, inputCls, Load } from '../components/ui'
 
-const empty: TargetInput = { name: '', description: '', dsn: '', enabled: true, interval_seconds: 10, query_text_enabled: true, max_connections: 2, node_exporter_url: null }
+const empty: TargetInput = { name: '', description: '', dsn: '', enabled: true, interval_seconds: 10, query_text_enabled: true, max_connections: 2, node_exporter_url: null, environment: 'default' }
 
 function TestResultView({ r }: { r: TestResult }) {
   return (
@@ -44,7 +44,7 @@ function TargetForm({ id, initial }: { id?: number; initial: TargetInput }) {
   const fields = save.error instanceof ApiError ? save.error.fields : {}
   const submit = (e: FormEvent) => {
     e.preventDefault()
-    save.mutate(input, { onSuccess: (t) => navigate(`/i/${t.id}/overview`) })
+    save.mutate(input, { onSuccess: (t) => navigate(`/databases/${t.id}`) })
   }
   return (
     <form onSubmit={submit} className="grid gap-3 lg:grid-cols-2">
@@ -52,6 +52,14 @@ function TargetForm({ id, initial }: { id?: number; initial: TargetInput }) {
         <div className="space-y-3">
           <Field label="Name" error={fields.name}>
             <input required maxLength={100} className={inputCls} value={input.name} onChange={(e) => set('name', e.target.value)} />
+          </Field>
+          <Field label="Environment" hint="Groups instances in the environment selector, e.g. production, staging, lab. Lowercase letters, digits, - or _." error={fields.environment}>
+            <input className={`${inputCls} font-mono`} list="environments" maxLength={40} value={input.environment} onChange={(e) => set('environment', e.target.value.toLowerCase())} />
+            <datalist id="environments">
+              {['production', 'staging', 'development', 'lab', 'default'].map((e) => (
+                <option key={e} value={e} />
+              ))}
+            </datalist>
           </Field>
           <Field label="Description">
             <input maxLength={1000} className={inputCls} value={input.description} onChange={(e) => set('description', e.target.value)} />
@@ -110,7 +118,7 @@ function TargetForm({ id, initial }: { id?: number; initial: TargetInput }) {
 }
 
 function fromTarget(t: Target): TargetInput {
-  return { name: t.name, description: t.description, dsn: '', enabled: t.enabled, interval_seconds: t.interval_seconds, query_text_enabled: t.query_text_enabled, max_connections: t.max_connections, node_exporter_url: t.node_exporter_url }
+  return { name: t.name, description: t.description, dsn: '', enabled: t.enabled, interval_seconds: t.interval_seconds, query_text_enabled: t.query_text_enabled, max_connections: t.max_connections, node_exporter_url: t.node_exporter_url, environment: t.environment }
 }
 
 export default function TargetFormPage() {

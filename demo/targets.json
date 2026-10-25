@@ -8,8 +8,11 @@
     "workspace": {
       "metadata": true,
       "data": true,
-      "dsn_env": "LOCKLENS_LAB_PRIMARY_READER_DSN"
-    }
+      "dsn_env": "LOCKLENS_LAB_PRIMARY_READER_DSN",
+      "sql": true
+    },
+    "environment": "lab",
+    "node_exporter_url": "http://node-exporter:9100/metrics"
   },
   {
     "name": "lab-standby",
@@ -20,7 +23,25 @@
     "workspace": {
       "metadata": true,
       "data": true,
-      "dsn_env": "LOCKLENS_LAB_STANDBY_READER_DSN"
-    }
+      "dsn_env": "LOCKLENS_LAB_STANDBY_READER_DSN",
+      "sql": true
+    },
+    "environment": "lab",
+    "node_exporter_url": "http://node-exporter:9100/metrics"
+  },
+  {
+    "name": "lab-standby-2",
+    "description": "Second lab hot standby streaming from lab-primary (demo data only)",
+    "dsn_env": "LOCKLENS_LAB_STANDBY2_DSN",
+    "interval_seconds": 10,
+    "max_connections": 2,
+    "workspace": {
+      "metadata": true,
+      "data": true,
+      "dsn_env": "LOCKLENS_LAB_STANDBY2_READER_DSN",
+      "sql": true
+    },
+    "environment": "lab",
+    "node_exporter_url": "http://node-exporter:9100/metrics"
   }
 ]

@@ -256,6 +256,23 @@ type Activity struct {
 	Snapshot *model.Snapshot  `json:"snapshot"`
 	Counts   ActivityCounts   `json:"counts"`
 	Vacuum   []VacuumProgress `json:"vacuum_progress"`
+	// Groups counts client connections by database, user, application, and
+	// state (LockLens' own sessions excluded).
+	Groups []ConnectionGroup `json:"connection_groups,omitempty"`
+}
+
+// ConnectionGroup is a number of client connections sharing database, user,
+// application name, and state. Values the monitoring role cannot see are
+// empty (state "unknown").
+type ConnectionGroup struct {
+	Database    string `json:"database"`
+	User        string `json:"user"`
+	Application string `json:"application"`
+	ClientAddr  string `json:"client_addr"`
+	State       string `json:"state"`
+	Count       int    `json:"count"`
+	// OldestSeconds is the age of the oldest connection in the group.
+	OldestSeconds *float64 `json:"oldest_seconds"`
 }
 
 // HostMetrics are values derived from a node_exporter scrape.

@@ -56,6 +56,7 @@ export interface Target {
   query_text_enabled: boolean
   max_connections: number
   node_exporter_url: string | null
+  environment: string
   created_at: string
   updated_at: string
   status: TargetStatus
@@ -70,6 +71,7 @@ export interface TargetInput {
   query_text_enabled: boolean
   max_connections: number
   node_exporter_url: string | null
+  environment: string
 }
 
 export interface LatestValue { at: string; value: number | null }
@@ -541,4 +543,36 @@ export interface GridResult {
   duration_ms: number
   pagination?: string
   next?: string
+}
+
+export interface FleetPoint { t: string; v: number | null; targets: number }
+export interface FleetMetricsResponse { from: string; to: string; step_seconds: number; targets: number; series: { metric: string; aggregation: string; points: FleetPoint[] }[] }
+
+export interface FleetQuery extends QueryItem { target_id: number; target_name: string }
+export interface FleetQueriesResponse { from: string; to: string; sort: string; items: FleetQuery[]; targets: number }
+
+export interface ConnectionGroup { database: string; user: string; application: string; client_addr: string; state: string; count: number; oldest_seconds: number | null }
+
+export interface FleetLiveTarget {
+  target: Target
+  connected: boolean
+  observed_at: string | null
+  latest: Record<string, LatestValue>
+  counts: ActivityCounts | null
+  report: Report | null
+  replication: Replication | null
+  connection_groups: ConnectionGroup[]
+  host: HostResponse['host']
+}
+export interface FleetLiveResponse { targets: FleetLiveTarget[]; generated_at: string }
+
+export interface SystemResponse {
+  version: string
+  demo_mode: boolean
+  time: string
+  store: { reachable: boolean; schema_version: number }
+  writer: { queue_length: number; queue_capacity: number; dropped_batches: number; write_errors: number }
+  targets: { total: number; by_state: Record<string, number> }
+  collectors: { enabled: number; failing: number }
+  incidents: { open: number; critical: number }
 }

@@ -181,7 +181,8 @@ queries of each type run and how they behave, and its data.
   data-explorer access, `shop` mixed-workload scenario
 - [x] Frontend rewritten: Overview, Live activity, Queries (by type), Data
   explorer (structure and rows, no SQL editor), Replication, Alerts, Incident,
-  All instances, Settings (instances, thresholds, incident import, store size)
+  All instances, Settings (instances, thresholds, incident import, store size);
+  superseded by the mockup UI below
 - [x] Validated categorical palette, one axis per chart, unknown never zero
 - [x] Unit tests (classifier, command series, pages with axe), make check
 - [x] Screenshot review: 14 pages × light/dark × 1440/390 px, no console
@@ -189,3 +190,33 @@ queries of each type run and how they behave, and its data.
 - [x] Integration harness (14.24, 18.6) and browser E2E for the new UI (see
   [test-report.md](test-report.md#ui-rebuild-2026-10-25))
 - [x] axe-core with color contrast on every page in both themes
+
+## Mockup UI (2026-10-25)
+
+Goal: the fleet dashboard of the reference mockup (sidebar, top bar with
+search, environment, range, Live, notifications; six KPIs; activity charts;
+topology, top queries, sessions; blocking, explorer, SQL editor), with real
+data only.
+
+- [x] Backend: target `environment` label (migration `0005`), fleet endpoints
+  (`/fleet/metrics`, `/fleet/queries`, `/fleet/live`) with documented
+  aggregation, `/system`, connection groups from `pg_stat_activity`, catalog
+  `functions`, `types`, and relation `triggers`; bootstrap `workspace.sql`
+- [x] Lab: environment `lab`, node_exporter in the default stack (Docker VM
+  metrics), demo view, function, enum type, and trigger; SQL editor enabled for
+  the lab targets only
+- [x] Frontend: new shell (sidebar with system status, ⌘K search, environment,
+  range, Live switch, notifications, account menu), fleet Overview, Databases
+  with per-instance tabs, Topology, Queries across instances, Sessions,
+  Blocking, Explorer (tables, views, functions, types; data preview, schema,
+  indexes, triggers), read-only SQL editor with plan graph, Incidents,
+  Connections; environment field in the target form
+- [x] Deliberate differences from the mockup: throughput and latency are two
+  stacked panes on one time axis instead of a dual-axis chart; the signed-in
+  administrator is shown instead of a sample name; no sample numbers; host
+  disk is shown as "fullest filesystem" plus disk I/O in bytes per second
+  (node_exporter has no disk-busy percentage); trends are neutral gray where a
+  direction is neither good nor bad
+- [x] Unit tests (fleet Overview, SQL editor, explorer access), make check,
+  integration harness, browser E2E for the new main path, axe with contrast on
+  every page in both themes, screenshots at 1600/390 px in both themes

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { AlertTriangle, CircleCheck, CircleHelp, Loader2, OctagonAlert, X } from 'lucide-react'
 import type { UseQueryResult } from '@tanstack/react-query'
+import { Link } from 'react-router'
 import { ApiError } from '../api/client'
 import type { Severity, TargetState } from '../api/types'
 
@@ -18,17 +19,17 @@ export function Card({ title, subtitle, actions, children, className, pad = true
 }) {
   const id = useId()
   return (
-    <section aria-labelledby={title ? id : undefined} className={cx('rounded-xl border border-line bg-surface', className)}>
+    <section aria-labelledby={title ? id : undefined} className={cx('rounded-2xl border border-line bg-surface shadow-card', className)}>
       {(title || actions) && (
-        <header className="flex flex-wrap items-start justify-between gap-2 px-4 pt-3.5 pb-2">
+        <header className="flex items-start justify-between gap-3 px-5 pt-4 pb-2.5">
           <div className="min-w-0">
-            {title && <h2 id={id} className="text-[13px] font-semibold text-ink">{title}</h2>}
+            {title && <h2 id={id} className="text-[16px] font-semibold tracking-tight text-ink">{title}</h2>}
             {subtitle && <p className="mt-0.5 text-xs text-muted">{subtitle}</p>}
           </div>
-          {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+          {actions && <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{actions}</div>}
         </header>
       )}
-      <div className={pad ? 'px-4 pb-4' : ''}>{children}</div>
+      <div className={pad ? 'px-5 pb-5' : ''}>{children}</div>
     </section>
   )
 }
@@ -44,6 +45,94 @@ export function Stat({ label, value, sub, tone, icon }: { label: string; value: 
       </div>
       <div className={cx('mt-1 truncate text-2xl font-semibold tracking-tight', tone ? tones[tone] : 'text-ink')}>{value}</div>
       {sub && <div className="mt-0.5 truncate text-xs text-muted">{sub}</div>}
+    </div>
+  )
+}
+
+const TILE = {
+  blue: 'bg-accent-soft text-accent',
+  violet: 'bg-violet-soft text-violet',
+  amber: 'bg-warn-soft text-warn',
+  green: 'bg-good-soft text-good',
+  red: 'bg-crit-soft text-crit',
+}
+
+/**
+ * Trend label: the change from the start of the range. `upIsGood` decides
+ * the color (neutral when a direction is neither good nor bad); the arrow
+ * and the number carry the meaning without color.
+ */
+export function Delta({ from, to, upIsGood }: { from: number | null | undefined; to: number | null | undefined; upIsGood?: boolean }) {
+  if (from == null || to == null || !Number.isFinite(from) || !Number.isFinite(to)) return null
+  if (from === 0 && to === 0) return <span className="rounded-md bg-surface-3 px-1.5 py-0.5 text-xs font-semibold text-ink-2">0%</span>
+  if (from === 0) return null
+  const pctChange = ((to - from) / Math.abs(from)) * 100
+  if (Math.abs(pctChange) < 0.5) return <span className="rounded-md bg-surface-3 px-1.5 py-0.5 text-xs font-semibold text-ink-2">0%</span>
+  const up = pctChange > 0
+  const tone = upIsGood === undefined ? 'bg-surface-3 text-ink-2' : up === upIsGood ? 'bg-good-soft text-good' : 'bg-crit-soft text-crit'
+  return (
+    <span title="Change since the start of the time range" className={cx('inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-xs font-semibold', tone)}>
+      <span aria-hidden>{up ? '↑' : '↓'}</span>
+      <span className="sr-only">{up ? 'up' : 'down'}</span>
+      {Math.abs(pctChange) >= 100 ? Math.round(Math.abs(pctChange)) : Math.abs(pctChange).toFixed(Math.abs(pctChange) < 10 ? 1 : 0)}%
+    </span>
+  )
+}
+
+/** KPI card with a colored icon tile, a large value, a trend, and context. */
+export function KpiCard({ icon, tone, label, value, unit, delta, sub, to }: {
+  icon: ReactNode
+  tone: keyof typeof TILE
+  label: string
+  value: ReactNode
+  unit?: string
+  delta?: ReactNode
+  sub?: ReactNode
+  /** Makes the whole card a link to the detail page. */
+  to?: string
+}) {
+  const body = (
+    <>
+      <span aria-hidden className={cx('flex h-11 w-11 shrink-0 items-center justify-center rounded-full [&>svg]:h-5 [&>svg]:w-5', TILE[tone])}>{icon}</span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[13px] font-medium leading-snug text-ink-2">{label}</div>
+        <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="text-[26px] font-bold leading-tight tracking-tight text-ink">
+            {value}
+            {unit && <span className="ml-1 text-lg font-semibold">{unit}</span>}
+          </span>
+          {delta}
+        </div>
+        {sub && <div className="mt-0.5 text-xs leading-snug text-muted">{sub}</div>}
+      </div>
+    </>
+  )
+  const cls = 'flex items-start gap-3 rounded-2xl border border-line bg-surface p-4 shadow-card'
+  return to ? (
+    <Link to={to} className={cx(cls, 'transition-colors hover:border-line-strong')}>
+      {body}
+    </Link>
+  ) : (
+    <div className={cls}>{body}</div>
+  )
+}
+
+/** Pill tabs used inside cards (Total time / Calls / …). */
+export function Pills<T extends string>({ value, onChange, items, label }: { value: T; onChange: (v: T) => void; items: { value: T; label: string }[]; label: string }) {
+  return (
+    <div role="radiogroup" aria-label={label} className="inline-flex flex-wrap gap-1 rounded-xl bg-surface-3 p-1">
+      {items.map((it) => (
+        <button
+          key={it.value}
+          type="button"
+          role="radio"
+          aria-checked={value === it.value}
+          onClick={() => onChange(it.value)}
+          className={cx('rounded-lg px-3 py-1.5 text-xs font-semibold', value === it.value ? 'bg-accent-fill text-accent-ink shadow-sm' : 'text-ink-2 hover:text-ink')}
+        >
+          {it.label}
+        </button>
+      ))}
     </div>
   )
 }
@@ -85,14 +174,14 @@ export function Button({ variant = 'default', size = 'md', busy, className, chil
 
 export function Badge({ children, tone = 'muted', title }: { children: ReactNode; tone?: 'muted' | 'good' | 'warn' | 'crit' | 'accent'; title?: string }) {
   const t = {
-    muted: 'border-line-strong text-ink-2',
-    good: 'border-good/40 text-good',
-    warn: 'border-warn/50 text-warn',
-    crit: 'border-crit/50 text-crit',
-    accent: 'border-accent/40 text-accent',
+    muted: 'bg-surface-3 text-ink-2',
+    good: 'bg-good-soft text-good',
+    warn: 'bg-warn-soft text-warn',
+    crit: 'bg-crit-soft text-crit',
+    accent: 'bg-accent-soft text-accent',
   }[tone]
   return (
-    <span title={title} className={cx('inline-flex items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-px text-[11px] font-medium', t)}>
+    <span title={title} className={cx('inline-flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-0.5 text-[11.5px] font-semibold', t)}>
       {children}
     </span>
   )
@@ -227,6 +316,8 @@ export function Field({ label, hint, error, children }: { label: string; hint?: 
 }
 
 export const inputCls = 'w-full rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 text-sm text-ink placeholder:text-muted'
+/** A select sized to its content (inputCls is full width). */
+export const selectCls = 'max-w-full rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 text-sm text-ink'
 
 /** Right-side panel for details; Escape closes it and focus returns. */
 export function Drawer({ open, title, onClose, children }: { open: boolean; title: ReactNode; onClose: () => void; children: ReactNode }) {

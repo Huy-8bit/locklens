@@ -4,10 +4,11 @@ import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { expect, test, type Page } from '@playwright/test'
 
-// The main path through the product against a real stack: sign in, see what
-// a database is doing, watch queries by type during real traffic, browse
-// tables and rows, follow a blocking chain to its incident, export the
-// report, and open it offline. Nothing here mocks or intercepts the API.
+// The main path through the product against a real stack: sign in, see the
+// whole environment, see what a database is doing, watch queries by type
+// during real traffic, browse tables and rows, run read-only SQL, follow a
+// blocking chain to its incident, export the report, and open it offline.
+// Nothing here mocks or intercepts the API.
 
 const project = env('LOCKLENS_E2E_COMPOSE_PROJECT')
 const composeFile = env('LOCKLENS_E2E_COMPOSE_FILE')
@@ -77,7 +78,7 @@ test.afterAll(() => {
 test('main investigation path', async ({ page, browser }, testInfo) => {
   const consoleErrors = watchConsole(page)
 
-  await test.step('sign in and land on the instance overview', async () => {
+  await test.step('sign in and land on the fleet overview', async () => {
     await page.goto('/')
     await expect(page.getByRole('heading', { name: 'Sign in to LockLens' })).toBeVisible()
     await page.getByLabel('Password').fill('not-the-password')
@@ -86,22 +87,41 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     await expectAccessible(page, 'login')
     await page.getByLabel('Password').fill(adminPassword)
     await page.getByRole('button', { name: 'Sign in' }).click()
-    await expect(page).toHaveURL(/\/i\/\d+\/overview/)
-    await expect(page.getByRole('heading', { name: /lab-primary/ })).toBeVisible()
+    await expect(page).toHaveURL(/\/overview$/)
+    await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible()
     // The session token lives in an HttpOnly cookie, never in web storage.
     const stored = await page.evaluate(() => JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage }))
     expect(stored).not.toMatch(/csrf|session|token/i)
   })
 
+  await test.step('overview shows the whole environment', async () => {
+    const main = page.getByRole('main')
+    for (const kpi of ['Databases monitored', 'Active connections', 'Query throughput', 'Replication health', 'Slow queries', 'Incidents']) {
+      await expect(main.getByText(kpi, { exact: true }).first()).toBeVisible()
+    }
+    await expect(main.getByText('All healthy')).toBeVisible({ timeout: 60_000 })
+    for (const card of ['Read / write operations', 'Query throughput & latency', 'System resources', 'Database topology', 'Top queries', 'Active sessions', 'Blocking transactions', 'Database explorer', 'SQL editor']) {
+      await expect(page.getByRole('heading', { name: card, exact: true })).toBeVisible()
+    }
+    // Replication is observed, not configured: the standby appears under its primary.
+    await expect(page.getByRole('list', { name: 'Standbys of lab-primary' }).getByText('lab-standby')).toBeVisible({ timeout: 90_000 })
+    await expectAccessible(page, 'overview')
+  })
+
   let base = ''
-  await test.step('overview shows what the database is doing', async () => {
-    base = new URL(page.url()).pathname.replace(/\/overview$/, '')
-    await expect(page.getByRole('main').getByText('healthy', { exact: true }).first()).toBeVisible({ timeout: 60_000 })
+  let targetId = ''
+  await test.step('an instance shows what its database is doing', async () => {
+    await page.getByRole('link', { name: 'Databases', exact: true }).click()
+    await page.getByRole('link', { name: /lab-primary/ }).first().click()
+    await expect(page).toHaveURL(/\/databases\/\d+$/)
+    base = new URL(page.url()).pathname
+    targetId = base.split('/').pop() ?? ''
+    await expect(page.getByRole('heading', { name: /lab-primary/ })).toBeVisible()
     for (const kpi of ['Connections', 'Running now', 'Queries per second', 'Transactions per second', 'Cache hit ratio', 'Database size']) {
       await expect(page.getByText(kpi, { exact: true }).first()).toBeVisible()
     }
     await expect(page.getByRole('heading', { name: 'Queries by type' })).toBeVisible()
-    await expectAccessible(page, 'overview')
+    await expectAccessible(page, 'instance overview')
   })
 
   await test.step('queries by type during real traffic', async () => {
@@ -122,17 +142,23 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     await expect(first).toContainText('UPDATE')
     await expectAccessible(page, 'queries')
     await first.click()
+    await expect(page).toHaveURL(/\/queries\/\d+\/\d+$/)
     await expect(page.getByRole('heading', { name: /UPDATE statement/ })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'SQL' })).toBeVisible()
     await expect(page.locator('code').filter({ hasText: 'shop.orders' }).first()).toBeVisible()
     await expectAccessible(page, 'query detail')
+
+    // The same statements ranked across instances.
+    await page.goto('/queries?command=update')
+    await expect(page.getByRole('table', { name: 'Queries across instances' }).locator('code').filter({ hasText: 'shop.orders' }).first()).toBeVisible()
+    await expectAccessible(page, 'queries across instances')
   })
 
   await test.step('browse tables and rows', async () => {
-    await page.goto(`${base}/explorer/shop`)
-    await expect(page.getByRole('heading', { name: 'Data explorer' })).toBeVisible()
-    await page.getByRole('link', { name: /^orders/ }).first().click()
-    await expect(page).toHaveURL(/explorer\/shop\/orders/)
+    await page.goto(`/explorer/${targetId}/shop`)
+    await expect(page.getByRole('heading', { name: 'Explorer', exact: true })).toBeVisible()
+    await page.getByRole('navigation', { name: 'Schema objects' }).getByRole('button', { name: /^orders/ }).click()
+    await expect(page).toHaveURL(/explorer\/\d+\/shop\/orders/)
     const grid = page.getByRole('table', { name: 'Rows of shop.orders' })
     await expect(grid).toBeVisible()
     await expect(grid.getByRole('columnheader', { name: /customer_id/ })).toBeVisible()
@@ -149,14 +175,52 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     await grid.locator('tbody tr').first().locator('td').first().getByRole('button').click()
     await expect(page.getByRole('dialog')).toBeVisible()
     await page.keyboard.press('Escape')
-    await page.getByRole('tab', { name: /Columns/ }).click()
+    await page.getByRole('tab', { name: /Schema/ }).click()
     await expect(page.getByText('customer_id').first()).toBeVisible()
+    await page.getByRole('tab', { name: /Triggers/ }).click()
+    await expect(page.getByRole('cell', { name: 'orders_touch_updated_at', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: /^Functions/ }).click()
+    await expect(page.getByRole('button', { name: /customer_order_count/ })).toBeVisible()
     await expectAccessible(page, 'explorer')
+  })
+
+  await test.step('read-only SQL editor: results, plan, and a refused write', async () => {
+    await page.goto(`/sql/${targetId}`)
+    const editor = page.getByLabel('SQL statement')
+    await editor.fill("SELECT o.id, o.status, c.full_name FROM shop.orders o JOIN shop.customers c ON c.id = o.customer_id WHERE o.status = 'paid' ORDER BY o.id LIMIT 10")
+    await page.getByRole('button', { name: /Run/ }).click()
+    const result = page.getByRole('table', { name: 'Statement result' })
+    await expect(result).toBeVisible()
+    await expect(result.locator('tbody tr')).toHaveCount(10)
+    await page.getByRole('button', { name: /Explain/ }).click()
+    await expect(page.getByRole('img', { name: /Execution plan: Limit/ })).toBeVisible()
+    await expectAccessible(page, 'sql editor')
+    // The statement runs in a read-only transaction that is rolled back.
+    await editor.fill("UPDATE shop.orders SET note = 'e2e' WHERE id = 1")
+    await page.getByRole('button', { name: /Run/ }).click()
+    await expect(page.getByText('PostgreSQL did not run the statement')).toBeVisible()
+    // That refusal is the one expected failed request of this test.
+    const refused = consoleErrors.findIndex((e) => /POST .*\/workspace\/run -> 400$/.test(e))
+    expect(refused, 'the refused write answers 400').toBeGreaterThanOrEqual(0)
+    consoleErrors.splice(refused, 1)
+    const note = await page.request.post(`/api/v1/targets/${targetId}/workspace/run`, {
+      headers: { 'X-CSRF-Token': await page.evaluate(() => fetch('/api/v1/session').then((r) => r.json()).then((s: { csrf_token: string }) => s.csrf_token)) },
+      data: { request_id: crypto.randomUUID(), action: 'data', data: { schema: 'shop', relation: 'orders', filter_column: 'note', filter_op: 'eq', filter_value: 'e2e', limit: 1, offset: 0 } },
+    })
+    expect((await note.json()).rows).toEqual([])
   })
 
   let incidentURL = ''
   await test.step('a blocking chain: live sessions, tree, and incident', async () => {
     startScenario('chain', '4m')
+    await page.goto('/blocking')
+    await expect(page.getByRole('list', { name: /Sessions waiting on/ }).first()).toBeVisible({ timeout: 90_000 })
+    await expectAccessible(page, 'blocking')
+    await page.goto('/sessions')
+    await page.getByRole('table', { name: 'Sessions' }).locator('tbody tr').first().click()
+    await expect(page.getByRole('dialog')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expectAccessible(page, 'sessions')
     await page.goto(`${base}/activity`)
     await expect(page.getByRole('heading', { name: 'Live activity' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Who is blocking whom' })).toBeVisible({ timeout: 90_000 })
@@ -230,32 +294,47 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     await expect(result).not.toContainText('observer-pw')
     await expect(page.getByRole('checkbox', { name: /Collect SQL text/ })).toBeChecked()
     await expectAccessible(page, 'add instance')
+    await page.getByRole('main').getByLabel('Environment').fill('lab')
     await page.getByRole('button', { name: 'Add instance' }).click()
-    await expect(page).toHaveURL(/\/i\/\d+\/overview/)
+    await expect(page).toHaveURL(/\/databases\/\d+$/)
     await expect(page.getByRole('heading', { name: /e2e-primary/ })).toBeVisible()
     await expect(page.getByRole('main').getByText('healthy', { exact: true }).first()).toBeVisible({ timeout: 60_000 })
   })
 
   await test.step('remaining pages', async () => {
-    await page.goto('/instances')
+    await page.goto('/databases')
     await expect(page.getByRole('heading', { name: 'lab-standby' })).toBeVisible()
-    await expectAccessible(page, 'instances')
+    await expectAccessible(page, 'databases')
     await page.getByRole('link', { name: /lab-standby/ }).click()
-    await page.goto(new URL(page.url()).pathname.replace(/overview$/, 'replication'))
+    await page.getByRole('link', { name: 'Replication', exact: true }).click()
     await expect(page.getByText('streaming').first()).toBeVisible({ timeout: 60_000 })
     await expectAccessible(page, 'standby replication')
+    await page.goto('/topology')
+    await expect(page.getByRole('table').filter({ hasText: 'lab-standby' }).getByText('streaming').first()).toBeVisible()
+    await expectAccessible(page, 'topology')
+    await page.goto('/connections')
+    await expect(page.getByRole('table', { name: /Connections grouped/ })).toContainText('demo_app')
+    await expectAccessible(page, 'connections')
+    await page.goto('/incidents')
+    await page.getByRole('radio', { name: 'All' }).click()
+    await expect(page.getByRole('link', { name: /Blocking chain/ }).first()).toBeVisible()
+    await expectAccessible(page, 'incidents')
     await page.goto('/settings')
     await expect(page.getByRole('table', { name: 'Monitoring store tables' })).toContainText('metric_points')
     await expectAccessible(page, 'settings')
     await page.goto(incidentURL)
-    await page.getByRole('button', { name: /Switch to (dark|light) theme/ }).click()
+    await page.getByRole('button', { name: /account menu/i }).click()
+    await page.getByRole('menuitem', { name: /Switch to (dark|light) theme/ }).click()
     // Let the 150 ms color transitions settle before measuring contrast.
     await page.waitForTimeout(500)
     await expectAccessible(page, 'incident, other theme')
   })
 
   await test.step('sign out', async () => {
-    await page.getByRole('button', { name: /Log out/ }).click()
+    // The menu stays open after switching the theme.
+    const logout = page.getByRole('menuitem', { name: /Log out/ })
+    if (!(await logout.isVisible())) await page.getByRole('button', { name: /account menu/i }).click()
+    await logout.click()
     await expect(page.getByRole('heading', { name: 'Sign in to LockLens' })).toBeVisible()
     expect((await page.request.get('/api/v1/targets')).status()).toBe(401)
   })

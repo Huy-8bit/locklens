@@ -1,65 +1,18 @@
 import { useMemo, useState } from 'react'
 import { Search } from 'lucide-react'
 import { useActivity } from '../api/hooks'
-import type { Report, SnapshotSession } from '../api/types'
-import { BlockingTree, describeWait } from '../components/BlockingTree'
-import { PageHeader, useInstanceId } from '../components/Shell'
-import { CopyButton, formatSql, SqlText } from '../components/SqlText'
+import { BlockingTree } from '../components/BlockingTree'
+import { SectionHeader, useNumParam } from '../components/Shell'
+import { SessionDetail, stateTone } from '../components/widgets/SessionsTable'
+import { SqlText } from '../components/SqlText'
 import { tableCls, tdCls, tdNum, Th, trCls } from '../components/Table'
-import { Badge, Card, Drawer, Empty, inputCls, KeyValue, Load, Notice, Segmented, Stat } from '../components/ui'
+import { Badge, Card, Drawer, Empty, inputCls, Load, Notice, Segmented, Stat } from '../components/ui'
 import { ago, ageOf, num, seconds, time } from '../lib/format'
 
 type Filter = 'all' | 'active' | 'idle_tx' | 'waiting'
 
-function stateTone(s: string | null): 'good' | 'warn' | 'crit' | 'muted' {
-  if (!s) return 'muted'
-  if (s === 'active') return 'good'
-  if (s.startsWith('idle in transaction')) return 'warn'
-  return 'muted'
-}
-
-function SessionDetail({ s, report }: { s: SnapshotSession; report: Report }) {
-  const now = report.snapshot.server_time
-  const node = report.analysis.nodes.find((n) => n.id === s.pid)
-  return (
-    <div className="space-y-4">
-      <KeyValue
-        items={[
-          ['State', <Badge key="s" tone={stateTone(s.state)}>{s.state ?? 'unknown'}</Badge>],
-          ['User', s.user ?? '—'],
-          ['Database', s.database ?? '—'],
-          ['Application', s.application_name || '—'],
-          ['Client', s.client_addr ?? 'local socket'],
-          ['Backend', s.backend_type ?? '—'],
-          ['Connected', `${time(s.backend_start, { date: true })} (${seconds(ageOf(s.backend_start, now))} ago)`],
-          ['Transaction age', s.xact_start ? seconds(ageOf(s.xact_start, now)) : 'no open transaction'],
-          ['Query running for', s.query_start && s.state === 'active' ? seconds(ageOf(s.query_start, now)) : '—'],
-          ['Wait event', s.wait_event ? `${s.wait_event_type}: ${s.wait_event}` : 'none'],
-          ['Waiting for', describeWait(s) ?? 'nothing'],
-          ['Blocked by', node?.blocked_by.length ? node.blocked_by.join(', ') : 'nobody'],
-          ['Blocks', node?.blocks.length ? `${node.blocks.join(', ')} (${node.transitive_blocked_count} in total)` : 'nobody'],
-        ]}
-      />
-      <div>
-        <div className="mb-1 flex items-center justify-between">
-          <h3 className="text-sm font-semibold">{s.state === 'active' ? 'Current query' : 'Last query'}</h3>
-          {s.query && <CopyButton text={s.query} />}
-        </div>
-        {s.query ? (
-          <div className="rounded-lg bg-surface-2 p-3">
-            <SqlText sql={formatSql(s.query)} />
-          </div>
-        ) : (
-          <p className="text-sm text-muted">{s.details_visible ? 'Query text is not collected for this instance.' : 'Hidden: the monitoring role cannot see this session (grant pg_read_all_stats).'}</p>
-        )}
-        {s.query_truncated && <p className="mt-1 text-xs text-muted">Truncated by track_activity_query_size.</p>}
-      </div>
-    </div>
-  )
-}
-
 export default function ActivityPage() {
-  const id = useInstanceId()
+  const id = useNumParam('id')
   const q = useActivity(id)
   const [filter, setFilter] = useState<Filter>('all')
   const [search, setSearch] = useState('')
@@ -83,7 +36,7 @@ export default function ActivityPage() {
 
   return (
     <>
-      <PageHeader title="Live activity" subtitle="Sessions and running queries from the latest collection. Refreshes after every sample." />
+      <SectionHeader title="Live activity" subtitle="Sessions and running queries from the latest collection. Refreshes after every sample." />
       <Load q={q} label="Loading sessions">
         {(d) => {
           if (!d.report) return <Empty title="No activity collected yet">The first sample arrives within one collection interval after the instance is reachable.</Empty>

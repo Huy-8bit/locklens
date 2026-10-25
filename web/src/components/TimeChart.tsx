@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef } from 'react'
 import * as echarts from 'echarts/core'
-import { LineChart } from 'echarts/charts'
+import { BarChart, LineChart } from 'echarts/charts'
 import { GridComponent, MarkAreaComponent, TooltipComponent } from 'echarts/components'
 import { SVGRenderer } from 'echarts/renderers'
 import { cssVar } from '../lib/commands'
 import { time as fmtTime, UNKNOWN } from '../lib/format'
 import { useThemeVersion } from '../lib/theme'
 
-echarts.use([LineChart, GridComponent, TooltipComponent, MarkAreaComponent, SVGRenderer])
+echarts.use([LineChart, BarChart, GridComponent, TooltipComponent, MarkAreaComponent, SVGRenderer])
 
 export interface ChartSeries {
   key: string
@@ -16,6 +16,8 @@ export interface ChartSeries {
   color: string
   /** [epoch ms, value]; null values break the line (unknown, never zero). */
   points: [number, number | null][]
+  /** Draw as bars instead of a line (for example query throughput). */
+  bars?: boolean
 }
 
 export interface GapRange {
@@ -28,7 +30,7 @@ export interface GapRange {
  * axis only. A legend with each series' latest value sits above the plot
  * when there are two or more series; hovering shows a crosshair tooltip.
  */
-export function TimeChart({ series, format, height = 220, stacked = false, from, to, gaps = [], label, emptyText = 'No samples in this time range' }: {
+export function TimeChart({ series, format, height = 220, stacked = false, area = false, from, to, gaps = [], label, emptyText = 'No samples in this time range', legend = true, compactAxis = false, axisWidth, integer = false }: {
   series: ChartSeries[]
   format: (v: number) => string
   height?: number
@@ -38,6 +40,16 @@ export function TimeChart({ series, format, height = 220, stacked = false, from,
   gaps?: GapRange[]
   label: string
   emptyText?: string
+  /** Lines with a light fill below them. */
+  area?: boolean
+  /** Show the legend row (series names and latest values). */
+  legend?: boolean
+  /** Hide x-axis labels (for a pane stacked above another chart). */
+  compactAxis?: boolean
+  /** Fixed y-axis label width in px, so stacked panes line up on the x axis. */
+  axisWidth?: number
+  /** Whole-number y-axis steps (counts, bytes). */
+  integer?: boolean
 }) {
   const el = useRef<HTMLDivElement>(null)
   const chart = useRef<echarts.ECharts | null>(null)
@@ -55,7 +67,7 @@ export function TimeChart({ series, format, height = 220, stacked = false, from,
     const span = to - from
     return {
       animation: false,
-      grid: { left: 8, right: 12, top: 10, bottom: 4, containLabel: true },
+      grid: axisWidth ? { left: axisWidth, right: 12, top: 10, bottom: compactAxis ? 8 : 24 } : { left: 8, right: 12, top: 10, bottom: compactAxis ? 0 : 4, containLabel: true },
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'line', lineStyle: { color: axis } },
@@ -78,6 +90,7 @@ export function TimeChart({ series, format, height = 220, stacked = false, from,
         axisTick: { show: false },
         splitLine: { show: false },
         axisLabel: {
+          show: !compactAxis,
           color: muted,
           fontSize: 11,
           hideOverlap: true,
@@ -87,12 +100,16 @@ export function TimeChart({ series, format, height = 220, stacked = false, from,
       yAxis: {
         type: 'value',
         min: 0,
+        minInterval: integer ? 1 : undefined,
         splitNumber: 4,
         axisLabel: { color: muted, fontSize: 11, formatter: (v: number) => format(v) },
         splitLine: { lineStyle: { color: grid, width: 1 } },
       },
       series: series.map((s, i) => {
         const color = cssVar(s.color)
+        if (s.bars) {
+          return { name: s.label, type: 'bar', data: s.points, barMaxWidth: 8, itemStyle: { color, borderRadius: [2, 2, 0, 0] }, emphasis: { focus: 'series' } }
+        }
         return {
           name: s.label,
           type: 'line',
@@ -103,7 +120,7 @@ export function TimeChart({ series, format, height = 220, stacked = false, from,
           connectNulls: false,
           lineStyle: { width: stacked ? 1 : 2, color: stacked ? surface : color },
           itemStyle: { color },
-          areaStyle: stacked ? { color, opacity: 0.9 } : undefined,
+          areaStyle: stacked ? { color, opacity: 0.9 } : area ? { color, opacity: 0.18 } : undefined,
           emphasis: { focus: 'series' },
           markArea:
             i === 0 && gaps.length
@@ -112,7 +129,7 @@ export function TimeChart({ series, format, height = 220, stacked = false, from,
         }
       }),
     }
-  }, [series, format, stacked, from, to, gaps, themeVersion])
+  }, [series, format, stacked, area, compactAxis, axisWidth, integer, from, to, gaps, themeVersion])
 
   useEffect(() => {
     if (!el.current || !hasData) return
@@ -141,7 +158,7 @@ export function TimeChart({ series, format, height = 220, stacked = false, from,
 
   return (
     <figure aria-label={label} className="m-0">
-      {series.length > 1 && (
+      {legend && series.length > 1 && (
         <ul aria-label={`${label} legend`} className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-2">
           {series.map((s) => (
             <li key={s.key} className="flex items-center gap-1.5">

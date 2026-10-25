@@ -4,17 +4,20 @@ import { MemoryRouter, Route, Routes } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import axe from 'axe-core'
 import { vi } from 'vitest'
+import { ScopeProvider } from '../lib/scope'
 
 /** Renders an element inside the router and a fresh query client. */
 export function renderAt(path: string, routePattern: string, element: ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route path={routePattern} element={element} />
-        </Routes>
-      </MemoryRouter>
+      <ScopeProvider>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route path={routePattern} element={element} />
+          </Routes>
+        </MemoryRouter>
+      </ScopeProvider>
     </QueryClientProvider>,
   )
 }

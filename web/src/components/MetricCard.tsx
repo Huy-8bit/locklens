@@ -1,7 +1,7 @@
 import { useMemo, type ReactNode } from 'react'
 import { useMetrics } from '../api/hooks'
 import type { MetricsResponse } from '../api/types'
-import type { Range } from '../lib/time'
+import type { Range } from '../lib/scope'
 import { Card, ErrorBox, Spinner } from './ui'
 import { TimeChart, toPoints, type ChartSeries } from './TimeChart'
 

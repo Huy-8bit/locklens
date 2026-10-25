@@ -4,14 +4,13 @@ import { ArrowLeft } from 'lucide-react'
 import { useQueryDetail } from '../api/hooks'
 import type { QueryDetailResponse } from '../api/types'
 import { slot } from '../components/MetricCard'
-import { RangePicker } from '../components/RangePicker'
-import { PageHeader, useInstanceId } from '../components/Shell'
+import { PageHeader, useNumParam } from '../components/Shell'
 import { CopyButton, formatSql, SqlText } from '../components/SqlText'
 import { TimeChart } from '../components/TimeChart'
 import { Badge, Card, KeyValue, Load, Notice, Stat } from '../components/ui'
 import { commandColor, COMMAND_LABEL } from '../lib/commands'
 import { compact, ms, num, rate, time } from '../lib/format'
-import { useRange } from '../lib/time'
+import { useRange } from '../lib/scope'
 
 function bucketSeries(d: QueryDetailResponse) {
   const step = d.step_seconds * 1000
@@ -33,15 +32,15 @@ function bucketSeries(d: QueryDetailResponse) {
 }
 
 export default function QueryDetailPage() {
-  const id = useInstanceId()
+  const id = useNumParam('targetId')
   const qid = Number(useParams().qid)
-  const [range, setRange] = useRange()
+  const [range] = useRange()
   const q = useQueryDetail(id, qid, range)
   const series = useMemo(() => (q.data ? bucketSeries(q.data) : null), [q.data])
 
   return (
     <>
-      <Link to={`/i/${id}/queries?range=${range}`} className="mb-2 inline-flex items-center gap-1 text-sm text-accent hover:underline">
+      <Link to={`/databases/${id}/queries`} className="mb-2 inline-flex items-center gap-1 text-sm text-accent hover:underline">
         <ArrowLeft aria-hidden className="h-4 w-4" /> All queries
       </Link>
       <Load q={q} label="Loading statement">
@@ -61,7 +60,6 @@ export default function QueryDetailPage() {
                   </span>
                 }
                 subtitle={`${it.datname} · ${it.username} · queryid ${it.queryid}`}
-                actions={<RangePicker value={range} onChange={setRange} />}
               />
               <Card title="SQL" actions={it.query_text ? <CopyButton text={it.query_text} label="Copy SQL" /> : undefined}>
                 {it.query_text ? (

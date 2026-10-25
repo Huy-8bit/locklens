@@ -90,16 +90,19 @@ in `dsn_env`, so the file itself holds no credentials:
     "interval_seconds": 10,
     "max_connections": 2,
     "query_text_enabled": true,
-    "workspace": { "metadata": true, "data": false, "dsn_env": "ORDERS_PRIMARY_READER_DSN" }
+    "environment": "production",
+    "workspace": { "metadata": true, "data": false, "sql": false, "dsn_env": "ORDERS_PRIMARY_READER_DSN" }
   }
 ]
 ```
 
-A missing variable stops startup with an error naming it. The optional
-`workspace` block enables the data explorer for that target with a separate
+A missing variable stops startup with an error naming it. `environment` groups
+targets in the UI's environment selector (lowercase letters, digits, `-`, `_`;
+default `default`). The optional
+`workspace` block enables the Explorer for that target with a separate
 role (`dsn_env` names its DSN; same host, port, and database, a different
 SELECT-only user): `metadata` allows browsing structure, `data` allows
-reading rows. It is applied only while the target has no workspace
+reading rows, and `sql` enables the read-only SQL editor. It is applied only while the target has no workspace
 configuration yet; a failure (for example an unreachable server) is logged and
 does not stop startup. The Docker lab uses
 [demo/targets.json](../demo/targets.json).

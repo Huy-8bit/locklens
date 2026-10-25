@@ -202,28 +202,36 @@ project name on random loopback ports, runs `tests/e2e/browser` with Playwright
 (`LOCKLENS_E2E_KEEP=1` keeps it). Nothing in the main path mocks or intercepts
 the API. The test:
 
-1. signs in (a wrong password is rejected first), lands on the instance
-   overview, and checks that no token is kept in web storage;
-2. sees the instance healthy with its current values and the queries-by-type
-   chart;
-3. starts the `shop` lab scenario and waits until the Queries page shows
-   SELECT, INSERT, UPDATE, and DELETE in the breakdown; filters by UPDATE and
-   opens a statement with its SQL;
-4. browses `shop.orders` in the data explorer: rows, a filter
-   (`status = paid`, every row checked), a cell panel, and the columns tab;
-5. starts the `chain` scenario, finds the blocking tree and a session panel on
-   Live activity, then the incident under Alerts, and its stored blocking graph;
-6. exports the HTML report (no scripts or credentials) and opens it in an
+1. signs in (a wrong password is rejected first), lands on the fleet
+   Overview, and checks that no token is kept in web storage;
+2. sees the six KPIs, every Overview card, and the standby under its primary
+   in the topology card;
+3. opens `lab-primary` from Databases and sees its current values and the
+   queries-by-type chart;
+4. starts the `shop` lab scenario and waits until the instance's Queries tab
+   shows SELECT, INSERT, UPDATE, and DELETE in the breakdown; filters by UPDATE,
+   opens a statement with its SQL, and finds it in Queries across instances;
+5. browses `shop.orders` in the Explorer: rows, a filter (`status = paid`,
+   every row checked), a cell panel, the Schema and Triggers tabs, and the
+   functions of the schema;
+6. runs a SELECT in the SQL Editor (10 rows), draws its execution plan, and
+   checks that an UPDATE is refused and changed nothing;
+7. starts the `chain` scenario, finds it under Blocking, opens a session panel
+   under Sessions, the blocking tree on the instance's Activity tab, then the
+   incident under Alerts and its stored blocking graph;
+8. exports the HTML report (no scripts or credentials) and opens it in an
    offline browser context with JavaScript disabled, checking it loads nothing;
-7. exports JSON and imports it again under Settings;
-8. adds an instance, tests its connection (version and query statistics shown,
-   no password echoed, SQL text collection on by default), and saves it;
-9. checks All instances, standby replication (streaming), Settings store
-   sizes, and the other theme;
-10. runs axe-core on every page (serious and critical violations fail);
-11. signs out and checks the API returns 401;
-12. fails on any browser console error or failed request (except the expected
-    401s before signing in).
+9. exports JSON and imports it again under Settings;
+10. adds an instance with an environment, tests its connection (version and
+    query statistics shown, no password echoed, SQL text collection on by
+    default), and saves it;
+11. checks Databases, standby replication (streaming), Topology, Connections,
+    Incidents, Settings store sizes, and the other theme;
+12. runs axe-core, including color contrast, on every page (serious and
+    critical violations fail);
+13. signs out from the account menu and checks the API returns 401;
+14. fails on any browser console error or failed request (except the expected
+    401s before signing in and the refused UPDATE's 400).
 
 Reports and traces are written to `test-results/e2e-report` and
 `test-results/e2e-artifacts`.

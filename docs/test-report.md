@@ -3,11 +3,54 @@
 What was run, on what, and with which result. Test design:
 [testing.md](testing.md). Nothing below is marked PASS that was not run.
 
-- **Execution date:** 2026-10-24 (phase 2), 2026-10-25 (UI rebuild, first section)
+- **Execution date:** 2026-10-24 (phase 2), 2026-10-25 (UI rebuild and mockup UI, first sections)
 - **Code under test:** working tree on top of commit `db0d42a` (phase 2 not
   yet committed)
 - **Scope:** phase 2 (monitoring server, UI, lab) in the first part; the
   earlier phase 1 CLI QA run is kept as an appendix.
+
+## Mockup UI (2026-10-25)
+
+The UI was reworked to the reference mockup: fleet Overview (six KPIs,
+read/write operations, throughput and latency, system resources, topology,
+top queries, active sessions, blocking, explorer, SQL editor), Databases with
+per-instance tabs, Topology, Queries across instances, Sessions, Blocking,
+Explorer, read-only SQL Editor, Incidents, Connections, Settings. The backend
+gained the target environment (migration `0005`), fleet and system endpoints,
+connection groups, and catalog functions, types, and triggers.
+
+| Check | Result |
+| --- | --- |
+| `make check` (gofmt, vet incl. integration tags, separation, unit, race), incl. new fleet aggregation, auth, environment, and counter-total tests | PASS |
+| Frontend typecheck, ESLint, Vitest (14 tests incl. axe; new: fleet Overview without invented values, SQL editor run and plan) | PASS |
+| Frontend production build | PASS (app 352 KB, charts chunk 532 KB before gzip) |
+| Live lab (PostgreSQL 18.6, fresh volumes): migration 5, environment `lab`, node_exporter, demo view/function/type/trigger, `shop`, `chain`, and `idle-blocker` scenarios on every page | PASS (observed) |
+| SQL editor against the lab: a join returns rows, EXPLAIN draws Limit → Sort → Hash Join → Seq Scan, an UPDATE is refused by PostgreSQL | PASS (observed, light and dark) |
+| Screenshots of 17 pages at 1600 px light and dark, and 390 px light and dark | PASS: no console errors, no failed requests, no horizontal overflow (after fixes) |
+| axe-core with color contrast, 17 pages + login, light and dark, live lab | PASS after fixes |
+| Integration harness, PostgreSQL 14.24 and 18.6 | PASS (6 packages per version) |
+| Browser E2E rewritten for the new navigation (`make e2e`, no API mocks) | PASS (1 test, 14 steps, 58.6 s) |
+
+Found and fixed while verifying:
+
+- KPI labels and subtitles were truncated at 1600 px (now wrap);
+- standby cards were squeezed to one character per line in the Overview
+  topology card (stacked layout in the card);
+- the throughput and latency panes did not share x positions (fixed y-axis
+  width);
+- the Top queries and Active sessions cards overflowed their column (fewer
+  columns in the compact cards);
+- full-width selects in widget toolbars;
+- CPU showed "—" right after a restart while the history had values (falls
+  back to the last known bucket);
+- the account menu's accessible name did not contain its visible text;
+- E2E selectors that matched two elements (trigger name and definition; the
+  standby listed under two targets of the same server).
+
+Not run for the mockup UI: the 15.19, 16.15, and 17.11 integration runs, the
+performance smoke check, and GitHub Actions (nothing pushed). The lab's
+node_exporter runs in a container, so its CPU, memory, and filesystem values
+describe the Docker VM, not a database host.
 
 ## UI rebuild (2026-10-25)
 

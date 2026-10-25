@@ -17,7 +17,7 @@ The administrator can configure four distinct capabilities per target:
 | Table data | Denied | Separate target capability; database SELECT grants still apply |
 | SQL execution | Denied | Separate target capability; read-only transaction and database grants |
 
-Configure access under **Data explorer → Access settings** (or the bootstrap file's
+Configure access under **Explorer → Access settings** (or the bootstrap file's
 `workspace` block, see [configuration](configuration.md#bootstrap-targets)). The DSN is
 write-only, encrypted with AES-GCM and target-specific associated data. A blank DSN
 retains credentials. Changing the target endpoint requires reconfiguring investigation
@@ -40,20 +40,23 @@ archive. Auditing failure withholds a successful operation's result. PostgreSQL'
 configuration and independently enabled monitoring query-text collection are separate
 policies; consider those when submitting sensitive literals or SQL comments.
 
-## Data explorer
+## Explorer
 
-The web UI exposes catalog metadata and table data. SQL execution remains an
-API capability (disabled by default); the UI has no SQL editor.
+The web UI exposes catalog metadata and table data under **Explorer** (and a
+compact copy on the Overview), and SQL execution under **SQL Editor** when the
+target's SQL capability is enabled (disabled by default; the lab enables it).
 
-Navigation: target → configured database → schema → relation. Other database names can
+Navigation: target → configured database → schema → tables, views, functions,
+types. Other database names can
 be inspected, but switching connections is deliberately unavailable. Catalogs expose
 columns/types/nullability/defaults, constraints, PK/FK definitions, indexes/usage/size,
-partition parents/children, estimated row counts, sizes and vacuum timestamps.
+triggers (definition, enabled), functions (arguments, kind, result, language), types
+(composite, domain, enum, range), partition parents/children, estimated row counts, sizes and vacuum timestamps.
 Catalog responses are bounded to 200 rows per section and cached in the browser query
 cache for 30 seconds. Refresh metadata requests current catalogs. System schemas are
 excluded from the application data browser. No implicit `COUNT(*)` runs.
 
-Opening a table's **Data** tab reads its first page. Each request has at most 100 rows (UI: 25, 50, or 100),
+Opening a table's **Data preview** tab reads its first page. Each request has at most 100 rows (UI: 25, 50, or 100),
 100 columns and a 1024-byte filter. Sort columns and selected columns must exist in the
 catalog; identifiers are quoted, values are parameters. Filters support textual equality,
 substring, NULL and NOT NULL. This can require a scan; statement timeouts still apply.
@@ -69,7 +72,12 @@ run per target, matching the server limit, and retries a busy (429) answer with 
 ## SQL execution and limits
 
 `POST /api/v1/targets/{id}/workspace/run` with `action: "sql"` (or `"explain"`)
-executes one explicit statement when the target's SQL capability is enabled. The result
+executes one explicit statement when the target's SQL capability is enabled. The
+**SQL Editor** page is its UI: results grid, an execution-plan graph built from
+`EXPLAIN (FORMAT JSON)` (without ANALYZE, so the statement is planned and not run), and
+messages with SQLSTATE and the error position as line and column. Run sends the whole
+editor text (one statement; a trailing semicolon is removed). Cancel aborts the request
+and asks the server to cancel that operation. The result
 carries PostgreSQL column type OIDs, result rows, duration, truncation, SQLSTATE and
 available error position. Generic error messages deliberately
 omit PostgreSQL detail/hint fields, which can contain data values.
@@ -106,13 +114,16 @@ cancels only an active operation owned by that session. There is no generic back
 terminate endpoint. Navigating away aborts the HTTP request and its query context.
 
 The policy's `history_enabled` flag is kept for API compatibility; the current UI stores
-no statements or results in the browser.
+no statements or results in the browser (drafts live in page memory only).
 
 ## Metrics
 
-The **All instances** page shows each target's latest samples; per-instance pages show
-history. Percentages, lag and host metrics are never summed across targets. Duplicate
-configured targets can double-count a server. Freshness thresholds are three collector
+The **Databases** page shows each target's latest samples; per-instance pages show
+history. Fleet views (`/api/v1/fleet/*`) combine the targets of an environment: rates,
+counts and byte sizes are summed, ratios are averaged over reporting targets, and lag,
+delays and peaks keep the maximum. Duplicate configured targets, or several targets
+sharing one node_exporter, can double-count a server in sums; the Overview therefore
+shows host memory as a ratio and deduplicates current host values per exporter URL. Freshness thresholds are three collector
 intervals, with a small minimum grace period. Missing data never becomes zero.
 
 | Measurement | Source / scope | Meaning and limits |
@@ -129,16 +140,19 @@ intervals, with a small minimum grace period. Missing data never becomes zero.
 | Database growth | Catalog database sizes | Slow collection cadence, latest-value aggregation |
 
 Counters use deltas, rates use elapsed-time weighted means, pressure and lag use maxima,
-and missing or partial buckets remain gaps. The default range is 15 minutes. See the
+and missing or partial buckets remain gaps. The default UI range is 1 hour. See the
 [UI guide](ui-design.md#reading-the-charts).
 
 ## Topology and live activity
 
 Topology mappings (`GET/PUT/DELETE /api/v1/topology`) record which standby belongs to which
-primary, with the replication `application_name` and provenance. The current UI does not
-draw a topology view; the Replication page shows each server's own observations.
+primary, with the replication `application_name` and provenance. The **Topology** page
+draws observations instead: a monitored standby is linked to a monitored primary when its
+WAL receiver's sender host equals the primary target's host. That is evidence of
+streaming, not a configured mapping; standbys whose primary is not monitored are listed
+separately.
 
-Live activity uses the existing bounded monitoring snapshot: client sessions with open
+**Sessions** and per-instance **Activity** use the existing bounded monitoring snapshot: client sessions with open
 transactions plus blocking participants, not all idle pooled connections. Query text is
 present only under the collection policy and PostgreSQL visibility grants. Filters cover
 database/application/user/state; query age, transaction age, wait and blockers remain

@@ -237,11 +237,11 @@ func bootstrapWorkspace(ctx context.Context, ws *workspace.Service, store *stora
 	}
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := ws.Configure(cctx, t.ID, storage.WorkspacePolicy{Metadata: e.Workspace.Metadata, Data: e.Workspace.Data}, dsn); err != nil {
+	if err := ws.Configure(cctx, t.ID, storage.WorkspacePolicy{Metadata: e.Workspace.Metadata, Data: e.Workspace.Data, SQL: e.Workspace.SQL}, dsn); err != nil {
 		log.Warn("bootstrap workspace: not configured", "target", e.Name, "error", workspace.SafeError(err).Message)
 		return
 	}
-	log.Info("bootstrap workspace configured", "target", e.Name, "metadata", e.Workspace.Metadata, "data", e.Workspace.Data)
+	log.Info("bootstrap workspace configured", "target", e.Name, "metadata", e.Workspace.Metadata, "data", e.Workspace.Data, "sql", e.Workspace.SQL)
 }
 
 // statementsInterval is 60 s in production; the lab samples pg_stat_statements

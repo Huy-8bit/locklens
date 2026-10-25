@@ -1,19 +1,18 @@
 import { useReplication } from '../api/hooks'
 import { MetricCard, slot } from '../components/MetricCard'
-import { RangePicker } from '../components/RangePicker'
-import { PageHeader, useInstanceId } from '../components/Shell'
+import { SectionHeader, useNumParam } from '../components/Shell'
 import { tableCls, tdCls, tdNum, Th, trCls } from '../components/Table'
 import { Badge, Card, Empty, KeyValue, Load, Notice, Stat } from '../components/ui'
 import { ago, bytes, num, seconds, time } from '../lib/format'
-import { useRange } from '../lib/time'
+import { useRange } from '../lib/scope'
 
 export default function ReplicationPage() {
-  const id = useInstanceId()
-  const [range, setRange] = useRange()
+  const id = useNumParam('id')
+  const [range] = useRange()
   const q = useReplication(id)
   return (
     <>
-      <PageHeader title="Replication" subtitle="Standbys, replication slots, and WAL. LockLens only observes; it never promotes, fails over, or drops slots." actions={<RangePicker value={range} onChange={setRange} />} />
+      <SectionHeader title="Replication" subtitle="Standbys, replication slots, and WAL. LockLens only observes; it never promotes, fails over, or drops slots." />
       <Load q={q} label="Loading replication state">
         {(d) => {
           const r = d.replication

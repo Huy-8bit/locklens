@@ -13,6 +13,35 @@ LockLens monitoring store as the workload database. A fresh clone can use
 `make up` and `make lab` for the versioned demonstration; these sandbox commands
 require the separately provisioned `local-lab/` directory.
 
+## Versioned PostgreSQL demo topology
+
+The standard `make up` Compose stack runs one writable PostgreSQL primary, two
+physical streaming standbys, and a small Go CRUD API with a built-in synthetic
+client workload. Both standbys use separate replication slots and data volumes.
+The LockLens bootstrap targets include the primary and both standbys.
+
+| Service | Local endpoint |
+| --- | --- |
+| Primary | `127.0.0.1:55432` |
+| Standby 1 | `127.0.0.1:55433` |
+| Standby 2 | `127.0.0.1:55436` |
+| Backend API / health | `http://127.0.0.1:8091/items` / `http://127.0.0.1:8091/healthz` |
+
+The backend service continuously exercises `GET`, `POST`, `PUT`, and `DELETE`
+against the primary, with a default two workers and a two-second interval per
+worker. Override `LOCKLENS_WORKLOAD_INTERVAL` or
+`LOCKLENS_WORKLOAD_CONCURRENCY` in the environment to change the rate. The
+workload uses a dedicated `backend_workload_items` table and the `demo_app` role;
+it does not write to LockLens' monitoring store or the existing shop tables.
+The API exposes `GET /items`, `POST /items` with `{"payload":"..."}`,
+`GET /items/{id}`, `PUT /items/{id}` with the same JSON body, and
+`DELETE /items/{id}`. Requests and the automatic workload are synthetic.
+
+Start or update the stack with `make up`; inspect replication with
+`docker compose -f deploy/compose.yaml exec primary psql -U postgres -d locklens_demo -c
+"SELECT application_name, state, sync_state FROM pg_stat_replication"` and inspect
+the API at `http://127.0.0.1:8091/items`.
+
 ## Start and connect
 
 Run from the repository root:
@@ -155,7 +184,7 @@ verifies the changed name, deletes only that item and verifies its absence.
 ```
 
 Observe Target overview → logical tuple writes / WAL; Query workload → observed
-statement calls; Live activity → sampled applications; Blocking explorer → blocker
+statement calls; Sessions and Connections → sampled applications; Blocking → blocker
 and waiters; Incidents → recorded timeline. `long-transaction` and
 `query-regression` are explicit fault scenarios (aliases of bounded held-transaction
 and slow-query behaviors), and do not represent a production regression detector.

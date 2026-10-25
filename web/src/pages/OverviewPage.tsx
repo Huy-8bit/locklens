@@ -1,250 +1,422 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
-import { Activity, ArrowRight, Database, Gauge, HardDrive, Lock, Timer, Users, Zap } from 'lucide-react'
-import { useActivity, useCommands, useOverview, useQueries } from '../api/hooks'
-import type { OverviewResponse } from '../api/types'
-import { CommandMix, CommandsChart } from '../components/Commands'
-import { MetricCard, slot } from '../components/MetricCard'
-import { RangePicker } from '../components/RangePicker'
-import { PageHeader, useInstanceId } from '../components/Shell'
+import { Activity, ArrowRight, Database, GitBranch, Snail, TriangleAlert, Users } from 'lucide-react'
+import { useFleetLive, useFleetMetrics, useFleetQueries, useIncidents } from '../api/hooks'
+import type { FleetLiveTarget, FleetMetricsResponse, FleetQuery } from '../api/types'
+import { slot } from '../components/MetricCard'
+import { PageHeader } from '../components/Shell'
 import { SqlText } from '../components/SqlText'
-import { Badge, Card, ErrorBox, Load, Meter, Notice, SeverityBadge, Spinner, Stat, StateBadge } from '../components/ui'
-import { commandColor, COMMAND_LABEL } from '../lib/commands'
-import { ageOf, bytes, compact, ms, num, pct, rate, seconds } from '../lib/format'
-import { useRange } from '../lib/time'
+import { tableCls, tdCls, tdNum, Th, trCls } from '../components/Table'
+import { TimeChart } from '../components/TimeChart'
+import { Card, Delta, Empty, ErrorBox, KpiCard, Load, Meter, Pills, selectCls, Spinner } from '../components/ui'
+import { BlockingGraph } from '../components/widgets/BlockingGraph'
+import { ExplorerPanel, type ExplorerSelection } from '../components/widgets/ExplorerPanel'
+import { InstanceSelect } from '../components/widgets/InstanceSelect'
+import { SessionsTable } from '../components/widgets/SessionsTable'
+import { SqlPanel } from '../components/widgets/SqlPanel'
+import { lagHealth, TopologyGraph } from '../components/widgets/TopologyGraph'
+import { combine, firstLast, fleetPoints, sumLatest, topology } from '../lib/fleet'
+import { bytes, compact, ms, num, pct, rate } from '../lib/format'
+import { rangeLabel, useScope, type Range } from '../lib/scope'
 
-function latest(o: OverviewResponse, k: string): number | null {
-  return o.latest[k]?.value ?? null
+const RW = ['tuples.returned.per_s', 'tuples.fetched.per_s', 'tuples.inserted.per_s', 'tuples.updated.per_s', 'tuples.deleted.per_s', 'xact.commit.per_s', 'xact.rollback.per_s']
+const LOAD = ['connections.used', 'statements.calls.per_s', 'statements.exec_ms.per_s']
+const HOST = ['host.cpu_utilization_ratio', 'host.memory_total_bytes', 'host.memory_available_bytes', 'host.filesystem_used_ratio', 'replication.max_replay_lag_bytes']
+
+const SLOW_MS = 1000
+
+const sum = (v: number[]) => v.reduce((a, b) => a + b, 0)
+const span = (d: FleetMetricsResponse) => ({ from: Date.parse(d.from), to: Date.parse(d.to) })
+const lastKnown = (p: [number, number | null][]) => [...p].reverse().find((x) => x[1] !== null)?.[1] ?? null
+
+/** Mean latency per bucket: execution time over calls (unknown when idle). */
+function latencyPoints(d: FleetMetricsResponse) {
+  return combine(d, ['statements.exec_ms.per_s', 'statements.calls.per_s'], ([t, c]) => (c && c > 0 ? (t ?? 0) / c : null))
 }
 
-function Kpis({ o }: { o: OverviewResponse }) {
-  const v = (k: string) => latest(o, k)
-  const used = v('connections.used')
-  const max = v('connections.max')
-  const usage = v('connections.usage_ratio')
-  const calls = v('statements.calls.per_s')
-  const execMs = v('statements.exec_ms.per_s')
-  const commits = v('xact.commit.per_s')
-  const rollbacks = v('xact.rollback.per_s')
-  const tps = commits !== null && rollbacks !== null ? commits + rollbacks : null
-  const read = v('tuples.returned.per_s') !== null || v('tuples.fetched.per_s') !== null ? (v('tuples.returned.per_s') ?? 0) + (v('tuples.fetched.per_s') ?? 0) : null
-  const written = ['tuples.inserted.per_s', 'tuples.updated.per_s', 'tuples.deleted.per_s'].some((k) => v(k) !== null)
-    ? (v('tuples.inserted.per_s') ?? 0) + (v('tuples.updated.per_s') ?? 0) + (v('tuples.deleted.per_s') ?? 0)
-    : null
-  const blocked = v('blocking.blocked_sessions')
-  const oldest = v('transactions.oldest_age_seconds')
-  const standby = o.target.status.is_standby
-  const lag = standby ? v('standby.replay_delay_bytes') : v('replication.max_replay_lag_bytes')
-  const usageTone = usage === null ? undefined : usage >= 0.95 ? 'crit' : usage >= 0.8 ? 'warn' : undefined
+// ---------------------------------------------------------------------------
+// KPI row
+
+function Kpis({ targets, load, env, range }: { targets: FleetLiveTarget[]; load: FleetMetricsResponse | undefined; env: string; range: Range }) {
+  const slow = useFleetQueries(env, range, 'mean_time', 50)
+  const incidents = useIncidents({ state: 'open' })
+
+  const states = targets.reduce<Record<string, number>>((m, t) => ({ ...m, [t.target.status.state]: (m[t.target.status.state] ?? 0) + 1 }), {})
+  const unhealthy = targets.length - (states.healthy ?? 0)
+
+  const used = sumLatest(targets, 'connections.used')
+  const max = sumLatest(targets, 'connections.max')
+  const conn = load ? firstLast(fleetPoints(load, 'connections.used')) : [null, null]
+
+  const qpsPts = load ? fleetPoints(load, 'statements.calls.per_s') : []
+  const qps = lastKnown(qpsPts) ?? sumLatest(targets, 'statements.calls.per_s')
+  const [qFirst, qLast] = firstLast(qpsPts)
+  const latency = load ? lastKnown(latencyPoints(load)) : null
+
+  const edges = topology(targets).groups.flatMap((g) => g.edges)
+  const inSync = edges.filter((e) => lagHealth(e) === 'healthy').length
+
+  const slowItems = (slow.data?.items ?? []).filter((q) => (q.mean_exec_ms ?? 0) > SLOW_MS)
+  const ids = new Set(targets.map((t) => t.target.id))
+  const open = (incidents.data?.incidents ?? []).filter((i) => !env || (i.target_id !== null && ids.has(i.target_id)))
+  const openTotal = env ? open.length : (incidents.data?.total ?? open.length)
+  const critical = open.filter((i) => i.severity === 'critical').length
+  const warning = open.filter((i) => i.severity === 'warning').length
 
   return (
-    <>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <div className="rounded-xl border border-line bg-surface px-4 py-3">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-muted">
-            <Users aria-hidden className="h-3.5 w-3.5" />
-            Connections
-          </div>
-          <div className="mt-1 text-2xl font-semibold tracking-tight">
-            {num(used)}
-            <span className="text-base font-normal text-muted"> / {num(max)}</span>
-          </div>
-          <Meter value={used} max={max} tone={usageTone} />
-          <div className="mt-1 text-xs text-muted">{pct(usage, 0)} of available slots</div>
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
+      <KpiCard
+        to="/databases"
+        icon={<Database />}
+        tone="blue"
+        label="Databases monitored"
+        value={num(targets.length)}
+        sub={targets.length === 0 ? 'No enabled instance' : unhealthy === 0 ? 'All healthy' : Object.entries(states).filter(([s]) => s !== 'healthy').map(([s, n]) => `${n} ${s}`).join(', ')}
+      />
+      <KpiCard to="/connections" icon={<Users />} tone="violet" label="Active connections" value={num(used)} delta={<Delta from={conn[0]} to={conn[1]} />} sub={max !== null ? `Max ${num(max)}` : 'max_connections unknown'} />
+      <KpiCard
+        to="/queries"
+        icon={<Activity />}
+        tone="amber"
+        label="Query throughput"
+        value={compact(qps)}
+        unit={qps !== null ? 'qps' : undefined}
+        delta={<Delta from={qFirst} to={qLast} />}
+        sub={latency !== null ? `Avg latency ${ms(latency)}` : 'Avg latency unknown'}
+      />
+      <KpiCard
+        to="/topology"
+        icon={<GitBranch />}
+        tone="green"
+        label="Replication health"
+        value={edges.length ? `${inSync}/${edges.length}` : '—'}
+        sub={edges.length === 0 ? 'No replication observed' : inSync === edges.length ? 'All standbys in sync' : `${edges.length - inSync} with lag`}
+      />
+      <KpiCard
+        to="/queries?sort=mean_time"
+        icon={<Snail />}
+        tone="red"
+        label="Slow queries"
+        value={slow.data ? `${slowItems.length}${slowItems.length === 50 ? '+' : ''}` : '—'}
+        sub={`Mean > ${ms(SLOW_MS)} · ${rangeLabel(range).toLowerCase()}`}
+      />
+      <KpiCard
+        to="/incidents"
+        icon={<TriangleAlert />}
+        tone="red"
+        label="Incidents"
+        value={incidents.data ? num(openTotal) : '—'}
+        sub={openTotal === 0 ? 'None open' : `${critical} critical, ${warning} warning`}
+      />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Charts
+
+type RwMode = 'rows' | 'xact'
+
+function ReadWriteCard({ d }: { d: FleetMetricsResponse | undefined }) {
+  const [mode, setMode] = useState<RwMode>('rows')
+  const series = useMemo(() => {
+    if (!d) return []
+    if (mode === 'xact')
+      return [
+        { key: 'commit', label: 'Commits', color: slot(0), points: fleetPoints(d, 'xact.commit.per_s') },
+        { key: 'rollback', label: 'Rollbacks', color: slot(1), points: fleetPoints(d, 'xact.rollback.per_s') },
+      ]
+    return [
+      { key: 'read', label: 'Reads', color: slot(0), points: combine(d, ['tuples.returned.per_s', 'tuples.fetched.per_s'], sum) },
+      { key: 'write', label: 'Writes', color: slot(1), points: combine(d, ['tuples.inserted.per_s', 'tuples.updated.per_s', 'tuples.deleted.per_s'], sum) },
+    ]
+  }, [d, mode])
+  return (
+    <Card
+      title="Read / write operations"
+      subtitle={mode === 'rows' ? 'Rows read (returned + fetched) and written (inserted + updated + deleted)' : 'Transactions committed and rolled back'}
+      actions={
+        <>
+          <label htmlFor="rw-mode" className="sr-only">
+            Unit
+          </label>
+          <select id="rw-mode" className={`${selectCls} py-1 text-xs`} value={mode} onChange={(e) => setMode(e.target.value as RwMode)}>
+            <option value="rows">Rows/s</option>
+            <option value="xact">Transactions/s</option>
+          </select>
+        </>
+      }
+    >
+      {d ? <TimeChart label="Read / write operations" series={series} format={(n) => rate(n)} height={200} area {...span(d)} /> : <ChartLoading h={230} />}
+    </Card>
+  )
+}
+
+function ThroughputCard({ d }: { d: FleetMetricsResponse | undefined }) {
+  const qps = useMemo(() => (d ? [{ key: 'qps', label: 'Queries per second', color: slot(0), points: fleetPoints(d, 'statements.calls.per_s'), bars: true }] : []), [d])
+  const lat = useMemo(() => (d ? [{ key: 'lat', label: 'Mean latency', color: slot(2), points: latencyPoints(d) }] : []), [d])
+  return (
+    <Card title="Query throughput & latency" subtitle="Statement executions per second, and mean execution time per statement (pg_stat_statements)">
+      {d ? (
+        <div>
+          <p className="mb-1 flex items-center gap-1.5 text-xs text-ink-2">
+            <span aria-hidden className="h-2.5 w-2.5 rounded-sm" style={{ background: slot(0) }} /> Queries per second
+          </p>
+          <TimeChart label="Queries per second" series={qps} format={(n) => compact(n)} height={110} compactAxis axisWidth={56} {...span(d)} />
+          <p className="mt-2 mb-1 flex items-center gap-1.5 text-xs text-ink-2">
+            <span aria-hidden className="h-0.5 w-3 rounded" style={{ background: slot(2) }} /> Mean latency
+          </p>
+          <TimeChart label="Mean latency" series={lat} format={(n) => ms(n)} height={110} axisWidth={56} {...span(d)} />
         </div>
-        <Stat icon={<Activity aria-hidden className="h-3.5 w-3.5" />} label="Running now" value={num(v('sessions.active'))} sub={`${num(v('sessions.idle_in_transaction'))} idle in transaction · ${num(v('sessions.waiting_lock'))} waiting`} />
-        <Stat icon={<Zap aria-hidden className="h-3.5 w-3.5" />} label="Queries per second" value={rate(calls, '')} sub={calls && execMs !== null ? `avg ${ms(execMs / calls)} per query` : 'from pg_stat_statements'} />
-        <Stat icon={<Gauge aria-hidden className="h-3.5 w-3.5" />} label="Transactions per second" value={rate(tps, '')} sub={`${rate(rollbacks)} rollbacks`} />
-        <Stat icon={<HardDrive aria-hidden className="h-3.5 w-3.5" />} label="Cache hit ratio" value={pct(v('cache.hit_ratio'))} sub="shared buffers" />
-        <Stat icon={<Database aria-hidden className="h-3.5 w-3.5" />} label="Database size" value={bytes(v('db.total_size_bytes'))} sub="all databases" />
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat icon={<Lock aria-hidden className="h-3.5 w-3.5" />} label="Blocked sessions" value={num(blocked)} tone={blocked ? 'crit' : undefined} sub={blocked ? `longest wait ${seconds(v('blocking.max_lock_wait_seconds'))}` : 'no lock waits'} />
-        <Stat icon={<Timer aria-hidden className="h-3.5 w-3.5" />} label="Oldest transaction" value={oldest === null ? 'none open' : seconds(oldest)} tone={oldest !== null && oldest > 300 ? 'warn' : undefined} sub={`${num(v('transactions.long'))} long-running`} />
-        <Stat label="Rows read per second" value={rate(read, '')} sub="returned + fetched" />
-        <Stat label="Rows written per second" value={rate(written, '')} sub="inserted + updated + deleted" />
-        <Stat label="Temp files written" value={`${bytes(v('temp.bytes.per_s'))}/s`} sub="sorts and hashes spilling to disk" />
-        <Stat label={standby ? 'Replay delay' : 'Replica lag'} value={bytes(lag)} sub={standby ? 'received, not yet replayed' : 'largest replay lag'} />
-      </div>
-    </>
+      ) : (
+        <ChartLoading h={250} />
+      )}
+    </Card>
   )
 }
 
-function LongestRunning({ id }: { id: number }) {
-  const q = useActivity(id)
-  const rows = useMemo(() => {
-    const r = q.data?.report
-    if (!r) return []
-    const now = r.snapshot.server_time
-    return r.snapshot.sessions
-      .filter((s) => s.state === 'active' && s.backend_type === 'client backend')
-      .map((s) => ({ s, age: ageOf(s.query_start, now) }))
-      .sort((a, b) => (b.age ?? 0) - (a.age ?? 0))
-      .slice(0, 5)
-  }, [q.data])
+function ChartLoading({ h }: { h: number }) {
   return (
-    <Card title="Running right now" subtitle="Longest-running active queries from the latest activity sample" actions={<Link to={`/i/${id}/activity`} className="text-xs text-accent hover:underline">Live activity</Link>}>
-      <Load q={q}>
-        {() =>
-          rows.length === 0 ? (
-            <p className="text-sm text-muted">No client query is running at this moment.</p>
-          ) : (
-            <ul className="space-y-2.5">
-              {rows.map(({ s, age }) => (
-                <li key={s.pid} className="text-sm">
-                  <div className="flex items-center justify-between gap-2 text-xs text-muted">
-                    <span className="truncate">
-                      pid {s.pid} · {s.user ?? '?'} · {s.application_name || 'no application name'}
-                    </span>
-                    <span className="num shrink-0 font-medium text-ink">{seconds(age)}</span>
-                  </div>
-                  {s.query ? <SqlText sql={s.query} clamp /> : <span className="text-xs text-muted">query text not available</span>}
-                </li>
-              ))}
-            </ul>
+    <div style={{ height: h }}>
+      <Spinner label="Loading chart" />
+    </div>
+  )
+}
+
+/** Host resources from node_exporter, one row per distinct exporter. */
+function ResourcesCard({ targets, d }: { targets: FleetLiveTarget[]; d: FleetMetricsResponse | undefined }) {
+  const hosts = useMemo(() => {
+    const seen = new Map<string, NonNullable<FleetLiveTarget['host']>>()
+    for (const t of targets) if (t.host && t.target.node_exporter_url && !seen.has(t.target.node_exporter_url)) seen.set(t.target.node_exporter_url, t.host)
+    return [...seen.values()]
+  }, [targets])
+  const series = useMemo(
+    () =>
+      d
+        ? [
+            { key: 'cpu', label: 'CPU', color: slot(0), points: fleetPoints(d, 'host.cpu_utilization_ratio') },
+            { key: 'mem', label: 'Memory', color: slot(1), points: combine(d, ['host.memory_total_bytes', 'host.memory_available_bytes'], ([t, a]) => (t ? 1 - (a ?? 0) / t : null)) },
+            { key: 'disk', label: 'Disk used', color: slot(2), points: fleetPoints(d, 'host.filesystem_used_ratio') },
+          ]
+        : [],
+    [d],
+  )
+  if (hosts.length === 0) {
+    return (
+      <Card title="System resources">
+        <Empty title="No host metrics">Set a node_exporter URL on an instance to see CPU, memory, and disk of its host.</Empty>
+      </Card>
+    )
+  }
+  const cpus = hosts.map((h) => h.cpu_utilization_ratio).filter((v): v is number => v !== null)
+  // CPU is a rate between two scrapes: right after a restart the latest
+  // sample has none yet, so fall back to the last known bucket.
+  const cpu = cpus.length ? sum(cpus) / cpus.length : d ? lastKnown(fleetPoints(d, 'host.cpu_utilization_ratio')) : null
+  const total = sum(hosts.map((h) => h.memory_total_bytes ?? 0))
+  const avail = sum(hosts.map((h) => h.memory_available_bytes ?? 0))
+  const mem = total > 0 ? 1 - avail / total : null
+  const fs = hosts.flatMap((h) => h.filesystems ?? []).filter((f) => f.size_bytes > 0)
+  const disk = fs.length ? Math.max(...fs.map((f) => 1 - f.avail_bytes / f.size_bytes)) : null
+  const ioKnown = hosts.some((h) => h.disk_read_bytes_per_second !== null)
+  const read = sum(hosts.map((h) => h.disk_read_bytes_per_second ?? 0))
+  const write = sum(hosts.map((h) => h.disk_write_bytes_per_second ?? 0))
+  const tone = (v: number | null) => (v === null ? undefined : v >= 0.9 ? 'crit' : v >= 0.75 ? 'warn' : undefined)
+  const items: [string, number | null, string][] = [
+    ['CPU', cpu, 'busy'],
+    ['Memory', mem, total > 0 ? `of ${bytes(total)}` : 'unknown'],
+    ['Disk', disk, 'fullest filesystem'],
+  ]
+  return (
+    <Card title="System resources" subtitle={`${hosts.length} host${hosts.length === 1 ? '' : 's'} from node_exporter`}>
+      <div className="grid grid-cols-3 gap-4">
+        {items.map(([label, v, sub]) => (
+          <div key={label} className="min-w-0">
+            <div className="text-xs font-medium text-ink-2">{label}</div>
+            <div className="text-xl font-bold text-ink">{pct(v, 0)}</div>
+            <Meter value={v} max={1} tone={tone(v)} />
+            <div className="mt-1 truncate text-[11px] text-muted">{sub}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3">{d ? <TimeChart label="Host utilization" series={series} format={(n) => pct(n, 0)} height={120} {...span(d)} /> : <ChartLoading h={150} />}</div>
+      <p className="mt-2 text-xs text-muted">{ioKnown ? `Disk I/O: read ${bytes(read)}/s · write ${bytes(write)}/s` : 'Disk I/O unavailable'}</p>
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Top queries
+
+type Sort = 'total_time' | 'calls' | 'mean_time' | 'rows'
+
+const SORT_VALUE: Record<Sort, (q: FleetQuery) => number | null> = {
+  total_time: (q) => q.total_exec_ms,
+  calls: (q) => q.calls,
+  mean_time: (q) => q.mean_exec_ms,
+  rows: (q) => q.rows,
+}
+
+function TopQueriesCard({ env, range, multi }: { env: string; range: Range; multi: boolean }) {
+  const [sort, setSort] = useState<Sort>('total_time')
+  const q = useFleetQueries(env, range, sort, 6)
+  return (
+    <Card
+      pad={false}
+      title="Top queries"
+      subtitle={`Across instances · ${rangeLabel(range).toLowerCase()}`}
+      actions={
+        <Link to="/queries" className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline">
+          All queries <ArrowRight aria-hidden className="h-3 w-3" />
+        </Link>
+      }
+    >
+      <div className="px-5 pb-3">
+        <Pills label="Rank queries by" value={sort} onChange={setSort} items={[{ value: 'total_time', label: 'Total time' }, { value: 'calls', label: 'Calls' }, { value: 'mean_time', label: 'Mean latency' }, { value: 'rows', label: 'Rows' }]} />
+      </div>
+      <Load q={q} label="Loading queries">
+        {(d) => {
+          if (d.items.length === 0) return <div className="px-5 pb-5"><Empty title="No statements in this range">Statement statistics come from pg_stat_statements.</Empty></div>
+          const top = Math.max(...d.items.map((i) => SORT_VALUE[sort](i) ?? 0), 0)
+          return (
+            <div className="overflow-x-auto">
+              <table className={tableCls}>
+                <caption className="sr-only">Top queries</caption>
+                <thead>
+                  <tr>
+                    <Th className="pl-5">Query</Th>
+                    <Th align="right">Calls</Th>
+                    <Th align="right">Total</Th>
+                    <Th align="right" className="pr-5">
+                      {sort === 'rows' ? 'Rows' : 'Mean'}
+                    </Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.items.map((it) => {
+                    const v = SORT_VALUE[sort](it) ?? 0
+                    return (
+                      <tr key={`${it.target_id}-${it.identity_id}`} className={trCls}>
+                        <td className={`${tdCls} max-w-[220px] pl-5`}>
+                          <Link to={`/queries/${it.target_id}/${it.identity_id}`} className="block hover:underline">
+                            {it.query_text ? <SqlText sql={it.query_text} clamp /> : <span className="font-mono text-xs text-muted">queryid {it.queryid}</span>}
+                          </Link>
+                          <div className="mt-1 flex items-center gap-2">
+                            <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3" title={`Share of the top value by ${sort.replace('_', ' ')}`}>
+                              <span className="block h-full rounded-full" style={{ width: `${top > 0 ? Math.max(2, (v / top) * 100) : 0}%`, background: slot(0) }} />
+                            </span>
+                            {multi && <span className="shrink-0 text-[11px] text-muted">{it.target_name}</span>}
+                          </div>
+                        </td>
+                        <td className={tdNum}>{compact(it.calls)}</td>
+                        <td className={tdNum}>{ms(it.total_exec_ms)}</td>
+                        <td className={`${tdNum} pr-5`}>{sort === 'rows' ? compact(it.rows) : ms(it.mean_exec_ms)}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           )
-        }
+        }}
       </Load>
     </Card>
   )
 }
 
-function TopQueries({ id, range }: { id: number; range: ReturnType<typeof useRange>[0] }) {
-  const q = useQueries(id, { range, sort: 'total_time', order: 'desc', page: 1, q: '', command: '', compare: false, includeMonitoring: false, pageSize: 5 })
+// ---------------------------------------------------------------------------
+
+function MoreLink({ to, children }: { to: string; children: string }) {
   return (
-    <Card title="Most expensive queries" subtitle="By total execution time in the selected range" actions={<Link to={`/i/${id}/queries?range=${range}`} className="text-xs text-accent hover:underline">All queries</Link>}>
-      <Load q={q}>
-        {(d) =>
-          d.available === false ? (
-            <p className="text-sm text-muted">{d.unavailable_reason || 'pg_stat_statements is not available.'}</p>
-          ) : d.items.length === 0 ? (
-            <p className="text-sm text-muted">No statements in this range yet.</p>
-          ) : (
-            <ul className="space-y-2.5">
-              {d.items.map((it) => (
-                <li key={it.identity_id}>
-                  <Link to={`/i/${id}/queries/${it.identity_id}?range=${range}`} className="block rounded-md hover:bg-surface-2">
-                    <div className="flex items-center justify-between gap-2 text-xs text-muted">
-                      <span className="inline-flex items-center gap-1.5">
-                        <span aria-hidden className="h-2 w-2 rounded-sm" style={{ background: commandColor(it.command) }} />
-                        {COMMAND_LABEL[it.command] ?? it.command} · {compact(it.calls)} calls · avg {ms(it.mean_exec_ms)}
-                      </span>
-                      <span className="num shrink-0 font-medium text-ink">{pct(it.share_of_total_time, 0)}</span>
-                    </div>
-                    {it.query_text ? <SqlText sql={it.query_text} clamp /> : <span className="font-mono text-xs text-muted">queryid {it.queryid}</span>}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )
-        }
-      </Load>
-    </Card>
+    <Link to={to} className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline">
+      {children} <ArrowRight aria-hidden className="h-3 w-3" />
+    </Link>
   )
 }
 
 export default function OverviewPage() {
-  const id = useInstanceId()
-  const [range, setRange] = useRange()
-  const o = useOverview(id)
-  const commands = useCommands(id, range)
-
-  if (!o.data) return o.error ? <ErrorBox error={o.error} title="Could not load this instance" /> : <Spinner label="Loading instance" />
-  const d = o.data
-  const t = d.target
-  const restricted = d.visibility_warnings?.some((w) => w.code === 'restricted_visibility')
+  const { env, range } = useScope()
+  const live = useFleetLive(env)
+  const rw = useFleetMetrics(env, RW, range)
+  const load = useFleetMetrics(env, LOAD, range)
+  const host = useFleetMetrics(env, HOST, range)
+  const targets = useMemo(() => live.data?.targets ?? [], [live.data])
+  const [explorerId, setExplorerId] = useState(0)
+  const [sqlId, setSqlId] = useState(0)
+  const [selection, setSelection] = useState<ExplorerSelection | null>(null)
+  const list = targets.map((t) => t.target)
+  const pick = (id: number) => (list.some((t) => t.id === id) ? id : (list[0]?.id ?? 0))
+  const exId = pick(explorerId)
+  const sId = pick(sqlId)
+  const blocked = targets.reduce((n, t) => n + (t.report?.analysis.summary.blocked_sessions ?? 0), 0)
 
   return (
     <>
-      <PageHeader
-        title={
-          <span className="flex flex-wrap items-center gap-2">
-            {t.name} <StateBadge state={t.status.state} />
-          </span>
-        }
-        subtitle={`${t.description ? `${t.description} · ` : ''}What this PostgreSQL instance is doing now, and how it got here.`}
-        actions={<RangePicker value={range} onChange={setRange} />}
-      />
-      <div className="space-y-3">
-        {!d.connected && d.connect_error && <Notice tone="crit">Not connected: {d.connect_error}. Values below may be stale.</Notice>}
-        {restricted && <Notice tone="warn">The monitoring role cannot see other users' sessions in full (grant pg_read_all_stats). Counts and queries may be incomplete.</Notice>}
-        {d.open_incident_count > 0 && (
-          <Notice tone="crit">
-            <span className="font-medium">{d.open_incident_count} open incident(s):</span> {d.open_incidents.map((i) => i.title).join('; ')}.{' '}
-            <Link to={`/i/${id}/alerts`} className="text-accent underline">
-              View alerts
-            </Link>
-          </Notice>
-        )}
-
-        <Kpis o={d} />
-
-        <div className="grid gap-3 xl:grid-cols-3">
-          <div className="space-y-3 xl:col-span-2">
-            <Card title="Queries by type" subtitle="Executions per second of each kind of statement (pg_stat_statements)">
-              <Load q={commands} label="Loading workload">
-                {(c) => (c.available === false ? <p className="text-sm text-muted">{c.unavailable_reason || 'pg_stat_statements is not available on this instance.'}</p> : <CommandsChart data={c} />)}
-              </Load>
-            </Card>
-            <div className="grid gap-3 md:grid-cols-2">
-              <MetricCard id={id} range={range} title="Transactions per second" format={(n) => rate(n)} height={180} defs={[{ metric: 'xact.commit.per_s', label: 'Commits', color: slot(0) }, { metric: 'xact.rollback.per_s', label: 'Rollbacks', color: slot(1) }]} />
-              <MetricCard id={id} range={range} title="Connections by state" format={(n) => num(n, 1)} height={180} defs={[{ metric: 'sessions.active', label: 'Active', color: slot(0) }, { metric: 'sessions.idle', label: 'Idle', color: slot(1) }, { metric: 'sessions.idle_in_transaction', label: 'Idle in transaction', color: slot(2) }, { metric: 'sessions.waiting_lock', label: 'Waiting for a lock', color: slot(3) }]} />
-              <MetricCard id={id} range={range} title="Rows read" subtitle="Tuples returned by scans and fetched by index lookups" format={(n) => rate(n)} height={180} defs={[{ metric: 'tuples.returned.per_s', label: 'Returned', color: slot(0) }, { metric: 'tuples.fetched.per_s', label: 'Fetched', color: slot(1) }]} />
-              <MetricCard id={id} range={range} title="Rows written" format={(n) => rate(n)} height={180} defs={[{ metric: 'tuples.inserted.per_s', label: 'Inserted', color: slot(1) }, { metric: 'tuples.updated.per_s', label: 'Updated', color: slot(2) }, { metric: 'tuples.deleted.per_s', label: 'Deleted', color: slot(3) }]} />
-              <MetricCard id={id} range={range} title="Time spent executing queries" subtitle="Milliseconds of statement execution per second (includes waiting)" format={(n) => `${ms(n)}/s`} height={180} defs={[{ metric: 'statements.exec_ms.per_s', label: 'Execution time', color: slot(0) }]} />
-              <MetricCard id={id} range={range} title="Cache hit ratio" format={(n) => pct(n, 1)} height={180} defs={[{ metric: 'cache.hit_ratio', label: 'Hit ratio', color: slot(0) }]} />
-              <MetricCard id={id} range={range} title={t.status.is_standby ? 'WAL received' : 'WAL generated'} format={(n) => `${bytes(n)}/s`} height={180} defs={[{ metric: t.status.is_standby ? 'wal.received_bytes.per_s' : 'wal.bytes.per_s', label: 'WAL', color: slot(0) }]} />
-              <MetricCard id={id} range={range} title="Temporary files" format={(n) => `${bytes(n)}/s`} height={180} defs={[{ metric: 'temp.bytes.per_s', label: 'Temp bytes', color: slot(0) }]} />
-            </div>
+      <PageHeader title="Overview" subtitle={`${env ? `${env.charAt(0).toUpperCase()}${env.slice(1)} environment` : 'All environments'} · ${targets.length} instance${targets.length === 1 ? '' : 's'} · ${rangeLabel(range).toLowerCase()}`} />
+      {live.error && !live.data ? (
+        <ErrorBox error={live.error} title="Could not load the fleet" />
+      ) : !live.data ? (
+        <Spinner label="Loading instances" />
+      ) : targets.length === 0 ? (
+        <Empty title={env ? `No enabled instance in “${env}”` : 'No instance is monitored yet'}>
+          <Link to="/settings/targets/new" className="text-accent hover:underline">
+            Add a PostgreSQL instance
+          </Link>{' '}
+          to start monitoring.
+        </Empty>
+      ) : (
+        <div className="space-y-4">
+          <Kpis targets={targets} load={load.data} env={env} range={range} />
+          <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+            <ReadWriteCard d={rw.data} />
+            <ThroughputCard d={load.data} />
+            <ResourcesCard targets={targets} d={host.data} />
           </div>
-          <div className="space-y-3">
-            <Card title="Query mix" subtitle="Share of executions and time by statement type in the selected range">
-              <Load q={commands} label="Loading workload">
-                {(c) => (c.available === false ? <p className="text-sm text-muted">Unavailable.</p> : <CommandMix data={c} compactView />)}
-              </Load>
-            </Card>
-            <LongestRunning id={id} />
-            <TopQueries id={id} range={range} />
-            <Card title="Alerts" actions={<Link to={`/i/${id}/alerts`} className="inline-flex items-center gap-1 text-xs text-accent hover:underline">Details <ArrowRight aria-hidden className="h-3 w-3" /></Link>}>
-              {d.findings.filter((f) => f.finding.status === 'active').length === 0 ? (
-                <p className="text-sm text-muted">No active findings.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {d.findings
-                    .filter((f) => f.finding.status === 'active')
-                    .slice(0, 5)
-                    .map((f) => (
-                      <li key={f.id} className="flex items-start gap-2 text-sm">
-                        <SeverityBadge severity={f.finding.severity} />
-                        <span className="min-w-0">{f.finding.title}</span>
-                      </li>
-                    ))}
-                </ul>
+          <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+            <Card title="Database topology" subtitle="Primaries and the standbys streaming from them" actions={<MoreLink to="/topology">View topology</MoreLink>}>
+              <TopologyGraph targets={targets} compact />
+              {host.data && topology(targets).groups.some((g) => g.edges.length > 0) && (
+                <div className="mt-5 border-t border-line pt-4">
+                  <p className="mb-1 text-xs font-medium text-ink-2">Largest replay lag (WAL not yet replayed)</p>
+                  <TimeChart label="Largest replay lag" series={[{ key: 'lag', label: 'Replay lag', color: slot(0), points: fleetPoints(host.data, 'replication.max_replay_lag_bytes') }]} format={(n) => bytes(n)} height={130} area integer {...span(host.data)} />
+                </div>
               )}
             </Card>
-            <Card title="Collection">
-              <ul className="space-y-1 text-sm">
-                {Object.values(t.status.collectors)
-                  .sort((a, b) => a.name.localeCompare(b.name))
-                  .map((c) => (
-                    <li key={c.name} className="flex items-center justify-between gap-2">
-                      <span>{c.name}</span>
-                      {c.enabled ? (
-                        c.last_error ? (
-                          <Badge tone="crit" title={c.last_error}>failing</Badge>
-                        ) : (
-                          <span className="text-xs text-muted">every {seconds(c.interval_seconds)}</span>
-                        )
-                      ) : (
-                        <Badge title={c.disabled_reason}>unavailable</Badge>
-                      )}
-                    </li>
-                  ))}
-              </ul>
+            <TopQueriesCard env={env} range={range} multi={targets.length > 1} />
+            <Card pad={false} title="Active sessions" subtitle="Running a query or holding a transaction, longest first" actions={<MoreLink to="/sessions">View all sessions</MoreLink>} className="lg:col-span-2 2xl:col-span-1">
+              <SessionsTable targets={targets} compact limit={6} />
+            </Card>
+          </div>
+          <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+            <Card title="Blocking transactions" subtitle={blocked ? `${blocked} session${blocked === 1 ? '' : 's'} waiting on a lock held by another session` : 'From pg_blocking_pids() in the latest sample'} actions={<MoreLink to="/blocking">Details</MoreLink>}>
+              <BlockingGraph targets={targets} max={2} />
+            </Card>
+            <Card pad={false} title="Database explorer" actions={<MoreLink to={exId ? `/explorer/${exId}` : '/explorer'}>Open explorer</MoreLink>}>
+              {exId > 0 && (
+                <ExplorerPanel
+                  key={exId}
+                  id={exId}
+                  compactView
+                  selection={selection}
+                  onSelect={setSelection}
+                  toolbar={
+                    <InstanceSelect
+                      targets={list}
+                      value={exId}
+                      onChange={(id) => {
+                        setExplorerId(id)
+                        setSelection(null)
+                      }}
+                    />
+                  }
+                />
+              )}
+            </Card>
+            <Card pad={false} title="SQL editor" subtitle="Read-only, separate role" actions={<MoreLink to={sId ? `/sql/${sId}` : '/sql'}>Open editor</MoreLink>} className="xl:col-span-2 2xl:col-span-1">
+              {sId > 0 && <SqlPanel key={sId} id={sId} compactView toolbar={<InstanceSelect targets={list} value={sId} onChange={setSqlId} />} />}
             </Card>
           </div>
         </div>
-      </div>
+      )}
     </>
   )
 }

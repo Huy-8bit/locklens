@@ -28,9 +28,18 @@ type Target struct {
 	QueryTextEnabled bool
 	MaxConnections   int
 	NodeExporterURL  *string
+	Environment      string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 	DeletedAt        *time.Time
+}
+
+// envOrDefault stores targets without an environment label as "default".
+func envOrDefault(e string) string {
+	if e == "" {
+		return "default"
+	}
+	return e
 }
 
 // ErrNameTaken is returned when another active target has the same name.
@@ -38,13 +47,13 @@ var ErrNameTaken = errors.New("a target with this name already exists")
 
 const targetColumns = `id, name, description, dsn_ciphertext, display_host, display_port, display_database,
 display_user, enabled, interval_seconds, query_text_enabled, max_connections, node_exporter_url,
-created_at, updated_at, deleted_at`
+created_at, updated_at, deleted_at, environment`
 
 func scanTarget(row pgx.Row) (Target, error) {
 	var t Target
 	err := row.Scan(&t.ID, &t.Name, &t.Description, &t.DSNCiphertext, &t.DisplayHost, &t.DisplayPort,
 		&t.DisplayDatabase, &t.DisplayUser, &t.Enabled, &t.IntervalSeconds, &t.QueryTextEnabled,
-		&t.MaxConnections, &t.NodeExporterURL, &t.CreatedAt, &t.UpdatedAt, &t.DeletedAt)
+		&t.MaxConnections, &t.NodeExporterURL, &t.CreatedAt, &t.UpdatedAt, &t.DeletedAt, &t.Environment)
 	return t, err
 }
 
@@ -63,11 +72,11 @@ func (s *Store) CreateTarget(ctx context.Context, t Target) (Target, error) {
 		var err error
 		out, err = scanTarget(tx.QueryRow(ctx, `
 INSERT INTO targets (name, description, dsn_ciphertext, display_host, display_port, display_database,
-    display_user, enabled, interval_seconds, query_text_enabled, max_connections, node_exporter_url)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    display_user, enabled, interval_seconds, query_text_enabled, max_connections, node_exporter_url, environment)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 RETURNING `+targetColumns,
 			t.Name, t.Description, t.DSNCiphertext, t.DisplayHost, t.DisplayPort, t.DisplayDatabase,
-			t.DisplayUser, t.Enabled, t.IntervalSeconds, t.QueryTextEnabled, t.MaxConnections, t.NodeExporterURL))
+			t.DisplayUser, t.Enabled, t.IntervalSeconds, t.QueryTextEnabled, t.MaxConnections, t.NodeExporterURL, envOrDefault(t.Environment)))
 		if err != nil {
 			return err
 		}
@@ -89,11 +98,11 @@ func (s *Store) UpdateTarget(ctx context.Context, t Target) (Target, error) {
 	out, err := scanTarget(s.pool.QueryRow(ctx, `
 UPDATE targets SET name = $2, description = $3, dsn_ciphertext = $4, display_host = $5, display_port = $6,
     display_database = $7, display_user = $8, enabled = $9, interval_seconds = $10,
-    query_text_enabled = $11, max_connections = $12, node_exporter_url = $13, updated_at = now()
+    query_text_enabled = $11, max_connections = $12, node_exporter_url = $13, environment = $14, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
 RETURNING `+targetColumns,
 		t.ID, t.Name, t.Description, t.DSNCiphertext, t.DisplayHost, t.DisplayPort, t.DisplayDatabase,
-		t.DisplayUser, t.Enabled, t.IntervalSeconds, t.QueryTextEnabled, t.MaxConnections, t.NodeExporterURL))
+		t.DisplayUser, t.Enabled, t.IntervalSeconds, t.QueryTextEnabled, t.MaxConnections, t.NodeExporterURL, envOrDefault(t.Environment)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Target{}, ErrNotFound
 	}

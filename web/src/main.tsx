@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ApiError } from './api/client'
 import { AuthProvider } from './auth'
 import { App } from './App'
+import { ScopeProvider } from './lib/scope'
 import './styles.css'
 
 const queryClient = new QueryClient({
@@ -24,7 +25,9 @@ createRoot(root).render(
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <AuthProvider>
-          <App />
+          <ScopeProvider>
+            <App />
+          </ScopeProvider>
         </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>

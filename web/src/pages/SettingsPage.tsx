@@ -48,7 +48,7 @@ function Targets() {
                   {d.targets.map((t) => (
                     <tr key={t.id} className={trCls}>
                       <td className={tdCls}>
-                        <Link className="font-medium hover:underline" to={`/i/${t.id}/overview`}>
+                        <Link className="font-medium hover:underline" to={`/databases/${t.id}`}>
                           {t.name}
                         </Link>
                       </td>

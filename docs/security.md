@@ -173,3 +173,9 @@ limits, disposable connections and session-owned cancellation. This is not a san
 for arbitrary function side effects. Review the dedicated role's SELECT, ownership,
 PUBLIC and function grants. Workspace audits do not store raw SQL/results. Optional
 browser history has a separate opt-in policy. See [the full access model](investigation-workspace.md).
+
+The web UI's **SQL Editor** is the client of that SQL capability; it is off for every
+target until an administrator enables "Read-only SQL editor" (with a confirmation) or a
+bootstrap file sets `workspace.sql`. The Docker lab enables it for its two lab targets,
+whose data is fake. The editor keeps drafts in page memory only and offers no way to
+terminate sessions, cancel other backends, change settings, or write.

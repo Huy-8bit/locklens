@@ -13,11 +13,17 @@ LockLens **only observes**. It connects with a read-only role in read-only
 transactions and never cancels queries, terminates sessions, changes
 configuration, creates or drops indexes, runs `VACUUM`, or fails over.
 
-![Instance overview](docs/images/overview.png)
+![Overview of the lab environment](docs/images/overview.png)
 
 ## Features
 
-- **What the database is doing now**: one overview per instance with
+- **The whole environment on one screen**: databases monitored, active
+  connections, query throughput and latency, replication health, slow queries,
+  and incidents; read/write operations, host resources, the replication
+  topology, top queries, active sessions, blocking, and a compact explorer and
+  SQL editor. An environment selector (production, staging, lab, …), a time
+  range, a Live switch, and ⌘K search across databases, queries, and incidents.
+- **What each database is doing now**: one overview per instance with
   connections, running queries, queries and transactions per second, cache hit
   ratio, rows read and written, blocking, oldest transaction, size, and
   replication lag, plus history charts.
@@ -25,10 +31,15 @@ configuration, creates or drops indexes, runs `VACUUM`, or fails over.
   SELECT, INSERT, UPDATE, DELETE, DDL, transaction control, and so on, with
   executions per second, time, and rows per type over time, and the full
   normalised SQL of each statement.
-- **Data explorer**: schemas, tables, columns, indexes, constraints, and the
-  rows themselves (paged, sortable, filterable), through a separate
-  least-privileged role that is switched off by default.
-- **All instances** at a glance: state, freshness, load, open incidents.
+- **Explorer**: schemas, tables, views, functions, types, columns, indexes,
+  constraints, triggers, and the rows themselves (paged, sortable, filterable),
+  through a separate least-privileged role that is switched off by default.
+- **Read-only SQL editor**: one statement at a time in a read-only transaction
+  that is always rolled back, bounded results, and the execution plan drawn as a
+  graph; off by default, through the same separate role.
+- **Topology, sessions, and connections**: primaries and the standbys
+  streaming from them with replay lag; every client session across instances;
+  who is connected, grouped by database, user, application, and client.
 - **Health**: sessions by state, connections versus the limit, commit and
   rollback rates, cache hit ratio, temp files, deadlocks, WAL rate,
   checkpoints and background writer (version-aware), `pg_stat_io` on 16+,
@@ -59,12 +70,14 @@ configuration, creates or drops indexes, runs `VACUUM`, or fails over.
   retention in batches, bounded buffering when the store is down, visible
   collection gaps.
 - **Security**: single administrator with bcrypt and server-side sessions,
-  CSRF protection, encrypted connection strings, row browsing off by default
-  and through a separate role.
+  CSRF protection, encrypted connection strings, row browsing and SQL off by
+  default and through a separate role.
 
 ![Queries by statement type](docs/images/queries.png)
 
-![Data explorer](docs/images/explorer.png)
+![Explorer](docs/images/explorer.png)
+
+![SQL editor with an execution plan](docs/images/sql.png)
 
 ## Try it in about 10 minutes
 
@@ -84,10 +97,11 @@ standby — are already registered. Then create a problem:
 make lab SCENARIO=chain      # A -> B -> C blocking chain for 3 minutes
 ```
 
-Watch it on **Live activity** ("Who is blocking whom"); within about 20
-seconds an incident appears under **Alerts**. For a realistic mix of SELECT,
+Watch it on the **Overview** and under **Blocking**; within about 20 seconds
+an incident appears under **Incidents**. For a realistic mix of SELECT,
 INSERT, UPDATE, and DELETE traffic, run `make lab SCENARIO=shop` and open
-**Queries**; browse the demo `shop` schema under **Data explorer**. Other
+**Queries**; browse the demo `shop` schema under **Explorer** and query it in
+the **SQL Editor** (read-only). Other
 scenarios: `row-blocking`, `idle-blocker`, `connection-pressure`,
 `regression`, `temp-files`, `replication`, `healthy`, and `make lab-outage`.
 When done:
@@ -180,7 +194,7 @@ rather than zero. Details: [docs/architecture.md](docs/architecture.md),
 
 ## Privacy and safety
 
-- SQL text is **collected by default** so the Queries and Live activity pages
+- SQL text is **collected by default** so the Queries and Sessions pages
   can show it; it can be switched off per instance. Normalised statements
   replace literal values with `$1, $2, …`, but running queries can contain
   literals. SQL text never appears in logs or metric labels, and exports

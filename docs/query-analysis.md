@@ -137,7 +137,7 @@ statements is zero and an uncovered one is unknown.
 ## SQL text privacy
 
 SQL text is **collected by default** for every target, so the Queries and
-Live activity pages can show it:
+Sessions pages can show it:
 
 - The normalised statement text is stored once per identity, and live session
   queries are kept in activity snapshots.

@@ -149,6 +149,23 @@ func (g *Gauge) Delete(labels ...string) {
 	delete(g.f.series, strings.Join(labels, "\x00"))
 }
 
+// Total returns the sum over all series of a counter.
+func (c *Counter) Total() float64 { return c.r.total(c.f) }
+
+// Total returns the sum over all series of a gauge (its value when it has no
+// labels).
+func (g *Gauge) Total() float64 { return g.r.total(g.f) }
+
+func (r *Registry) total(f *family) float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var t float64
+	for _, s := range f.series {
+		t += s.value
+	}
+	return t
+}
+
 // Observe records a value.
 func (h *Histogram) Observe(v float64, labels ...string) {
 	h.r.mu.Lock()

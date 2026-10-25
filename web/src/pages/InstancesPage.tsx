@@ -5,6 +5,7 @@ import type { FleetEntry } from '../api/types'
 import { PageHeader } from '../components/Shell'
 import { Badge, Card, Empty, Load, Meter, StateBadge } from '../components/ui'
 import { ago, bytes, num, pct, rate } from '../lib/format'
+import { useScope } from '../lib/scope'
 
 function InstanceCard({ e }: { e: FleetEntry }) {
   const t = e.target
@@ -16,7 +17,7 @@ function InstanceCard({ e }: { e: FleetEntry }) {
   const rollbacks = v('xact.rollback.per_s')
   const blocked = v('blocking.blocked_sessions')
   return (
-    <Link to={`/i/${t.id}/overview`} className="block rounded-xl border border-line bg-surface p-4 transition-colors hover:border-accent">
+    <Link to={`/databases/${t.id}`} className="block rounded-xl border border-line bg-surface p-4 transition-colors hover:border-accent">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h2 className="truncate font-semibold">{t.name}</h2>
@@ -64,11 +65,12 @@ function InstanceCard({ e }: { e: FleetEntry }) {
 
 export default function InstancesPage() {
   const fleet = useFleet()
+  const { env } = useScope()
   return (
     <>
       <PageHeader
-        title="All instances"
-        subtitle="Every PostgreSQL server LockLens monitors, as of the latest collection."
+        title="Databases"
+        subtitle={`Every PostgreSQL server LockLens monitors${env ? ` in ${env}` : ''}, as of the latest collection.`}
         actions={
           <Link to="/settings/targets/new" className="inline-flex items-center gap-1.5 rounded-lg border border-accent-fill bg-accent-fill px-3 py-1.5 text-sm font-medium text-accent-ink">
             <Plus aria-hidden className="h-4 w-4" /> Add instance
@@ -76,10 +78,11 @@ export default function InstancesPage() {
         }
       />
       <Load q={fleet} label="Loading instances">
-        {(d) =>
-          d.targets.length === 0 ? (
+        {(all) => {
+          const d = { targets: all.targets.filter((e) => !env || e.target.environment === env) }
+          return d.targets.length === 0 ? (
             <Card>
-              <Empty title="No instances yet" icon={<Server aria-hidden className="h-6 w-6" />}>
+              <Empty title={env ? `No instance in “${env}”` : 'No instances yet'} icon={<Server aria-hidden className="h-6 w-6" />}>
                 Add a PostgreSQL server with a read-only monitoring role (pg_read_all_stats).{' '}
                 <Link className="text-accent underline" to="/settings/targets/new">
                   Add instance
@@ -93,7 +96,7 @@ export default function InstancesPage() {
               ))}
             </div>
           )
-        }
+        }}
       </Load>
     </>
   )

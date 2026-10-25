@@ -99,6 +99,10 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/session", s.authed(s.session))
 
 	m.HandleFunc("GET /api/v1/fleet", s.authed(s.fleet))
+	m.HandleFunc("GET /api/v1/fleet/metrics", s.authed(s.fleetMetrics))
+	m.HandleFunc("GET /api/v1/fleet/queries", s.authed(s.fleetQueries))
+	m.HandleFunc("GET /api/v1/fleet/live", s.authed(s.fleetLive))
+	m.HandleFunc("GET /api/v1/system", s.authed(s.system))
 	m.HandleFunc("GET /api/v1/topology", s.authed(s.topology))
 	m.HandleFunc("PUT /api/v1/topology", s.authed(s.putTopology))
 	m.HandleFunc("DELETE /api/v1/topology/{id}", s.authed(s.deleteTopology))

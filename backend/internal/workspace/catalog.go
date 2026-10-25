@@ -22,6 +22,19 @@ func Catalog(ctx context.Context, tx pgx.Tx, kind, schema, relation string) (out
 		return readResult(ctx, tx, `SELECT nspname AS schema FROM pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname <> 'information_schema' AND has_schema_privilege(oid,'USAGE') ORDER BY nspname LIMIT 201`)
 	case "relations":
 		return readResult(ctx, tx, `SELECT c.relname AS relation,c.relkind::text AS kind,CASE WHEN c.reltuples<0 THEN NULL ELSE c.reltuples::bigint END AS estimated_rows,pg_total_relation_size(c.oid) AS total_bytes,s.n_live_tup AS estimated_live_tuples,s.n_dead_tup AS estimated_dead_tuples,s.last_autovacuum,s.last_autoanalyze FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_stat_user_tables s ON s.relid=c.oid WHERE n.nspname=$1 AND c.relkind IN ('r','p','v','m','f') ORDER BY c.relname LIMIT 201`, schema)
+	case "functions":
+		return readResult(ctx, tx, `SELECT p.proname AS name, pg_get_function_identity_arguments(p.oid) AS arguments,
+CASE p.prokind WHEN 'f' THEN 'function' WHEN 'p' THEN 'procedure' WHEN 'a' THEN 'aggregate' WHEN 'w' THEN 'window' END AS kind,
+pg_get_function_result(p.oid) AS returns, l.lanname AS language
+FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang
+WHERE n.nspname = $1 AND has_schema_privilege(n.oid, 'USAGE') ORDER BY p.proname LIMIT 201`, schema)
+	case "types":
+		return readResult(ctx, tx, `SELECT t.typname AS name,
+CASE t.typtype WHEN 'c' THEN 'composite' WHEN 'd' THEN 'domain' WHEN 'e' THEN 'enum' WHEN 'r' THEN 'range' WHEN 'm' THEN 'multirange' END AS kind,
+format_type(t.oid, NULL) AS definition
+FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace LEFT JOIN pg_class c ON c.oid = t.typrelid
+WHERE n.nspname = $1 AND has_schema_privilege(n.oid, 'USAGE') AND t.typtype IN ('c', 'd', 'e', 'r', 'm')
+  AND (t.typrelid = 0 OR c.relkind = 'c') ORDER BY t.typname LIMIT 201`, schema)
 	case "detail":
 		oid, err := relationOID(ctx, tx, schema, relation)
 		if err != nil {
@@ -31,6 +44,7 @@ func Catalog(ctx context.Context, tx pgx.Tx, kind, schema, relation string) (out
 			{"columns", `SELECT a.attname AS column,format_type(a.atttypid,a.atttypmod) AS type,NOT a.attnotnull AS nullable,pg_get_expr(d.adbin,d.adrelid) AS default_expression FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE a.attrelid=$1 AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum LIMIT 201`},
 			{"constraints", `SELECT conname AS name,contype::text AS kind,pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid=$1 ORDER BY conname LIMIT 201`},
 			{"indexes", `SELECT c.relname AS name,pg_get_indexdef(i.indexrelid) AS definition,pg_relation_size(i.indexrelid) AS bytes,s.idx_scan,s.idx_tup_read,s.idx_tup_fetch FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid LEFT JOIN pg_stat_user_indexes s ON s.indexrelid=i.indexrelid WHERE i.indrelid=$1 ORDER BY c.relname LIMIT 201`},
+			{"triggers", `SELECT tgname AS name, pg_get_triggerdef(oid) AS definition, CASE tgenabled WHEN 'D' THEN false ELSE true END AS enabled FROM pg_trigger WHERE tgrelid=$1 AND NOT tgisinternal ORDER BY tgname LIMIT 201`},
 			{"partitions", `SELECT 'parent' AS relationship,inhparent::regclass::text AS relation FROM pg_inherits WHERE inhrelid=$1 UNION ALL SELECT 'child',inhrelid::regclass::text FROM pg_inherits WHERE inhparent=$1 LIMIT 201`},
 		}
 		out := map[string]Result{}
