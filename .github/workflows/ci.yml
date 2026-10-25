@@ -93,6 +93,10 @@ jobs:
         with:
           images: ${{ env.IMAGE }}
           # main -> latest and sha-<short>; v1.2.3 -> 1.2.3, 1.2, and sha-<short>.
+          # latest comes only from main (the action would otherwise add it to
+          # every semver tag push as well).
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
