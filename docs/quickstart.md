@@ -20,26 +20,34 @@ but Docker) or **your own databases** with a locally built binary.
 
 ```sh
 git clone <this repository> locklens && cd locklens
-make up
+make lab-up
 ```
 
-`make up` builds the `locklens:lab` image (the first build takes a few
-minutes) and starts four containers on loopback only, waiting until each is
-healthy:
+`make lab-up` builds the `locklens:local` image (the first build takes a few
+minutes) and starts the lab, project `locklens-lab`, on loopback only, waiting
+until each container is healthy:
 
 | Container | Role |
 | --- | --- |
 | `store` | PostgreSQL 18.6: LockLens' monitoring store |
-| `primary` | PostgreSQL 18.6 to monitor, with `pg_stat_statements`, demo roles, and a replication slot |
-| `standby` | Hot standby streaming from `primary` |
-| `locklens` | `locklens server` in demo mode, with both databases pre-registered as targets |
+| `primary` | PostgreSQL 18.6 to monitor, with `pg_stat_statements`, demo roles, and replication slots |
+| `standby`, `standby-2` | Hot standbys streaming from `primary` |
+| `backend-simulator` | A small API with continuous synthetic traffic on `primary` |
+| `node-exporter` | Host metrics of the Docker VM |
+| `locklens` | `locklens server` in demo mode, with the three databases pre-registered as targets |
+
+`make up` (without `lab`) starts only LockLens and its store, for your own
+databases; see [Option B](#option-b-your-own-databases). The two use separate
+Compose projects and data, but the same port 8080, so stop one before starting
+the other (or set `LOCKLENS_HTTP_PORT`).
 
 ### 2. Sign in
 
 Open <http://127.0.0.1:8080> and sign in as **admin** / **locklens-lab-admin**.
 
 These credentials, the database passwords, and the master key in
-[deploy/compose.yaml](../deploy/compose.yaml) are fake, local-only lab values.
+[deploy/lab.env](../deploy/lab.env) and
+[deploy/compose.lab.yaml](../deploy/compose.lab.yaml) are fake, local-only lab values.
 Never use them elsewhere.
 
 You land on the **Overview** of the whole environment; **Databases** lists
@@ -51,7 +59,7 @@ orders, order_items, a view, a function, an enum type, and a trigger) that you
 can browse under **Explorer** and query read-only in the **SQL Editor**; both
 use a read-only role that the lab configures for you. The lab also
 runs a node_exporter inside Docker, so **System resources** shows the Docker
-VM's CPU, memory, and filesystem (not your computer's; `make up-host` adds an
+VM's CPU, memory, and filesystem (not your computer's; `make lab-up-host` adds an
 exporter that reads the host on Linux).
 
 ### 3. Run scenarios
@@ -97,7 +105,7 @@ defaults are deliberately slower ([rules.md](rules.md)).
 ### 5. Optional: host metrics
 
 ```sh
-make up-host
+make lab-up-host
 ```
 
 starts node_exporter as well. In **Settings → lab-primary → Edit**, set the
@@ -117,12 +125,28 @@ make demo     # the original CLI walkthrough: row lock, chain, idle transaction
 ### 7. Stop and clean up
 
 ```sh
-make down     # removes the lab's containers and volumes (project "locklens" only)
+make lab-down     # removes the lab's containers and volumes (project "locklens-lab" only)
 ```
 
 ## Option B: your own databases
 
-### Build
+### With Docker (recommended)
+
+```sh
+make up      # LockLens and its store only, on http://127.0.0.1:8080
+make down    # stop; the data is kept
+```
+
+The first `make up` writes `deploy/.env` (mode 600, ignored by git) with a
+random store password, master key, and administrator password, and prints
+the password. Keep the master key: it encrypts stored connection strings.
+Edit `deploy/.env` (see [deploy/.env.example](../deploy/.env.example)) to
+choose your own values; changing `LOCKLENS_ADMIN_PASSWORD` and running
+`make up` again resets the administrator's password. Then add your databases
+under **Settings → Add instance**; from the container, use an address it can
+reach (a Docker service name or `host.docker.internal`), not `localhost`.
+
+### Build from source
 
 Requires Go 1.26+ and Node.js 22+ (for the UI).
 

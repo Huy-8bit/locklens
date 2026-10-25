@@ -85,17 +85,18 @@ Static assets such as the favicon live in `web/public/`.
 | Integration tests on every supported major | `make test-compat` |
 | Browser E2E against the Docker stack | `make e2e` |
 | Performance smoke check (lab must be up) | `./scripts/perf-smoke.sh` |
-| Start / stop the lab | `make up` / `make down` |
+| Start / stop LockLens only (your databases) | `make up` / `make down` |
+| Start / stop the demo lab | `make lab-up` / `make lab-down` |
 | Run a lab scenario | `make lab SCENARIO=chain` |
 | CLI demo against the lab primary | `make demo` |
 
 ### Running the server locally
 
 `make dev` starts the databases, API, and Vite together. Stop it with Ctrl-C;
-the databases remain available until `make down`. Set `LOCKLENS_LISTEN` and
+the databases remain available until `make lab-down`. Set `LOCKLENS_LISTEN` and
 `LOCKLENS_DEV_WEB_PORT` to choose other API and Vite ports. For a manual API launch
-against the lab databases (`make up`, or only the databases with
-`docker compose -f deploy/compose.yaml up -d --wait store primary standby`):
+against the lab databases (`make lab-up`, or only the databases with
+`docker compose -f deploy/compose.yaml -f deploy/compose.lab.yaml --env-file deploy/lab.env up -d --wait store primary standby`):
 
 ```bash
 make build

@@ -11,11 +11,13 @@ import { expect, test, type Page } from '@playwright/test'
 // Nothing here mocks or intercepts the API.
 
 const project = env('LOCKLENS_E2E_COMPOSE_PROJECT')
-const composeFile = env('LOCKLENS_E2E_COMPOSE_FILE')
+// Compose files (comma-separated) and the lab's env file.
+const composeFiles = env('LOCKLENS_E2E_COMPOSE_FILES').split(',')
+const composeEnvFile = env('LOCKLENS_E2E_COMPOSE_ENV_FILE')
 const adminPassword = env('LOCKLENS_E2E_ADMIN_PASSWORD')
 // The lab's fake observer credentials, as configured in demo/postgres/01-roles.sql.
 const targetDSN = 'postgres://locklens_observer:observer-pw@primary:5432/locklens_demo?sslmode=disable'
-// The lab's fake superuser (deploy/compose.yaml), used once to let LockLens create its roles.
+// The lab's fake superuser (deploy/compose.lab.yaml), used once to let LockLens create its roles.
 const superuserDSN = 'postgres://postgres:lab-postgres-pw@primary:5432/locklens_demo?sslmode=disable'
 const forbidden = ['observer-pw', 'reader-pw', 'lab-store-pw', 'lab-postgres-pw', 'demo-app-pw', adminPassword, 'postgres://']
 
@@ -26,7 +28,7 @@ function env(name: string): string {
 }
 
 function compose(...args: string[]): string[] {
-  return ['compose', '-p', project, '-f', composeFile, ...args]
+  return ['compose', '-p', project, ...composeFiles.flatMap((f) => ['-f', f]), '--env-file', composeEnvFile, ...args]
 }
 
 const require = createRequire(import.meta.url)

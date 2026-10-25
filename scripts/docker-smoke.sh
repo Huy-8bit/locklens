@@ -8,7 +8,7 @@ free_port() {
 }
 export LOCKLENS_HTTP_PORT=$(free_port) LOCKLENS_STORE_PORT=$(free_port) LOCKLENS_PG_PORT=$(free_port) LOCKLENS_STANDBY_PORT=$(free_port) \
   LOCKLENS_STANDBY2_PORT=$(free_port) LOCKLENS_BACKEND_PORT=$(free_port)
-compose=(docker compose -p "$project" -f deploy/compose.yaml)
+compose=(docker compose -p "$project" -f deploy/compose.yaml -f deploy/compose.lab.yaml --env-file deploy/lab.env)
 work=$(mktemp -d)
 cleanup() {
   local status=$?

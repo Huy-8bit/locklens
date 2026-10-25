@@ -127,7 +127,8 @@ pg_restore --clean --if-exists --no-owner --dbname="$LOCKLENS_STORE_DSN" locklen
 - After restoring an older dump, `locklens server` applies any newer
   migrations at startup.
 
-For the Docker lab, the store lives in the `store-data` volume; `make down`
+With `make up`, the store lives in the `locklens_store` volume (`make down`
+keeps it). For the demo lab, it lives in `locklens-lab_store`; `make lab-down`
 deletes it.
 
 ## Rotating the master key

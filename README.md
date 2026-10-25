@@ -68,7 +68,7 @@ PostgreSQL primary, two streaming standbys, and a background workload, all on
 
 ```sh
 git clone https://github.com/Huy-8bit/locklens.git && cd locklens
-make up                          # first build takes a few minutes
+make lab-up                      # first build takes a few minutes
 ```
 
 Open <http://127.0.0.1:8080> and sign in as `admin` / `locklens-lab-admin`.
@@ -77,10 +77,19 @@ Then create a problem and watch LockLens explain it:
 ```sh
 make lab SCENARIO=chain          # an A → B → C blocking chain for 3 minutes
 make lab-list                    # all scenarios
-make down                        # remove the lab and its data
+make lab-down                    # remove the lab and its data
 ```
 
 See the [quickstart](docs/quickstart.md) for every scenario and what to expect.
+
+### Run LockLens from the repository
+
+Starts only LockLens and its own store; add your databases in the UI.
+
+```sh
+make up                          # creates deploy/.env with random secrets and prints the admin password
+make down                        # stop (data is kept)
+```
 
 ### Run the Docker image
 

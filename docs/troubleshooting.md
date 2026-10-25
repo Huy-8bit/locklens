@@ -176,18 +176,18 @@ This is why a refused connection may be reported twice per address.
   docker service.
 - `port is already allocated` for 8080 or 55432–55434: another service uses the
   port. Set `LOCKLENS_HTTP_PORT`, `LOCKLENS_PG_PORT`, `LOCKLENS_STANDBY_PORT`,
-  or `LOCKLENS_STORE_PORT`, for example `LOCKLENS_HTTP_PORT=8081 make up`
+  or `LOCKLENS_STORE_PORT`, for example `LOCKLENS_HTTP_PORT=8081 make lab-up`
   (CLI demos then need `LOCKLENS_DSN` and `LOCKLENS_DEMO_DSN` with the new
   port). The integration and E2E suites use dynamic ports.
 - The standby stays unhealthy: it clones the primary on first start; if the
-  primary was recreated, run `make down` and `make up` for fresh volumes.
+  primary was recreated, run `make lab-down` and `make lab-up` for fresh volumes.
 - A lab scenario left sessions or objects behind (for example after
   `kill -9`): `make lab-status` shows them, `make lab-stop` removes them.
 - No incident appears during a scenario: the server must run in demo mode
   (the lab does) for the short thresholds; check the target is healthy and see
   [quickstart.md](quickstart.md) for expected timings.
 - The container keeps restarting after changing `LOCKLENS_PG_VERSION`: an old
-  data volume from another major version is being reused. Run `make down`
+  data volume from another major version is being reused. Run `make lab-down`
   first to delete the lab volumes.
 - `integration tests need explicit settings (LOCKLENS_IT_...)`: the tests were
   started with plain `go -C backend test -tags integration`. Use

@@ -3,6 +3,8 @@
 GO        ?= go
 NPM       ?= npm
 COMPOSE   := docker compose -f deploy/compose.yaml
+# The demo lab: compose.yaml plus the lab overlay, with fake credentials.
+LAB_COMPOSE := docker compose -f deploy/compose.yaml -f deploy/compose.lab.yaml --env-file deploy/lab.env
 BIN_DIR   ?= bin
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null)
@@ -10,7 +12,7 @@ DATE      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 PKG       := github.com/locklens/locklens/internal/buildinfo
 LDFLAGS   := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
 
-# Lab primary published by deploy/compose.yaml. Fake, local-only credentials.
+# Lab databases published by deploy/compose.lab.yaml. Fake, local-only credentials.
 export LOCKLENS_PG_PORT ?= 55432
 export LOCKLENS_STANDBY_PORT ?= 55433
 export LOCKLENS_STANDBY2_PORT ?= 55437
@@ -58,8 +60,8 @@ dev: backend-build web-install ## Start lab databases, the local Go server, and 
 	./scripts/dev.sh
 
 .PHONY: image
-image: ## Build the locklens:lab Docker image
-	$(COMPOSE) build locklens
+image: ## Build the locklens:local Docker image
+	$(LAB_COMPOSE) build locklens
 
 ## ---- checks
 
@@ -119,35 +121,46 @@ e2e: ## Browser end-to-end tests against an isolated full stack (Docker, Playwri
 .PHONY: check
 check: fmt-check vet check-separation backend-test test-race ## All Go checks that need no database
 
-## ---- lab (deploy/compose.yaml, project "locklens")
+## ---- LockLens (deploy/compose.yaml, project "locklens")
 
 .PHONY: up
-up: ## Start LockLens, its store, primary, two standbys and backend workload (http://127.0.0.1:8080)
+up: ## Start LockLens and its store only (http://127.0.0.1:8080); creates deploy/.env on the first run
+	./scripts/init-env.sh
 	$(COMPOSE) up -d --build --wait --wait-timeout 300
 
-.PHONY: up-host
-up-host: ## Same as up, plus a node_exporter that reads the real host (/ mounted read-only)
-	$(COMPOSE) --profile host up -d --build --wait --wait-timeout 300
-
 .PHONY: down
-down: ## Stop the lab and delete its containers and volumes
-	$(COMPOSE) --profile lab --profile host down -v --remove-orphans
+down: ## Stop LockLens (its data is kept)
+	$(COMPOSE) down
+
+## ---- demo lab (deploy/compose.lab.yaml, project "locklens-lab")
+
+.PHONY: lab-up
+lab-up: ## Start LockLens with the lab: primary, two standbys, workload, node_exporter (http://127.0.0.1:8080)
+	$(LAB_COMPOSE) up -d --build --wait --wait-timeout 300
+
+.PHONY: lab-up-host
+lab-up-host: ## Same as lab-up, plus a node_exporter that reads the real host (/ mounted read-only)
+	$(LAB_COMPOSE) --profile host up -d --build --wait --wait-timeout 300
+
+.PHONY: lab-down
+lab-down: ## Stop the lab and delete its containers and volumes
+	$(LAB_COMPOSE) --profile lab --profile host down -v --remove-orphans
 
 .PHONY: lab
 lab: ## Run a lab scenario: make lab SCENARIO=chain [DURATION=5m]
-	$(COMPOSE) run --rm lab run $(SCENARIO) $(if $(DURATION),--duration $(DURATION))
+	$(LAB_COMPOSE) run --rm lab run $(SCENARIO) $(if $(DURATION),--duration $(DURATION))
 
 .PHONY: lab-list
 lab-list: ## List lab scenarios
-	$(COMPOSE) run --rm lab list
+	$(LAB_COMPOSE) run --rm lab list
 
 .PHONY: lab-status
 lab-status: ## Show lab sessions and objects
-	$(COMPOSE) run --rm lab status
+	$(LAB_COMPOSE) run --rm lab status
 
 .PHONY: lab-stop
 lab-stop: ## Stop every lab session and undo lab changes
-	$(COMPOSE) run --rm lab stop
+	$(LAB_COMPOSE) run --rm lab stop
 
 .PHONY: lab-outage
 lab-outage: ## Stop the lab primary for 60 s, then start it again
@@ -157,10 +170,10 @@ lab-outage: ## Stop the lab primary for 60 s, then start it again
 
 .PHONY: db-up
 db-up: ## Start only the lab primary (for the CLI demo)
-	$(COMPOSE) up -d --wait primary
+	$(LAB_COMPOSE) up -d --wait primary
 
 .PHONY: db-down
-db-down: down ## Alias of down
+db-down: lab-down ## Alias of lab-down
 
 .PHONY: demo
 demo: backend-build db-up ## CLI demo: row lock, chain, idle in transaction against the lab primary

@@ -10,12 +10,12 @@ The sandbox on this workstation contains its own Compose project
 (`locklens-workload`), PostgreSQL, a Go CRUD HTTP API, initialization/seed SQL,
 a bounded HTTP generator, lifecycle scripts, and local output. It never uses the
 LockLens monitoring store as the workload database. A fresh clone can use
-`make up` and `make lab` for the versioned demonstration; these sandbox commands
+`make lab-up` and `make lab` for the versioned demonstration; these sandbox commands
 require the separately provisioned `local-lab/` directory.
 
 ## Versioned PostgreSQL demo topology
 
-The standard `make up` Compose stack runs one writable PostgreSQL primary, two
+The demo lab (`make lab-up`, deploy/compose.lab.yaml) runs one writable PostgreSQL primary, two
 physical streaming standbys, and a small Go CRUD API with a built-in synthetic
 client workload. Both standbys use separate replication slots and data volumes.
 The LockLens bootstrap targets include the primary and both standbys.
@@ -37,11 +37,11 @@ The API exposes `GET /items`, `POST /items` with `{"payload":"..."}`,
 `GET /items/{id}`, `PUT /items/{id}` with the same JSON body, and
 `DELETE /items/{id}`. Requests and the automatic workload are synthetic.
 
-Start or update the stack with `make up`; inspect replication and exercise the
+Start or update the stack with `make lab-up`; inspect replication and exercise the
 API:
 
 ```sh
-docker compose -f deploy/compose.yaml exec primary \
+docker compose -p locklens-lab -f deploy/compose.yaml -f deploy/compose.lab.yaml --env-file deploy/lab.env exec primary \
   psql -U postgres -d locklens_demo -c \
   "SELECT application_name, state, sync_state FROM pg_stat_replication"
 curl http://127.0.0.1:8091/items
@@ -54,7 +54,7 @@ curl -X POST http://127.0.0.1:8091/items \
 Run from the repository root:
 
 ```sh
-make up
+make lab-up
 ./local-lab/scripts/lab.sh start
 ./local-lab/scripts/lab.sh status
 python3 local-lab/scripts/register-target.py
@@ -195,11 +195,11 @@ statement calls; Sessions and Connections → sampled applications; Blocking →
 and waiters; Incidents → recorded timeline. `long-transaction` and
 `query-regression` are explicit fault scenarios (aliases of bounded held-transaction
 and slow-query behaviors), and do not represent a production regression detector.
-For replication, the existing `make up` Compose primary/physical standby is used,
-with an explicit mapping recording `deploy/compose.yaml` as provenance.
+For replication, the `make lab-up` Compose primary/physical standby is used,
+with an explicit mapping recording `deploy/compose.lab.yaml` as provenance.
 
 The sandbox remains ignored, so a fresh clone does not include these private local
 files. The tracked demo and isolated E2E harness remain reproducible without them.
-`make up` provides the tracked primary/standby lab; workspace E2E provisions a dedicated
+`make lab-up` provides the tracked primary/standby lab; workspace E2E provisions a dedicated
 read-only role and synthetic table automatically. Do not copy real credentials into
 these examples. No faults are left enabled after verification.

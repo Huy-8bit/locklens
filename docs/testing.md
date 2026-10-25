@@ -196,7 +196,7 @@ Tests render with real React Router and TanStack Query and a stubbed `fetch`:
 
 ## Browser end-to-end
 
-`scripts/e2e.sh` (also `make e2e`) starts `deploy/compose.yaml` under a unique
+`scripts/e2e.sh` (also `make e2e`) starts `deploy/compose.yaml` with the lab overlay `deploy/compose.lab.yaml` under a unique
 project name on random loopback ports, runs `tests/e2e/browser` with Playwright
 (Chromium), and removes only that project afterwards
 (`LOCKLENS_E2E_KEEP=1` keeps it). Nothing in the main path mocks or intercepts
@@ -242,7 +242,7 @@ Reports and traces are written to `test-results/e2e-report` and
 
 ## Performance smoke check
 
-`scripts/perf-smoke.sh` needs the lab (`make up`). It starts a separate server
+`scripts/perf-smoke.sh` needs the lab (`make lab-up`). It starts a separate server
 with a temporary store database and `PERF_TARGETS` targets (default 20, half
 on the primary, half on the standby), runs for `PERF_DURATION` seconds
 (default 300) with production intervals, and reports collection durations,
@@ -276,14 +276,14 @@ always reported as a cycle and never as a confirmed deadlock.
 
 ## Demo and lab
 
-The CLI demo and the lab use [`deploy/compose.yaml`](../deploy/compose.yaml)
+The CLI demo and the lab use [`deploy/compose.lab.yaml`](../deploy/compose.lab.yaml) on top of [`deploy/compose.yaml`](../deploy/compose.yaml)
 (project `locklens`, fixed loopback ports), described in
 [quickstart.md](quickstart.md). They are for people, not for the test suite;
 only the E2E script starts that file, under its own project name and ports.
 
 ```bash
 make demo        # build, start the lab primary, run row-lock, chain, and idle
-make down        # remove the lab containers and volumes
+make lab-down    # remove the lab containers and volumes
 ```
 
 ## PostgreSQL versions

@@ -2,7 +2,7 @@
 # Run the API locally with the demo databases and Vite's development proxy.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-docker compose -f deploy/compose.yaml up -d --wait --wait-timeout 180 store primary standby
+docker compose -f deploy/compose.yaml -f deploy/compose.lab.yaml --env-file deploy/lab.env up -d --wait --wait-timeout 180 store primary standby
 
 # Fake local lab credentials; environment overrides support other databases.
 export LOCKLENS_STORE_DSN=${LOCKLENS_STORE_DSN:-"postgres://locklens_store:lab-store-pw@127.0.0.1:${LOCKLENS_STORE_PORT:-55434}/locklens?sslmode=disable"}

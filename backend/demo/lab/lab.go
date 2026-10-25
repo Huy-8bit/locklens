@@ -181,7 +181,7 @@ func runShop(ctx context.Context, c Config, d time.Duration) error {
 		return err
 	}
 	if !exists {
-		return errors.New("the shop schema does not exist: it is created when the lab primary is first initialised; recreate the lab with `make down && make up`")
+		return errors.New("the shop schema does not exist: it is created when the lab primary is first initialised; recreate the lab with `make lab-down && make lab-up`")
 	}
 	logf(c, "shop traffic running for %s (about 40 statements per second)", d)
 	var wg sync.WaitGroup
