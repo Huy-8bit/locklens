@@ -112,3 +112,15 @@ jobs:
             COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # Docker Hub's short description and Overview tab. Needs a token with
+      # Read, Write, Delete scope (Docker Hub requires it for this API).
+      - name: Update the Docker Hub description
+        if: github.ref == 'refs/heads/main'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/locklens
+          short-description: PostgreSQL monitoring and investigation - sessions, queries, blocking, replication
+          readme-filepath: deploy/DOCKERHUB.md
+          enable-url-completion: true
