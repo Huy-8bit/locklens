@@ -6,6 +6,7 @@ import { PageHeader } from '../components/Shell'
 import { Badge, Card, Empty, Load, Meter, StateBadge } from '../components/ui'
 import { ago, bytes, num, pct, rate } from '../lib/format'
 import { useScope } from '../lib/scope'
+import { useCan } from '../auth'
 
 function InstanceCard({ e }: { e: FleetEntry }) {
   const t = e.target
@@ -66,15 +67,18 @@ function InstanceCard({ e }: { e: FleetEntry }) {
 export default function InstancesPage() {
   const fleet = useFleet()
   const { env } = useScope()
+  const can = useCan()
   return (
     <>
       <PageHeader
         title="Databases"
         subtitle={`Every PostgreSQL server LockLens monitors${env ? ` in ${env}` : ''}, as of the latest collection.`}
         actions={
+          can('targets.manage') && (
           <Link to="/settings/targets/new" className="inline-flex items-center gap-1.5 rounded-lg border border-accent-fill bg-accent-fill px-3 py-1.5 text-sm font-medium text-accent-ink">
             <Plus aria-hidden className="h-4 w-4" /> Add instance
           </Link>
+          )
         }
       />
       <Load q={fleet} label="Loading instances">

@@ -358,7 +358,7 @@ export default function OverviewPage() {
         <Spinner label="Loading instances" />
       ) : targets.length === 0 ? (
         <Empty title={env ? `No enabled instance in “${env}”` : 'No instance is monitored yet'}>
-          <Link to="/settings/targets/new" className="text-accent hover:underline">
+          <Link to="/settings/targets/new" className="text-accent underline">
             Add a PostgreSQL instance
           </Link>{' '}
           to start monitoring.
@@ -411,7 +411,7 @@ export default function OverviewPage() {
                 />
               )}
             </Card>
-            <Card pad={false} title="SQL editor" subtitle="Read-only, separate role" actions={<MoreLink to={sId ? `/sql/${sId}` : '/sql'}>Open editor</MoreLink>} className="xl:col-span-2 2xl:col-span-1">
+            <Card pad={false} title="SQL editor" subtitle="Read-only, never an administrative role" actions={<MoreLink to={sId ? `/sql/${sId}` : '/sql'}>Open editor</MoreLink>} className="xl:col-span-2 2xl:col-span-1">
               {sId > 0 && <SqlPanel key={sId} id={sId} compactView toolbar={<InstanceSelect targets={list} value={sId} onChange={setSqlId} />} />}
             </Card>
           </div>

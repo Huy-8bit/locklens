@@ -17,7 +17,11 @@ import type {
   QueriesResponse,
   QueryDetailResponse,
   Replication,
+  Role,
+  Session,
+  SetupPlan,
   TablesResponse,
+  User,
   Target,
   TargetInput,
   TestResult,
@@ -334,3 +338,63 @@ export function useRunSql(id: number) {
 export function cancelSql(id: number, requestId: string) {
   return api<{ cancelled: boolean }>(`/api/v1/targets/${id}/workspace/cancel`, { method: 'POST', json: { request_id: requestId } })
 }
+
+// Users (admin) and the signed-in user's own password.
+
+export function useUsers() {
+  return useQuery({ queryKey: ['users'], queryFn: () => api<{ users: User[]; roles: Role[] }>('/api/v1/users') })
+}
+
+export function useCreateUser() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (u: { username: string; role: Role; password: string }) => api<User>('/api/v1/users', { method: 'POST', json: u }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['users'] }),
+  })
+}
+
+export function useUpdateUser() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, ...c }: { id: number; role?: Role; disabled?: boolean; password?: string }) => api<User>(`/api/v1/users/${id}`, { method: 'PUT', json: c }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['users'] }),
+  })
+}
+
+export function useDeleteUser() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api<undefined>(`/api/v1/users/${id}`, { method: 'DELETE' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['users'] }),
+  })
+}
+
+export function useChangePassword() {
+  return useMutation({
+    mutationFn: (b: { current_password: string; new_password: string }) => api<Session>('/api/v1/session/password', { method: 'PUT', json: b }),
+  })
+}
+
+// Adding an instance from a connection string.
+
+export function useInspectConnection() {
+  return useMutation({ mutationFn: (dsn: string) => api<SetupPlan>('/api/v1/targets/inspect', { method: 'POST', json: { dsn } }) })
+}
+
+export interface QuickAddRequest {
+  dsn: string
+  name: string
+  environment: string
+  browse_data: boolean
+  run_sql: boolean
+  confirm: boolean
+}
+
+export function useQuickAdd() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (r: QuickAddRequest) => api<{ target: Target; mode: string; warnings: string[] }>('/api/v1/targets/quick', { method: 'POST', json: r }),
+    onSuccess: () => void qc.invalidateQueries(),
+  })
+}
+

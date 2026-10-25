@@ -9,10 +9,15 @@ import (
 )
 
 type sessionResponse struct {
-	Username  string    `json:"username"`
-	CSRFToken string    `json:"csrf_token"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Server    struct {
+	UserID   int64  `json:"user_id"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
+	// Managed is the administrator configured by the environment.
+	Managed     bool              `json:"managed"`
+	Permissions []auth.Permission `json:"permissions"`
+	CSRFToken   string            `json:"csrf_token"`
+	ExpiresAt   time.Time         `json:"expires_at"`
+	Server      struct {
 		Version  string    `json:"version"`
 		DemoMode bool      `json:"demo_mode"`
 		Time     time.Time `json:"time"`
@@ -21,7 +26,9 @@ type sessionResponse struct {
 
 func (s *Server) sessionPayload(sess auth.Session) sessionResponse {
 	var out sessionResponse
-	out.Username, out.CSRFToken, out.ExpiresAt = sess.Username, sess.CSRFToken, sess.ExpiresAt
+	out.UserID, out.Username, out.Role, out.Managed = sess.UserID, sess.Username, string(sess.Role), sess.Managed
+	out.Permissions = sess.Role.Permissions()
+	out.CSRFToken, out.ExpiresAt = sess.CSRFToken, sess.ExpiresAt
 	out.Server.Version, out.Server.DemoMode, out.Server.Time = s.d.Tool.Version, s.d.DemoMode, time.Now().UTC()
 	return out
 }
@@ -52,7 +59,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	s.d.Log.Info("admin logged in", "user", sess.Username, "client", clientKey(r))
+	s.d.Log.Info("user logged in", "user", sess.Username, "role", sess.Role, "client", clientKey(r))
 	writeJSON(w, http.StatusOK, s.sessionPayload(sess))
 }
 

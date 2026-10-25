@@ -50,6 +50,20 @@ func SafeError(err error) *Error {
 	return &Error{Code: "database_error", Message: "Database operation failed or exceeded the protocol size limit."}
 }
 
+type actorKey struct{}
+
+// WithActor names the user an operation is audited under.
+func WithActor(ctx context.Context, user string) context.Context {
+	return context.WithValue(ctx, actorKey{}, user)
+}
+
+func actorOf(ctx context.Context) string {
+	if a, _ := ctx.Value(actorKey{}).(string); a != "" {
+		return a
+	}
+	return "unknown"
+}
+
 type running struct {
 	owner  string
 	target int64
@@ -84,8 +98,10 @@ func (s *Service) Configure(ctx context.Context, id int64, p storage.WorkspacePo
 		if err != nil {
 			return fail("invalid_dsn", "Invalid investigation connection string.")
 		}
-		if c.Host != t.DisplayHost || int(c.Port) != t.DisplayPort || c.Database != t.DisplayDatabase || c.User == t.DisplayUser || !sameFallbacks(c) {
-			return fail("invalid_dsn", "Use the target host, port and database with a separate least-privilege role.")
+		// The investigation role may be the monitoring role itself; connect()
+		// refuses administrative roles either way.
+		if c.Host != t.DisplayHost || int(c.Port) != t.DisplayPort || c.Database != t.DisplayDatabase || !sameFallbacks(c) {
+			return fail("invalid_dsn", "Use the target's host, port, and database.")
 		}
 		// Verify permissions before storing new credentials.
 		conn, err := connect(ctx, c)
@@ -148,6 +164,7 @@ func (s *Service) Cancel(owner string, target int64, id string) bool {
 }
 func (s *Service) Run(ctx context.Context, id int64, owner, action, requestID string, fn func(context.Context, pgx.Tx) (any, error)) (out any, err error) {
 	started := time.Now()
+	actor := actorOf(ctx)
 	p, err := s.store.WorkspacePolicy(ctx, id)
 	if err != nil {
 		return nil, err
@@ -194,7 +211,7 @@ func (s *Service) Run(ctx context.Context, id int64, owner, action, requestID st
 		}
 		ac, done := context.WithTimeout(context.Background(), 2*time.Second)
 		defer done()
-		auditErr := s.store.AuditWorkspace(ac, id, "administrator", action, status, time.Since(started), rows)
+		auditErr := s.store.AuditWorkspace(ac, id, actor, action, status, time.Since(started), rows)
 		if auditErr != nil && err == nil {
 			out = nil
 			err = fail("audit_failed", "Operation could not be audited; result withheld.")
@@ -208,7 +225,7 @@ func (s *Service) Run(ctx context.Context, id int64, owner, action, requestID st
 	if err != nil {
 		return nil, err
 	}
-	if cfg.Host != t.DisplayHost || int(cfg.Port) != t.DisplayPort || cfg.Database != t.DisplayDatabase || cfg.User == t.DisplayUser || !sameFallbacks(cfg) {
+	if cfg.Host != t.DisplayHost || int(cfg.Port) != t.DisplayPort || cfg.Database != t.DisplayDatabase || !sameFallbacks(cfg) {
 		return nil, fail("credentials_mismatch", "Reconfigure investigation credentials after changing the target endpoint.")
 	}
 	current, e := s.store.WorkspacePolicy(ctx, id)

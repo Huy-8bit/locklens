@@ -78,7 +78,7 @@ tablet layout, chart tooltips and overflow. Test screenshots use only synthetic 
   this local sandbox. PostgreSQL 14 lacks pg_stat_io. Missing sources are explicit.
 - Statement-type and per-application throughput are unavailable from current sources;
   no classification or execution edges are fabricated.
-- Authentication is single administrator; target capabilities are not multi-user RBAC.
+- Target capabilities are per instance; roles (administrator, operator, viewer) decide who may use them.
 - SQL is read-only and opt-in, not an absolute function sandbox or target resource governor.
 - Catalog sections cap at 200 rows; table grids use 25 rows per page in the UI. General
   metadata search/pagination beyond that cap is not implemented. Catalog cache is browser-side.

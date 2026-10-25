@@ -9,7 +9,45 @@ What was run, on what, and with which result. Test design:
 - **Scope:** phase 2 (monitoring server, UI, lab) in the first part; the
   earlier phase 1 CLI QA run is kept as an appendix.
 
-## Mockup UI (2026-10-25)
+## Roles and one-connection-string setup (2026-10-25)
+
+Users with roles (administrator, operator, viewer) and adding an instance from
+a single connection string, including automatic least-privilege roles for a
+superuser connection string.
+
+| Check | Result |
+| --- | --- |
+| `make check` (gofmt, vet incl. integration tags, separation, unit, race), incl. the role × route matrix (20 routes × 3 roles), auth, and DSN rewriting tests | PASS |
+| Frontend typecheck, ESLint, Vitest (17 tests; new: viewer has no SQL editor, users management, superuser quick add with confirmation) | PASS |
+| Integration harness, PostgreSQL 14.24 and 18.6, now including `internal/onboard` (create roles on the primary, reuse on the standby, reader cannot `pg_terminate_backend` or `pg_read_file`, direct mode, wrong password not echoed) | PASS (7 packages per version) |
+| Browser E2E (`make e2e`, no API mocks), new steps: superuser onboarding in the UI, viewer signs in and is refused SQL and users | PASS (1 test, 15 steps, 1.1 min) |
+| axe-core with color contrast on Account, Settings (users), Add instance, advanced form, Explorer, SQL editor, light and dark | PASS after fixes |
+| Live check against the external Try_Hard lab (PostgreSQL 16.15 primary and streaming replica, 3.2 M rows): superuser DSN → roles created after confirmation (attributes verified in `pg_roles`), replica added by reusing them, topology, read-only pgbench load, a row-lock chain on `orders`, Explorer and SQL editor as operator, viewer refused | PASS (observed) |
+
+Found and fixed while verifying:
+
+- store lookups of users returned a wrapped "not found", so a comparison in the
+  storage test failed (now returned unwrapped like other lookups);
+- the workspace route checked service availability before the permission
+  (the permission is now checked first);
+- inline links distinguishable only by color, and keyboard-unreachable
+  scrolling statement blocks (axe);
+- the E2E and Docker smoke scripts did not randomize the ports of the
+  `standby-2` and `backend-simulator` services added to the lab stack, so they
+  collided with a running lab;
+- an E2E step picked the first UPDATE statement, which can now come from the
+  stack's background workload.
+
+Observed but not fixed: in 2 of about 8 E2E runs one of the two lab standbys
+exited during startup (both clone the primary at the same time); a rerun
+passed. Its log was not captured. A check for the superuser password in the
+server log matched only because the lab password `postgres` is also part of
+the host name `postgres-primary`; the full connection string never appeared in
+logs or in the store.
+
+Not run: integration on 15.19, 16.15, and 17.11, the performance smoke check,
+and GitHub Actions.
+
 
 The UI was reworked to the reference mockup: fleet Overview (six KPIs,
 read/write operations, throughput and latency, system resources, topology,

@@ -7,6 +7,7 @@ import type { GridResult } from '../../api/types'
 import { compact, num } from '../../lib/format'
 import { CopyButton, highlight } from '../SqlText'
 import { trCls } from '../Table'
+import { ROLE_LABEL, useAuth, useCan } from '../../auth'
 import { Badge, Button, cx, Empty, ErrorBox, inputCls, selectCls, Spinner, Tabs } from '../ui'
 import { records } from './ExplorerPanel'
 
@@ -139,7 +140,7 @@ export function PlanView({ result }: { result: GridResult }) {
         <div className="mt-2 flex justify-end">
           <CopyButton text={outline} />
         </div>
-        <pre className="overflow-x-auto rounded-lg bg-surface-2 p-3 font-mono text-xs text-ink-2">{outline}</pre>
+        <pre tabIndex={0} aria-label="Plan as text" className="overflow-x-auto rounded-lg bg-surface-2 p-3 font-mono text-xs text-ink-2">{outline}</pre>
       </details>
       <p className="text-xs text-muted">Estimates from EXPLAIN without ANALYZE: the statement was planned, not executed.</p>
     </div>
@@ -258,6 +259,8 @@ type ResultTab = 'results' | 'plan' | 'messages'
  * with bounded rows, bytes, and time. EXPLAIN plans without executing.
  */
 export function SqlPanel({ id, toolbar, compactView = false }: { id: number; toolbar?: ReactNode; compactView?: boolean }) {
+  const can = useCan()
+  const { session } = useAuth()
   const policy = usePolicy(id)
   const p = policy.data
   const canMeta = !!p?.configured && p.metadata_enabled
@@ -334,17 +337,32 @@ export function SqlPanel({ id, toolbar, compactView = false }: { id: number; too
     void cancelSql(id, f.requestId).catch(() => undefined)
   }
 
+  if (!can('workspace.sql')) {
+    return (
+      <div className="px-5 pb-5">
+        <Empty title="Not available for your role" icon={<Lock aria-hidden className="h-5 w-5" />}>
+          Your role ({session ? ROLE_LABEL[session.role] : ''}) cannot run SQL. Operators and administrators can.
+        </Empty>
+      </div>
+    )
+  }
   if (!p) return <div className="px-5 pb-5">{policy.error ? <ErrorBox error={policy.error} title="Could not check access" /> : <Spinner label="Checking access" />}</div>
   if (!p.configured || !p.sql_enabled) {
     return (
       <div className="space-y-3 px-5 pb-5">
         {toolbar && <div className="flex flex-wrap gap-2">{toolbar}</div>}
         <Empty title="The SQL editor is off for this instance" icon={<Lock aria-hidden className="h-5 w-5" />}>
-          It runs read-only statements with a separate role, never the monitoring role. Enable “Read-only SQL editor” in the{' '}
-          <Link to={`/explorer/${id}?access=1`} className="text-accent hover:underline">
-            access settings
-          </Link>
-          .
+          {can('targets.manage') ? (
+            <>
+              It runs read-only statements in a read-only transaction. Enable “Read-only SQL editor” in the{' '}
+              <Link to={`/explorer/${id}?access=1`} className="text-accent underline">
+                access settings
+              </Link>
+              .
+            </>
+          ) : (
+            'An administrator can turn it on under Explorer → Access settings.'
+          )}
         </Empty>
       </div>
     )

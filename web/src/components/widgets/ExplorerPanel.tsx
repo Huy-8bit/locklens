@@ -6,6 +6,7 @@ import type { GridResult, WorkspacePolicy } from '../../api/types'
 import { ago, bytes, compact } from '../../lib/format'
 import { CopyButton } from '../SqlText'
 import { tableCls, tdCls, tdNum, Th, trCls } from '../Table'
+import { ROLE_LABEL, useAuth, useCan } from '../../auth'
 import { Badge, Button, Card, Confirm, cx, Drawer, Empty, ErrorBox, Field, inputCls, KeyValue, Load, Notice, selectCls, Spinner, Tabs } from '../ui'
 
 /** Rows of a bounded result as objects keyed by column name. */
@@ -32,15 +33,15 @@ export function AccessSetup({ id, policy }: { id: number; policy: WorkspacePolic
     else apply()
   }
   return (
-    <Card title="Set up data access" subtitle="Browsing tables and the SQL editor use a separate PostgreSQL role, not the monitoring role.">
+    <Card title="Set up data access" subtitle="Browsing tables and the SQL editor connect with a role that has no administrative privileges. Instances added from a connection string are set up automatically.">
       <form onSubmit={submit} className="max-w-2xl space-y-3">
         <Notice>
-          Create a login role with <code>USAGE</code> on the schemas and <code>SELECT</code> on the tables you want to browse, and nothing else (no superuser, no write privileges). LockLens connects with it only on demand, in read-only transactions with short timeouts, and never runs <code>COUNT(*)</code> or writes.
+          Use any login role without superuser, CREATEROLE, CREATEDB, or server-file privileges that can <code>SELECT</code> the tables you want to browse; it can be the monitoring role. LockLens connects with it only on demand, in read-only transactions with short timeouts, and never runs <code>COUNT(*)</code> or writes.
         </Notice>
-        <pre className="overflow-x-auto rounded-lg bg-surface-2 p-3 font-mono text-xs text-ink-2">{`CREATE ROLE locklens_reader LOGIN PASSWORD '…';
+        <pre tabIndex={0} aria-label="Example role" className="overflow-x-auto rounded-lg bg-surface-2 p-3 font-mono text-xs text-ink-2">{`CREATE ROLE locklens_reader LOGIN PASSWORD '…';
 GRANT USAGE ON SCHEMA public TO locklens_reader;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO locklens_reader;`}</pre>
-        <Field label="Connection string of the browsing role" hint={policy.configured ? 'Leave empty to keep the stored credentials. Host, port, and database must match this instance.' : 'Same host, port, and database as this instance, with the separate role. Stored encrypted; never shown again.'} error={save.error instanceof Error ? save.error.message : undefined}>
+        <Field label="Connection string of the browsing role" hint={policy.configured ? 'Leave empty to keep the stored credentials. Host, port, and database must match this instance.' : 'Same host, port, and database as this instance. Stored encrypted; never shown again.'} error={save.error instanceof Error ? save.error.message : undefined}>
           <input type="password" autoComplete="off" className={`${inputCls} font-mono`} placeholder="postgres://locklens_reader:…@host:5432/db" value={dsn} onChange={(e) => setDsn(e.target.value)} />
         </Field>
         <label className="flex items-start gap-2 text-sm">
@@ -79,7 +80,7 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO locklens_reader;`}</pre>
           apply()
         }}
       >
-        Anyone signed in to LockLens can then read rows of every table the browsing role can SELECT{sql ? ', including with their own SELECT statements' : ''}. Each access is audited (without the data itself).
+        Operators and administrators can then read rows of every table the browsing role can SELECT{sql ? ', including with their own SELECT statements' : ''}. Each access is audited (without the data itself).
       </Confirm>
     </Card>
   )
@@ -298,7 +299,10 @@ type RelTab = 'data' | 'schema' | 'indexes' | 'triggers'
 const CONSTRAINT: Record<string, string> = { p: 'primary key', f: 'foreign key', u: 'unique', c: 'check', x: 'exclusion' }
 
 function RelationView({ id, schema, table, policy, rel, compactView }: { id: number; schema: string; table: string; policy: WorkspacePolicy; rel?: Record<string, string | null>; compactView: boolean }) {
-  const [tab, setTab] = useState<RelTab>(policy.data_enabled ? 'data' : 'schema')
+  const can = useCan()
+  const { session } = useAuth()
+  const rows = policy.data_enabled && can('workspace.data')
+  const [tab, setTab] = useState<RelTab>(rows ? 'data' : 'schema')
   const detail = useCatalog<Detail>(id, true, 'detail', schema, table)
   const pk = useMemo(() => {
     const c = detail.data ? records(detail.data.constraints).find((r) => r.kind === 'p') : undefined
@@ -331,7 +335,14 @@ function RelationView({ id, schema, table, policy, rel, compactView }: { id: num
       </div>
       <div className="pt-3">
         {tab === 'data' ? (
-          policy.data_enabled ? (
+          !can('workspace.data') ? (
+            <div className="px-4 pb-4">
+              <Notice>
+                <Lock aria-hidden className="mr-1 inline h-3.5 w-3.5" />
+                Your role ({session ? ROLE_LABEL[session.role] : ''}) can see table structure but not rows. Ask an administrator for the Operator role.
+              </Notice>
+            </div>
+          ) : policy.data_enabled ? (
             <DataGrid key={`${schema}.${table}`} id={id} schema={schema} table={table} pk={pk} compactView={compactView} />
           ) : (
             <div className="px-4 pb-4">
@@ -506,7 +517,8 @@ function ObjectInfo({ title, items }: { title: string; items: [string, ReactNode
 /**
  * Database explorer: schema objects on the left (tables, views, functions,
  * types) and the selected relation's rows and structure on the right. All
- * reads go through the workspace with the instance's separate browsing role.
+ * reads go through the workspace with the instance's browsing role, never an
+ * administrative one.
  */
 export function ExplorerPanel({ id, selection, onSelect, compactView = false, toolbar }: {
   id: number
@@ -517,6 +529,7 @@ export function ExplorerPanel({ id, selection, onSelect, compactView = false, to
   toolbar?: ReactNode
 }) {
   const policy = usePolicy(id)
+  const can = useCan()
   const p = policy.data
   const canMeta = !!p?.configured && p.metadata_enabled
   const schemas = useCatalog(id, canMeta, 'schemas')
@@ -547,10 +560,12 @@ export function ExplorerPanel({ id, selection, onSelect, compactView = false, to
     return (
       <div className="space-y-3 px-5 pb-5">
         {toolbar && <div className="flex flex-wrap gap-2">{toolbar}</div>}
-        {compactView ? (
+        {!can('targets.manage') ? (
+          <Empty title="Browsing is not set up for this instance">An administrator can turn it on under Explorer → Access settings.</Empty>
+        ) : compactView ? (
           <Empty title="Browsing is not set up for this instance">
             Structure and rows are read with a separate, read-only role.{' '}
-            <Link to={`/explorer/${id}`} className="text-accent hover:underline">
+            <Link to={`/explorer/${id}`} className="text-accent underline">
               Set up access
             </Link>
           </Empty>

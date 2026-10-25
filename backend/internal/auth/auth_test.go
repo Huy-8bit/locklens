@@ -15,20 +15,21 @@ import (
 
 type memStore struct {
 	mu       sync.Mutex
-	user     storage.AdminUser
+	user     storage.User
 	sessions map[string]storage.AuthSession
 }
 
-func (m *memStore) AdminByUsername(_ context.Context, u string) (storage.AdminUser, error) {
-	if u != m.user.Username {
-		return storage.AdminUser{}, storage.ErrNotFound
+func (m *memStore) UserByUsername(_ context.Context, u string) (storage.User, error) {
+	if !strings.EqualFold(u, m.user.Username) {
+		return storage.User{}, storage.ErrNotFound
 	}
 	return m.user, nil
 }
+func (m *memStore) TouchLogin(context.Context, int64) error { return nil }
 func (m *memStore) CreateSession(_ context.Context, h []byte, id int64, csrf string, exp time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sessions[string(h)] = storage.AuthSession{UserID: id, Username: m.user.Username, CSRFToken: csrf, ExpiresAt: exp}
+	m.sessions[string(h)] = storage.AuthSession{UserID: id, Username: m.user.Username, Role: m.user.Role, CSRFToken: csrf, ExpiresAt: exp}
 	return nil
 }
 func (m *memStore) SessionByHash(_ context.Context, h []byte, _ time.Duration) (storage.AuthSession, error) {
@@ -53,7 +54,7 @@ func newTestService(t *testing.T) (*Service, *memStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := &memStore{user: storage.AdminUser{ID: 1, Username: "admin", PasswordHash: hash}, sessions: map[string]storage.AuthSession{}}
+	st := &memStore{user: storage.User{ID: 1, Username: "admin", PasswordHash: hash, Role: "admin"}, sessions: map[string]storage.AuthSession{}}
 	return NewService(st, time.Hour, true), st
 }
 
@@ -137,5 +138,59 @@ func TestPasswordPolicy(t *testing.T) {
 	}
 	if IsBcryptHash("plaintext") {
 		t.Error("plaintext is not a hash")
+	}
+}
+
+func TestDisabledUserCannotLogIn(t *testing.T) {
+	svc, st := newTestService(t)
+	st.user.Disabled = true
+	_, err := svc.Login(context.Background(), httptest.NewRecorder(), "client", "admin", "correct horse battery")
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("disabled user: err = %v, want invalid credentials", err)
+	}
+}
+
+func TestLoginCarriesRole(t *testing.T) {
+	svc, st := newTestService(t)
+	st.user.Role = "operator"
+	sess, err := svc.Login(context.Background(), httptest.NewRecorder(), "client", "ADMIN", "correct horse battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Role != RoleOperator || sess.UserID != 1 || !sess.Can(PermRunSQL) || sess.Can(PermManageUsers) {
+		t.Fatalf("session = %+v", sess)
+	}
+}
+
+func TestRolePermissions(t *testing.T) {
+	cases := []struct {
+		role Role
+		perm Permission
+		want bool
+	}{
+		{RoleViewer, PermView, true},
+		{RoleViewer, PermBrowseStructure, true},
+		{RoleViewer, PermBrowseData, false},
+		{RoleViewer, PermRunSQL, false},
+		{RoleViewer, PermAcknowledge, false},
+		{RoleViewer, PermManageTargets, false},
+		{RoleOperator, PermBrowseData, true},
+		{RoleOperator, PermRunSQL, true},
+		{RoleOperator, PermAcknowledge, true},
+		{RoleOperator, PermManageTargets, false},
+		{RoleOperator, PermManageSettings, false},
+		{RoleOperator, PermManageUsers, false},
+		{RoleAdmin, PermManageTargets, true},
+		{RoleAdmin, PermManageSettings, true},
+		{RoleAdmin, PermManageUsers, true},
+		{Role("root"), PermView, false},
+	}
+	for _, c := range cases {
+		if got := c.role.Can(c.perm); got != c.want {
+			t.Errorf("%s can %s = %v, want %v", c.role, c.perm, got, c.want)
+		}
+	}
+	if !ValidRole("viewer") || ValidRole("superuser") {
+		t.Error("ValidRole")
 	}
 }

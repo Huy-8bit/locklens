@@ -4,6 +4,8 @@ import { Plus } from 'lucide-react'
 import { useDeleteTarget, useImportIncident, useRuleSettings, useSaveRules, useStorage, useTargets } from '../api/hooks'
 import type { Target, Thresholds } from '../api/types'
 import { PageHeader } from '../components/Shell'
+import { UsersCard } from '../components/UsersCard'
+import { useCan } from '../auth'
 import { tableCls, tdCls, tdNum, Th, trCls } from '../components/Table'
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, inputCls, Load, StateBadge } from '../components/ui'
 import { bytes, compact, seconds } from '../lib/format'
@@ -216,11 +218,13 @@ function ImportIncident() {
 }
 
 export default function SettingsPage() {
+  const can = useCan()
   return (
     <>
       <PageHeader title="Settings" subtitle="Server settings (listen address, retention, master key) come from environment variables." />
       <div className="space-y-3">
         <Targets />
+        {can('users.manage') && <UsersCard />}
         <Rules />
         <ImportIncident />
         <Storage />

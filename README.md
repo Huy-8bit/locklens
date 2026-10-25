@@ -41,7 +41,8 @@ and keep the evidence when something goes wrong.
 | **Monitor** | Fleet overview with environments (production, staging, …) · per-instance dashboards · sessions, transactions, cache, WAL, temp files, vacuum · replication topology with replay lag · host metrics from node_exporter |
 | **Queries** | Every statement from `pg_stat_statements`, classified as SELECT, INSERT, UPDATE, DELETE, DDL, … · rate, time, and rows per type over time · top queries across instances · comparison with the previous period |
 | **Investigate** | Blocking trees from `pg_blocking_pids()` with lock modes and wait times · idle-in-transaction blockers · 13 evidence-based rules · incident recorder with a timeline and stored blocking graphs |
-| **Explore** *(opt-in)* | Browse schemas, tables, views, functions, types, indexes, and triggers · preview rows · read-only SQL editor with an execution-plan graph — through a separate SELECT-only role |
+| **Explore** *(opt-in)* | Browse schemas, tables, views, functions, types, indexes, and triggers · preview rows · read-only SQL editor with an execution-plan graph — never with an administrative role |
+| **Team** | Users with roles: administrators manage everything, operators also preview rows and run read-only SQL, viewers only read · add an instance by pasting one connection string |
 | **Operate** | Incident export to JSON and standalone HTML · Prometheus `/metrics` · health and readiness probes · retention · bounded buffering when the store is down |
 
 <table>
@@ -118,7 +119,10 @@ CREATE ROLE locklens_observer LOGIN PASSWORD '…';
 GRANT pg_read_all_stats TO locklens_observer;
 ```
 
-Add the instance in **Settings → Add instance**.
+Then paste its connection string in **Settings → Add instance**. You can also
+paste a superuser connection string: LockLens shows the statements it would run,
+creates `locklens_monitor` and `locklens_reader` after you confirm, and stores
+only those. Standbys reuse the roles of their primary.
 
 ### Build from source
 
@@ -169,11 +173,14 @@ resets, and gaps are stored as *unknown*, never as zero. More in
 
 - Connection strings are encrypted at rest (AES-256-GCM) and never returned
   by the API or shown in the UI, logs, or exports.
-- Single administrator with bcrypt, server-side sessions, `HttpOnly` +
-  `SameSite=Strict` cookies, and CSRF tokens. Listens on 127.0.0.1 by default.
+- Users with roles (administrator, operator, viewer), bcrypt, server-side
+  sessions, `HttpOnly` + `SameSite=Strict` cookies, and CSRF tokens. Listens on
+  127.0.0.1 by default.
 - SQL text is collected by default and can be switched off per instance.
-- Row browsing and the SQL editor are off by default and use a separate,
-  SELECT-only role inside read-only transactions.
+- Row browsing and the SQL editor are off by default, limited to operators and
+  administrators, never use an administrative role, and run inside read-only
+  transactions. A superuser connection string is used once to create
+  least-privilege roles and is never stored.
 
 Details in [security](docs/security.md). To report a vulnerability, see
 [SECURITY.md](SECURITY.md).

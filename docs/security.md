@@ -16,7 +16,7 @@ responsible for. To report a vulnerability, see [SECURITY.md](../SECURITY.md).
   by the API, shown in the UI, written to logs, exports, snapshots, or metric
   labels.
 - **SQL text is collected by default** and can be switched off per target;
-  table rows are readable only through a separate, opt-in role.
+  table rows are readable only through an opt-in, non-administrative role.
 - **Local by default.** The server binds to `127.0.0.1:8080` unless told
   otherwise.
 
@@ -70,11 +70,22 @@ settings in the DSN are honoured and never weakened.
 - Bootstrap targets take their DSN from an environment variable named in the
   file, so the file holds no secrets.
 
-## Administrator authentication
+## Authentication and roles
 
-- One administrator. The password (12–72 bytes) is stored as a bcrypt hash
-  (cost 12), or supplied directly as a hash (`LOCKLENS_ADMIN_PASSWORD_HASH`,
-  created with `locklens admin hash-password`).
+- Users have one of three roles: **administrator** (everything), **operator**
+  (reads everything, previews rows, runs read-only SQL, acknowledges
+  incidents), and **viewer** (reads monitoring data and table structure only).
+  The API checks the permission of every mutating route and of each workspace
+  action (`metadata`, `data`, `sql`/`explain`); the UI only hides what a role
+  cannot use. A missing permission answers `403`.
+- The environment administrator (`LOCKLENS_ADMIN_USER`) cannot be changed or
+  deleted through the API; nobody can change their own role, disable, or delete
+  themselves.
+- Passwords (12–72 bytes) are stored as bcrypt hashes (cost 12); the
+  environment administrator's can also be supplied as a hash
+  (`LOCKLENS_ADMIN_PASSWORD_HASH`, created with `locklens admin hash-password`).
+  A disabled user cannot sign in; the answer is the same as for a wrong
+  password.
 - Login compares in constant time and runs bcrypt even for unknown users, so
   response times do not reveal user names. Five failed attempts per client per
   minute are allowed; then `429` with `Retry-After`.
@@ -82,7 +93,8 @@ settings in the DSN are honoured and never weakened.
   `locklens_session` cookie (`HttpOnly`, `SameSite=Strict`, `Secure` unless the
   server listens on loopback); the store keeps only its SHA-256 hash. Sessions
   expire after `LOCKLENS_SESSION_IDLE` without activity; logout deletes them.
-  Changing the configured password ends all sessions.
+  Changing a user's password or disabling them ends their sessions; the role is
+  read on every request.
 - No tokens are kept in `localStorage` or `sessionStorage`. The CSRF token is
   held in memory by the UI.
 
@@ -157,7 +169,8 @@ Disable `/metrics` with `LOCKLENS_METRICS_ENABLED=false` if needed.
 
 ## Not provided
 
-- Multiple users, roles, SSO, or audit logs (single administrator only).
+- SSO, per-environment permissions, or a general audit log (workspace
+  operations are audited per user).
 - In-place master key rotation (re-enter DSNs; see
   [storage-and-retention.md](storage-and-retention.md#rotating-the-master-key)).
 - Encryption of the monitoring store at rest beyond the DSN column (use
@@ -168,7 +181,8 @@ Disable `/metrics` with `LOCKLENS_METRICS_ENABLED=false` if needed.
 
 Metadata, application rows and explicit SQL are independent, default-deny target
 capabilities with separate credentials. The current administrator can configure these
-capabilities; they are not per-user RBAC. SQL uses PostgreSQL read-only transactions,
+capabilities per target; roles decide who may use them (viewers never read rows or run
+SQL). SQL uses PostgreSQL read-only transactions,
 limits, disposable connections and session-owned cancellation. This is not a sandbox
 for arbitrary function side effects. Review the dedicated role's SELECT, ownership,
 PUBLIC and function grants. Workspace audits do not store raw SQL/results. Optional
@@ -179,3 +193,29 @@ target until an administrator enables "Read-only SQL editor" (with a confirmatio
 bootstrap file sets `workspace.sql`. The Docker lab enables it for its two lab targets,
 whose data is fake. The editor keeps drafts in page memory only and offers no way to
 terminate sessions, cancel other backends, change settings, or write.
+
+## Adding an instance with a superuser connection string
+
+When an administrator pastes a superuser connection string under **Settings →
+Add instance**, LockLens shows the exact statements it would run and, only
+after confirmation, connects once to create two roles on that primary:
+
+- `locklens_monitor`: `LOGIN`, member of `pg_monitor`, for monitoring;
+- `locklens_reader`: `LOGIN`, member of `pg_read_all_data`,
+  `default_transaction_read_only = on`, for the Explorer and SQL editor.
+
+Both are created (or reset) with `NOSUPERUSER NOCREATEDB NOCREATEROLE
+NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 10` and a generated 192-bit
+password, and get `CONNECT` on the database. The passwords are encrypted with
+the master key and stored per cluster (system identifier), so standbys reuse
+them. The superuser connection string is never stored, logged, or returned,
+and nothing else is run with it. This is the only case in which LockLens writes
+to a monitored server, and only on an explicit administrator action; collectors
+remain read-only. If the roles already exist, their passwords are reset, which
+breaks anything else that used them; the plan says so before confirmation.
+
+A non-superuser connection string is used as is. The Explorer and SQL editor
+refuse roles with superuser, `CREATEROLE`, `CREATEDB`, `BYPASSRLS`, or
+server-file privileges, because a single `SELECT` could otherwise call
+functions such as `pg_terminate_backend` or `pg_read_file`.
+

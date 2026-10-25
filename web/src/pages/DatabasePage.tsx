@@ -11,6 +11,7 @@ import { Badge, Card, cx, ErrorBox, Load, Meter, Notice, SeverityBadge, Spinner,
 import { commandColor, COMMAND_LABEL } from '../lib/commands'
 import { ageOf, bytes, compact, ms, num, pct, rate, seconds } from '../lib/format'
 import { useRange } from '../lib/scope'
+import { useCan } from '../auth'
 
 function latest(o: OverviewResponse, k: string): number | null {
   return o.latest[k]?.value ?? null
@@ -251,6 +252,7 @@ const TABS: [string, string][] = [
 /** One instance: its name and state, and tabs for its detail views. */
 export default function DatabasePage() {
   const id = useNumParam('id')
+  const can = useCan()
   const t = useTarget(id)
   if (!t.data) return t.error ? <ErrorBox error={t.error} title="Could not load this instance" /> : <Spinner label="Loading instance" />
   const tg = t.data
@@ -271,9 +273,11 @@ export default function DatabasePage() {
             <Link to={`/explorer/${id}`} className="rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-sm font-medium text-ink hover:bg-surface-2">
               Explore data
             </Link>
-            <Link to={`/sql/${id}`} className="rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-sm font-medium text-ink hover:bg-surface-2">
-              SQL editor
-            </Link>
+            {can('workspace.sql') && (
+              <Link to={`/sql/${id}`} className="rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-sm font-medium text-ink hover:bg-surface-2">
+                SQL editor
+              </Link>
+            )}
           </>
         }
       />

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"github.com/jackc/pgx/v5"
+	"github.com/locklens/locklens/internal/auth"
 	"github.com/locklens/locklens/internal/storage"
 	"github.com/locklens/locklens/internal/workspace"
 	"net/http"
@@ -57,10 +58,6 @@ func (s *Server) putWorkspacePolicy(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) workspaceRun(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if s.d.Workspace == nil {
-		writeError(w, r, 503, "unavailable", "Workspace service unavailable.")
-		return
-	}
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var in struct {
 		Action    string                `json:"action"`
@@ -74,7 +71,17 @@ func (s *Server) workspaceRun(w http.ResponseWriter, r *http.Request) {
 	if !decodeWorkspace(w, r, &in) {
 		return
 	}
-	out, err := s.d.Workspace.Run(r.Context(), id, sessionOf(r).CSRFToken, in.Action, in.RequestID, func(ctx context.Context, tx pgx.Tx) (any, error) {
+	need := map[string]auth.Permission{"metadata": auth.PermBrowseStructure, "data": auth.PermBrowseData, "sql": auth.PermRunSQL, "explain": auth.PermRunSQL}
+	if p, ok := need[in.Action]; ok && !sessionOf(r).Can(p) {
+		writeError(w, r, http.StatusForbidden, "forbidden", "your role does not allow this action")
+		return
+	}
+	if s.d.Workspace == nil {
+		writeError(w, r, 503, "unavailable", "Workspace service unavailable.")
+		return
+	}
+	ctx := workspace.WithActor(r.Context(), sessionOf(r).Username)
+	out, err := s.d.Workspace.Run(ctx, id, sessionOf(r).CSRFToken, in.Action, in.RequestID, func(ctx context.Context, tx pgx.Tx) (any, error) {
 		switch in.Action {
 		case "metadata":
 			return workspace.Catalog(ctx, tx, in.Kind, in.Schema, in.Relation)

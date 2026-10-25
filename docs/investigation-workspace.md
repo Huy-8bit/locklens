@@ -2,20 +2,40 @@
 
 LockLens combines asynchronous monitoring with explicit, interactive investigation.
 Monitoring collectors never fetch application table rows. The investigation service
-uses a separate, encrypted target DSN and opens a disposable connection per operation.
+uses its own encrypted DSN per target (which may be the monitoring role, but never an
+administrative one) and opens a disposable connection per operation.
 It does not connect to every database discovered on a server.
 
 ## Permissions and credentials
 
-The current authentication model is a **single administrator**, not multi-user RBAC.
-The administrator can configure four distinct capabilities per target:
+Administrators configure four capabilities per target; the user's role decides who may
+use them:
 
-| Capability | Default | Credential / policy boundary |
-| --- | --- | --- |
-| Monitoring | Existing authenticated access | Collector role; query-text collection is independently opt-in |
-| Catalog metadata | Denied | Dedicated investigation role, fixed target host/port/database |
-| Table data | Denied | Separate target capability; database SELECT grants still apply |
-| SQL execution | Denied | Separate target capability; read-only transaction and database grants |
+| Capability | Default | Credential / policy boundary | Roles |
+| --- | --- | --- | --- |
+| Monitoring | Existing authenticated access | Collector role; query-text collection is independently opt-in | all |
+| Catalog metadata | Denied | Investigation role (no administrative privileges), fixed target host/port/database | all |
+| Table data | Denied | Target capability; database SELECT grants still apply | operator, administrator |
+| SQL execution | Denied | Target capability; read-only transaction and database grants | operator, administrator |
+
+## Adding an instance from one connection string
+
+**Settings → Add instance** (`POST /api/v1/targets/inspect`, then
+`POST /api/v1/targets/quick`) takes one connection string, connects, and shows a plan:
+
+| The role is | LockLens |
+| --- | --- |
+| not administrative | monitors with it and, if allowed, uses it for the Explorer and SQL editor too (in read-only transactions); warns when it lacks `pg_read_all_stats` |
+| administrative but not superuser (for example `CREATEROLE`) | monitors with it; the Explorer and SQL editor are not offered with it |
+| a superuser on a primary | after confirmation, creates `locklens_monitor` (`pg_monitor`) and `locklens_reader` (`pg_read_all_data`, read-only by default) with generated passwords and stores only those; the statements are shown first (see [security](security.md#adding-an-instance-with-a-superuser-connection-string)) |
+| a superuser, roles already created for this cluster | reuses the stored roles if they can log in to this node (standbys of the same primary match by system identifier); nothing is changed |
+| a superuser on a standby without stored roles | refuses: add the primary first (a standby cannot create roles; they arrive through replication) |
+
+The administrative connection string is never stored. PostgreSQL 14 or later is
+required (`pg_read_all_data`). Connection strings with several hosts cannot use the
+automatic roles. The roles need `pg_hba.conf` entries like any other login; if
+`locklens_monitor` cannot log in after creation, the instance is not added and the
+error says so (the created roles are kept and reused on the next attempt).
 
 Configure access under **Explorer → Access settings** (or the bootstrap file's
 `workspace` block, see [configuration](configuration.md#bootstrap-targets)). The DSN is

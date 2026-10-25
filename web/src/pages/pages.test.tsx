@@ -2,12 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AuthProvider } from '../auth'
-import type { CommandsResponse, FleetLiveResponse, OverviewResponse, Target } from '../api/types'
-import { axeViolations, mockFetch, renderAt } from '../test/utils'
+import type { CommandsResponse, FleetLiveResponse, OverviewResponse, SetupPlan, Target } from '../api/types'
+import { axeViolations, mockFetch, renderAt, sessionFor } from '../test/utils'
 import { LoginPage } from './LoginPage'
 import OverviewPage from './OverviewPage'
 import { DatabaseOverview } from './DatabasePage'
 import SqlPage from './SqlPage'
+import QuickAddPage from './QuickAddPage'
+import SettingsPage from './SettingsPage'
 import ExplorerPage from './ExplorerPage'
 import QueriesPage from './QueriesPage'
 
@@ -114,7 +116,7 @@ describe('ExplorerPage', () => {
   it('asks for separate credentials before browsing and confirms row access', async () => {
     const calls = mockFetch({
       '/api/v1/targets/1/workspace/policy': (init) =>
-        init?.method === 'PUT' ? { status: 400, body: { error: { code: 'invalid_dsn', message: 'Use the target host, port and database with a separate least-privilege role.' } } } : { body: { target_id: 1, metadata_enabled: false, data_enabled: false, sql_enabled: false, history_enabled: false, configured: false, updated_at: '' } },
+        init?.method === 'PUT' ? { status: 400, body: { error: { code: 'invalid_dsn', message: "Use the target's host, port, and database." } } } : { body: { target_id: 1, metadata_enabled: false, data_enabled: false, sql_enabled: false, history_enabled: false, configured: false, updated_at: '' } },
       '/api/v1/targets/1/tables': () => ({ body: { source: 'none', tables: null } }),
       '/api/v1/fleet/live': () => ({ body: live }),
     })
@@ -126,7 +128,7 @@ describe('ExplorerPage', () => {
     await user.click(screen.getByRole('button', { name: 'Save access' }))
     expect(screen.getByRole('alertdialog', { name: 'Allow reading data?' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Allow' }))
-    expect(await screen.findByText(/separate least-privilege role/)).toBeInTheDocument()
+    expect(await screen.findByText(/target's host, port, and database/)).toBeInTheDocument()
     const put = calls.find((c) => c.method === 'PUT')
     expect(put && JSON.parse(put.body ?? '{}')).toMatchObject({ data_enabled: true, sql_enabled: false })
   })
@@ -218,3 +220,73 @@ describe('SqlPage', () => {
     expect(await axeViolations(container)).toEqual([])
   })
 })
+
+describe('roles', () => {
+  it('does not offer the SQL editor to a viewer', async () => {
+    const calls = mockFetch({
+      '/api/v1/fleet/live': () => ({ body: live }),
+      '/api/v1/targets/1/workspace/policy': () => ({ body: sqlPolicy }),
+    })
+    const { container } = renderAt('/sql/1', '/sql/:targetId', <SqlPage />, sessionFor('viewer'))
+    expect(await screen.findByText('Not available for your role')).toBeInTheDocument()
+    expect(screen.queryByLabelText('SQL statement')).not.toBeInTheDocument()
+    expect(calls.some((c) => c.url.includes('/workspace/run'))).toBe(false)
+    expect(await axeViolations(container)).toEqual([])
+  })
+
+  it('lets an administrator add users but not change the environment administrator', async () => {
+    const users = [
+      { id: 1, username: 'admin', role: 'admin', disabled: false, managed: true, created_at: '', updated_at: '', last_login_at: null },
+      { id: 2, username: 'dana', role: 'viewer', disabled: false, managed: false, created_at: '', updated_at: '', last_login_at: null },
+    ]
+    const calls = mockFetch({
+      '/api/v1/users': (init) => (init?.method === 'POST' ? { status: 201, body: { ...users[1], id: 3, username: 'omar', role: 'operator' } } : { body: { users, roles: ['viewer', 'operator', 'admin'] } }),
+      '/api/v1/targets': () => ({ body: { targets: [] } }),
+      '/api/v1/settings/rules': () => ({ body: { thresholds: {}, defaults: {} } }),
+      '/api/v1/storage': () => ({ body: { tables: [] } }),
+    })
+    const { container } = renderAt('/settings', '/settings', <SettingsPage />)
+    const table = await screen.findByRole('table', { name: 'Users' })
+    expect(within(table).getByRole('combobox', { name: 'Role of admin' })).toBeDisabled()
+    expect(within(table).getByRole('combobox', { name: 'Role of dana' })).toBeEnabled()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /Add user/ }))
+    const dialog = screen.getByRole('dialog', { name: 'Add user' })
+    await user.type(within(dialog).getByLabelText('User name'), 'omar')
+    await user.selectOptions(within(dialog).getByLabelText('Role'), 'operator')
+    await user.type(within(dialog).getByLabelText(/Initial password/), 'a-long-initial-password')
+    await user.click(within(dialog).getByRole('button', { name: 'Add user' }))
+    await waitFor(() => expect(calls.find((c) => c.method === 'POST' && c.url === '/api/v1/users')).toBeTruthy())
+    const post = calls.find((c) => c.method === 'POST' && c.url === '/api/v1/users')
+    expect(JSON.parse(post?.body ?? '{}')).toEqual({ username: 'omar', role: 'operator', password: 'a-long-initial-password' })
+    expect(await axeViolations(container)).toEqual([])
+  })
+})
+
+describe('QuickAddPage', () => {
+  it('shows the role statements for a superuser and asks before running them', async () => {
+    const plan: SetupPlan = {
+      ok: true, error: null, hint: null, mode: 'create_roles', reason: 'This is a superuser.', host: 'db', port: 5432, database: 'shop', user: 'postgres',
+      server_version: '16.4', is_standby: false, superuser: true, sees_all_sessions: true, workspace_allowed: true, pg_stat_statements: true,
+      suggested_name: 'shop @ db:5432', statements: ["CREATE ROLE locklens_monitor WITH LOGIN PASSWORD '••••••••'", 'GRANT pg_monitor TO locklens_monitor'], existing_roles: [], warnings: [],
+    }
+    const calls = mockFetch({
+      '/api/v1/targets/inspect': () => ({ body: plan }),
+      '/api/v1/targets/quick': () => ({ status: 201, body: { target: { ...target, id: 9 }, mode: 'create_roles', warnings: [] } }),
+    })
+    const { container } = renderAt('/settings/targets/new', '/settings/targets/new', <QuickAddPage />)
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText(/Connection string/), 'postgres://postgres:pw@db:5432/shop')
+    await user.click(screen.getByRole('button', { name: 'Check connection' }))
+    expect(await screen.findByText(/GRANT pg_monitor TO locklens_monitor/)).toBeInTheDocument()
+    expect(screen.getByText('superuser')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Create roles and add instance' }))
+    expect(calls.some((c) => c.url === '/api/v1/targets/quick')).toBe(false)
+    await user.click(within(screen.getByRole('alertdialog', { name: 'Create LockLens roles?' })).getByRole('button', { name: 'Create roles and add' }))
+    await waitFor(() => expect(calls.some((c) => c.url === '/api/v1/targets/quick')).toBe(true))
+    const body = JSON.parse(calls.find((c) => c.url === '/api/v1/targets/quick')?.body ?? '{}')
+    expect(body).toMatchObject({ dsn: 'postgres://postgres:pw@db:5432/shop', confirm: true, browse_data: true, run_sql: true })
+    expect(await axeViolations(container)).toEqual([])
+  })
+})
+

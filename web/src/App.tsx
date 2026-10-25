@@ -1,6 +1,7 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router'
-import { useAuth } from './auth'
+import type { Permission } from './api/types'
+import { useAuth, useCan } from './auth'
 import { Shell } from './components/Shell'
 import { Spinner } from './components/ui'
 import { LoginPage } from './pages/LoginPage'
@@ -25,6 +26,20 @@ const IncidentPage = lazy(() => import('./pages/IncidentPage'))
 const ConnectionsPage = lazy(() => import('./pages/ConnectionsPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 const TargetFormPage = lazy(() => import('./pages/TargetFormPage'))
+const QuickAddPage = lazy(() => import('./pages/QuickAddPage'))
+const AccountPage = lazy(() => import('./pages/AccountPage'))
+
+/** Shows the page only to roles with the permission (the API enforces it too). */
+function RequirePermission({ perm, children }: { perm: Permission; children: ReactNode }) {
+  const can = useCan()
+  if (can(perm)) return <>{children}</>
+  return (
+    <div className="py-16 text-center">
+      <h1 className="text-lg font-semibold">Not available for your role</h1>
+      <p className="mt-1 text-sm text-ink-2">Ask an administrator if you need access.</p>
+    </div>
+  )
+}
 
 function NotFound() {
   return (
@@ -68,14 +83,16 @@ export function App() {
           <Route path="explorer/:targetId" element={<ExplorerPage />} />
           <Route path="explorer/:targetId/:schema" element={<ExplorerPage />} />
           <Route path="explorer/:targetId/:schema/:object" element={<ExplorerPage />} />
-          <Route path="sql" element={<SqlPage />} />
-          <Route path="sql/:targetId" element={<SqlPage />} />
           <Route path="incidents" element={<IncidentsPage />} />
           <Route path="connections" element={<ConnectionsPage />} />
           <Route path="incidents/:incidentId" element={<IncidentPage />} />
-          <Route path="settings" element={<SettingsPage />} />
-          <Route path="settings/targets/new" element={<TargetFormPage />} />
-          <Route path="settings/targets/:targetId" element={<TargetFormPage />} />
+          <Route path="sql" element={<RequirePermission perm="workspace.sql"><SqlPage /></RequirePermission>} />
+          <Route path="sql/:targetId" element={<RequirePermission perm="workspace.sql"><SqlPage /></RequirePermission>} />
+          <Route path="account" element={<AccountPage />} />
+          <Route path="settings" element={<RequirePermission perm="targets.manage"><SettingsPage /></RequirePermission>} />
+          <Route path="settings/targets/new" element={<RequirePermission perm="targets.manage"><QuickAddPage /></RequirePermission>} />
+          <Route path="settings/targets/new/manual" element={<RequirePermission perm="targets.manage"><TargetFormPage /></RequirePermission>} />
+          <Route path="settings/targets/:targetId" element={<RequirePermission perm="targets.manage"><TargetFormPage /></RequirePermission>} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

@@ -14,7 +14,11 @@ environment on one screen; every card leads to a page with the detail.
 - **Top bar**: search (⌘K / Ctrl+K) over pages, databases, open incidents, and
   statement text; the **environment** selector; the **time range**; the
   **Live** switch; notifications (open incidents); and the account menu with the
-  signed-in administrator, the theme switch, Settings, and sign-out. Below
+  signed-in user and their role, the theme switch, Account, Settings
+  (administrators), and sign-out.
+- **Roles**: the sidebar and pages show only what the role can use. Viewers do
+  not see the SQL Editor or Settings, and see table structure but not rows;
+  operators see everything except Settings. The server enforces the same rules. Below
   768 px the environment and time range move to a bar under the top bar.
 - **Environment**: every instance has an environment label (`production`,
   `staging`, `lab`, … default `default`). Fleet pages show the instances of the
@@ -53,7 +57,9 @@ the meaning without color.
 | **SQL Editor** | Read-only investigation: one statement at a time, results (at most 500 rows or 1 MiB), the **execution plan** as a graph from `EXPLAIN (FORMAT JSON)` (no ANALYZE: the statement is planned, not run), and messages with PostgreSQL's error code and position | separate browsing role |
 | **Incidents** | Every recorded incident (open or all) with instance, duration, and acknowledgement; an incident page shows the timeline, stored blocking graphs, JSON and standalone HTML export | incident store |
 | **Connections** | Connection usage per instance (used / max, reserved), client sessions by state over time, and who is connected: sessions grouped by database, user, application, client address, and state, with the oldest in each group | `pg_stat_activity` (grouped, LockLens's own connections excluded) |
-| **Settings** | Instances (add, edit, environment, test connection, delete), alert thresholds, incident import, monitoring store size | configuration |
+| **Settings** (administrators) | Instances (add, edit, environment, test connection, delete), **Users** (add, change role, reset password, disable, delete), alert thresholds, incident import, monitoring store size | configuration |
+| **Add an instance** | Paste one connection string, check it, read the plan (use as is, reuse LockLens's roles, or create them for a superuser, with the statements shown), choose row browsing and the SQL editor, add. An advanced form sets interval, pool size, and node_exporter | `targets/inspect`, `targets/quick` |
+| **Account** | Your user name and role, what the role allows, and a password change (except for the environment administrator) | session |
 
 ## Statement types
 
@@ -113,9 +119,10 @@ collection time; the text itself is stored only when SQL text collection is on.
 
 - SQL text is shown because the instance collects it (the default). It can be
   switched off per instance in **Settings**; pages then show query IDs.
-- Table rows and the SQL editor are available only after an administrator
-  configures a separate SELECT-only role for that instance and enables
-  **Browse table rows** or **Read-only SQL editor** (with a confirmation). The
+- Table rows and the SQL editor are available only to operators and
+  administrators, and only after an administrator enables **Browse table rows**
+  or **Read-only SQL editor** for that instance (when adding it, or with a
+  confirmation later). They never use an administrative role. The
   editor runs one statement inside a read-only transaction that is always
   rolled back, with row, byte, and time limits; statements and results are never
   stored. It cannot kill sessions, cancel other queries, or change the server.

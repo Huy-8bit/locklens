@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { Database, FileText, Search, TriangleAlert } from 'lucide-react'
 import { useFleet, useFleetQueries, useIncidents } from '../api/hooks'
+import type { Permission } from '../api/types'
+import { useCan } from '../auth'
 import { useScope } from '../lib/scope'
 import { cx } from './ui'
 
-const PAGES: [string, string][] = [
+const PAGES: [string, string, Permission?][] = [
   ['Overview', '/overview'],
   ['Databases', '/databases'],
   ['Topology', '/topology'],
@@ -13,10 +15,11 @@ const PAGES: [string, string][] = [
   ['Sessions', '/sessions'],
   ['Blocking', '/blocking'],
   ['Explorer', '/explorer'],
-  ['SQL Editor', '/sql'],
+  ['SQL Editor', '/sql', 'workspace.sql'],
   ['Incidents', '/incidents'],
   ['Connections', '/connections'],
-  ['Settings', '/settings'],
+  ['Settings', '/settings', 'targets.manage'],
+  ['Account', '/account'],
 ]
 
 interface Item {
@@ -36,6 +39,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
 
 function Palette({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate()
+  const can = useCan()
   const { env, range } = useScope()
   const [term, setTerm] = useState('')
   const [active, setActive] = useState(0)
@@ -50,7 +54,7 @@ function Palette({ onClose }: { onClose: () => void }) {
   const items = useMemo<Item[]>(() => {
     const out: Item[] = []
     const match = (s: string) => !t || s.toLowerCase().includes(t)
-    for (const [label, to] of PAGES) if (match(label)) out.push({ key: `p${to}`, group: 'Pages', label, to, icon: 'page' })
+    for (const [label, to, perm] of PAGES) if (match(label) && (!perm || can(perm))) out.push({ key: `p${to}`, group: 'Pages', label, to, icon: 'page' })
     for (const e of fleet.data?.targets ?? []) {
       const tg = e.target
       if (match(`${tg.name} ${tg.host} ${tg.database} ${tg.environment}`)) out.push({ key: `t${tg.id}`, group: 'Databases', label: tg.name, detail: `${tg.host}:${tg.port}/${tg.database} · ${tg.status.state}`, to: `/databases/${tg.id}`, icon: 'db' })
@@ -60,7 +64,7 @@ function Palette({ onClose }: { onClose: () => void }) {
       for (const q of queries.data?.items ?? []) out.push({ key: `q${q.target_id}-${q.identity_id}`, group: 'Queries', label: q.query_text ?? `queryid ${q.queryid}`, detail: `${q.target_name} · ${q.datname}`, to: `/queries/${q.target_id}/${q.identity_id}`, icon: 'query' })
     }
     return out.slice(0, 40)
-  }, [t, fleet.data, incidents.data, queries.data])
+  }, [t, fleet.data, incidents.data, queries.data, can])
 
   const go = (it: Item | undefined) => {
     if (!it) return

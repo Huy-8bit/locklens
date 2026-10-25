@@ -36,7 +36,7 @@ In short:
 - **SQL text** is opt-in in the CLI (`--include-query`); the server collects
   it by default per target (it can be switched off) and excludes it from
   exports unless explicitly requested. Table rows are readable only through a
-  separate, opt-in, SELECT-only role.
+  opt-in, non-administrative role (LockLens can create a least-privilege one).
 - **Output safety.** Strings chosen by database clients are neutralised before
   they reach a terminal and escaped in HTML.
 

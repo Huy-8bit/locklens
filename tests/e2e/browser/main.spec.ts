@@ -15,6 +15,8 @@ const composeFile = env('LOCKLENS_E2E_COMPOSE_FILE')
 const adminPassword = env('LOCKLENS_E2E_ADMIN_PASSWORD')
 // The lab's fake observer credentials, as configured in demo/postgres/01-roles.sql.
 const targetDSN = 'postgres://locklens_observer:observer-pw@primary:5432/locklens_demo?sslmode=disable'
+// The lab's fake superuser (deploy/compose.yaml), used once to let LockLens create its roles.
+const superuserDSN = 'postgres://postgres:lab-postgres-pw@primary:5432/locklens_demo?sslmode=disable'
 const forbidden = ['observer-pw', 'reader-pw', 'lab-store-pw', 'lab-postgres-pw', 'demo-app-pw', adminPassword, 'postgres://']
 
 function env(name: string): string {
@@ -138,7 +140,13 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     const group = page.getByRole('group', { name: 'Statement type' })
     await group.getByRole('button', { name: 'UPDATE' }).click()
     await expect(page).toHaveURL(/command=update/)
-    const first = page.getByRole('table', { name: 'Statements' }).getByRole('link').first()
+    // The stack's background workload also updates its own table; wait for
+    // the shop scenario's statement and pick it.
+    const first = page.getByRole('table', { name: 'Statements' }).getByRole('link').filter({ hasText: 'shop.orders' }).first()
+    await expect(async () => {
+      await page.goto(`${base}/queries?command=update&q=shop.orders`)
+      await expect(first).toBeVisible({ timeout: 3_000 })
+    }).toPass({ timeout: 90_000 })
     await expect(first).toContainText('UPDATE')
     await expectAccessible(page, 'queries')
     await first.click()
@@ -283,22 +291,67 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     await expect(page.getByText('import', { exact: true })).toBeVisible()
   })
 
-  await test.step('add and test an instance', async () => {
+  await test.step('add an instance from one superuser connection string', async () => {
     await page.goto('/settings/targets/new')
-    await page.getByLabel('Name', { exact: true }).fill('e2e-primary')
+    await page.getByLabel(/Connection string/).fill(superuserDSN)
+    await page.getByLabel('Name (optional)').fill('e2e-primary')
+    await page.getByRole('main').getByLabel('Environment').fill('lab')
+    await page.getByRole('button', { name: 'Check connection' }).click()
+    // LockLens shows the statements it will run and never the password.
+    await expect(page.getByText(/will run these statements once/)).toBeVisible()
+    await expect(page.locator('pre').filter({ hasText: 'CREATE ROLE "locklens_monitor"' })).toBeVisible()
+    await expect(page.locator('pre')).toContainText('GRANT pg_read_all_data TO "locklens_reader"')
+    // The typed input holds the password; nothing the server returned does.
+    expect(await page.getByRole('main').innerText()).not.toContain('lab-postgres-pw')
+    await expectAccessible(page, 'add instance')
+    await page.getByRole('button', { name: 'Create roles and add instance' }).click()
+    await page.getByRole('alertdialog', { name: 'Create LockLens roles?' }).getByRole('button', { name: 'Create roles and add' }).click()
+    await expect(page).toHaveURL(/\/databases\/\d+$/, { timeout: 30_000 })
+    await expect(page.getByRole('heading', { name: /e2e-primary/ })).toBeVisible()
+    await expect(page.getByRole('main').getByText('healthy', { exact: true }).first()).toBeVisible({ timeout: 60_000 })
+    // Only the generated monitoring role is stored, not the superuser.
+    await page.goto('/settings')
+    await expect(page.getByRole('row').filter({ hasText: 'e2e-primary' })).toContainText('locklens_monitor@primary')
+    // The advanced form still tests a connection without saving it.
+    await page.goto('/settings/targets/new/manual')
     await page.getByLabel('Connection string (DSN)').fill(targetDSN)
     await page.getByRole('button', { name: 'Test connection' }).click()
     const result = page.getByRole('status').filter({ hasText: 'Connection' })
     await expect(result).toContainText('Connection works.')
-    await expect(result).toContainText('query statistics available')
     await expect(result).not.toContainText('observer-pw')
-    await expect(page.getByRole('checkbox', { name: /Collect SQL text/ })).toBeChecked()
-    await expectAccessible(page, 'add instance')
-    await page.getByRole('main').getByLabel('Environment').fill('lab')
-    await page.getByRole('button', { name: 'Add instance' }).click()
-    await expect(page).toHaveURL(/\/databases\/\d+$/)
-    await expect(page.getByRole('heading', { name: /e2e-primary/ })).toBeVisible()
-    await expect(page.getByRole('main').getByText('healthy', { exact: true }).first()).toBeVisible({ timeout: 60_000 })
+  })
+
+  await test.step('roles: a viewer reads but cannot run SQL', async () => {
+    await page.goto('/settings')
+    await page.getByRole('button', { name: /Add user/ }).click()
+    const dialog = page.getByRole('dialog', { name: 'Add user' })
+    await dialog.getByLabel('User name').fill('e2e-viewer')
+    await dialog.getByLabel('Role').selectOption('viewer')
+    await dialog.getByLabel(/Initial password/).fill('e2e-viewer-password')
+    await dialog.getByRole('button', { name: 'Add user' }).click()
+    await expect(page.getByRole('table', { name: 'Users' }).getByRole('cell', { name: 'e2e-viewer', exact: true })).toBeVisible()
+    await expectAccessible(page, 'users')
+
+    const ctx = await browser.newContext()
+    const viewer = await ctx.newPage()
+    const viewerErrors = watchConsole(viewer)
+    await viewer.goto('/login')
+    await viewer.getByLabel('Username').fill('e2e-viewer')
+    await viewer.getByLabel('Password').fill('e2e-viewer-password')
+    await viewer.getByRole('button', { name: 'Sign in' }).click()
+    await expect(viewer.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible()
+    const nav = viewer.getByRole('navigation', { name: 'Main' })
+    await expect(nav.getByRole('link', { name: 'Blocking' })).toBeVisible()
+    await expect(nav.getByRole('link', { name: 'SQL Editor' })).toHaveCount(0)
+    await expect(nav.getByRole('link', { name: 'Settings' })).toHaveCount(0)
+    await viewer.goto('/sql')
+    await expect(viewer.getByRole('heading', { name: 'Not available for your role' })).toBeVisible()
+    const csrf = await viewer.evaluate(() => fetch('/api/v1/session').then((r) => r.json()).then((s: { csrf_token: string }) => s.csrf_token))
+    const denied = await viewer.request.post(`/api/v1/targets/${targetId}/workspace/run`, { headers: { 'X-CSRF-Token': csrf }, data: { request_id: 'e2e-viewer-sql', action: 'sql', sql: 'SELECT 1', schema: 'public' } })
+    expect(denied.status()).toBe(403)
+    expect((await viewer.request.get('/api/v1/users')).status()).toBe(403)
+    expect(viewerErrors).toEqual([])
+    await ctx.close()
   })
 
   await test.step('remaining pages', async () => {

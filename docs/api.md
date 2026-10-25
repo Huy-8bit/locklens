@@ -57,7 +57,32 @@ Series: `locklens_collect_duration_seconds{collector}`,
 | --- | --- |
 | `POST /api/v1/auth/login` | Body `{"username","password"}`. `200` returns `{"username","csrf_token","expires_at","server":{...}}` and sets the cookie. `401` on bad credentials, `429` with `Retry-After` when rate-limited (5 failures per client per minute). |
 | `POST /api/v1/auth/logout` | Ends the session. |
-| `GET /api/v1/session` | Current session (same shape as login). `401` when signed out. |
+| `GET /api/v1/session` | Current session (same shape as login): `user_id`, `username`, `role` (`admin`, `operator`, `viewer`), `managed` (the environment administrator), `permissions`, `csrf_token`, `expires_at`, `server`. `401` when signed out. |
+| `PUT /api/v1/session/password` | Change your own password: `current_password`, `new_password` (12–72 bytes). Ends your other sessions and returns a fresh session. `409 managed_user` for the environment administrator. |
+
+### Roles and permissions
+
+Every read needs a session (any role). Changes need a permission; a missing one answers
+`403 forbidden`.
+
+| Permission | Roles | Routes |
+| --- | --- | --- |
+| `users.manage` | admin | `/api/v1/users` |
+| `targets.manage` | admin | create, update, delete, test targets; `targets/inspect`, `targets/quick`; workspace policy |
+| `settings.manage` | admin | rule thresholds, topology mappings, incident import |
+| `incidents.acknowledge` | admin, operator | `POST /incidents/{id}/acknowledge` |
+| `workspace.data` | admin, operator | workspace `data` action |
+| `workspace.sql` | admin, operator | workspace `sql` and `explain` actions |
+| `workspace.structure` | all | workspace `metadata` action |
+
+## Users (administrators)
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/v1/users` | `{"users": [{id, username, role, disabled, managed, created_at, updated_at, last_login_at}], "roles": [...]}` |
+| `POST /api/v1/users` | `username` (1–64 characters: letters, digits, `.`, `_`, `@`, `-`; unique regardless of case), `role`, `password`. `201`; `409` when the name is taken; `422` with `fields`. |
+| `PUT /api/v1/users/{id}` | Any of `role`, `disabled`, `password`. Disabling or a new password ends the user's sessions; a role change applies to their next request. `409 managed_user` for the environment administrator; you cannot change your own role or disable yourself. |
+| `DELETE /api/v1/users/{id}` | Removes the user and their sessions. Not for the environment administrator or yourself. |
 
 ## Targets
 
@@ -71,6 +96,8 @@ Series: `locklens_collect_duration_seconds{collector}`,
 | `GET /api/v1/targets` | Targets with status. |
 | `POST /api/v1/targets` | Create. Body: `name`, `description`, `dsn`, `enabled`, `interval_seconds`, `max_connections`, `query_text_enabled` (default `true`), `node_exporter_url`, `environment` (lowercase letters, digits, `-`, `_`, at most 40 characters; default `default`). `201` with the target; `422` with `fields`; `409` on a duplicate name. |
 | `POST /api/v1/targets/test` | Test a DSN without saving it. Body `{"dsn"}`. |
+| `POST /api/v1/targets/inspect` | Plan for adding a connection string (body `{"dsn"}`): `ok`, `error`, `hint`, `mode` (`direct`, `create_roles`, `reuse_roles`, `unsupported`), `reason`, server facts (`host`, `port`, `database`, `user`, `server_version`, `is_standby`, `superuser`, `sees_all_sessions`, `workspace_allowed`, `pg_stat_statements`), `suggested_name`, `statements` (for `create_roles`, passwords masked), `existing_roles`, `warnings`. A connection failure is `200` with `ok: false`. |
+| `POST /api/v1/targets/quick` | Add an instance from a connection string: `dsn`, optional `name` and `environment`, `browse_data`, `run_sql`, and `confirm` (required for `create_roles`, else `409 confirmation_required`). `201 {"target", "mode", "warnings"}`; `422 setup_failed` with a message the administrator can act on. The administrative DSN is never stored. |
 | `GET /api/v1/targets/{id}` | One target. |
 | `PUT /api/v1/targets/{id}` | Update (same body as create; an empty `dsn` keeps the stored one, an empty `environment` keeps the stored one). Switching `query_text_enabled` off deletes the target's stored statement texts. |
 | `DELETE /api/v1/targets/{id}` | Soft delete (history kept until retention). `?purge=true` deletes its history now; with `&keep_incidents=false` its incidents are deleted too (kept by default). |

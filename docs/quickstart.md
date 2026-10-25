@@ -49,7 +49,7 @@ arrive, and **Topology** shows the standby streaming from the primary. The lab
 primary also contains a small demo shop (`shop` schema: customers, products,
 orders, order_items, a view, a function, an enum type, and a trigger) that you
 can browse under **Explorer** and query read-only in the **SQL Editor**; both
-use a separate SELECT-only role that the lab configures for you. The lab also
+use a read-only role that the lab configures for you. The lab also
 runs a node_exporter inside Docker, so **System resources** shows the Docker
 VM's CPU, memory, and filesystem (not your computer's; `make up-host` adds an
 exporter that reads the host on Linux).
@@ -165,3 +165,22 @@ and whether `pg_stat_statements` is usable before you save.
 
 Next: [configuration.md](configuration.md) for all settings,
 [security.md](security.md) before exposing the server beyond your machine.
+
+## Add your own database
+
+Under **Settings → Add instance**, paste a connection string and choose
+**Check connection**:
+
+- a regular role (for example one with `pg_monitor`) is used as is;
+- a superuser: LockLens lists the `CREATE ROLE` and `GRANT` statements it would
+  run, creates `locklens_monitor` and `locklens_reader` after you confirm, and
+  stores only those roles; add the primary first, then its standbys, which
+  reuse the roles.
+
+From a LockLens container, use an address the container can reach (for
+example the database's Docker service name, or `host.docker.internal` for a
+database published on your machine), not `localhost`.
+
+To give colleagues access, add users under **Settings → Users**: viewers read
+the dashboards, operators can also preview rows and run read-only SQL.
+

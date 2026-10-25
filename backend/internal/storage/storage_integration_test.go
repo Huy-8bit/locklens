@@ -113,23 +113,38 @@ func target(t *testing.T, s *storage.Store, name string) storage.Target {
 func TestSessionsAndAdmin(t *testing.T) {
 	s := migrated(t)
 	ctx := context.Background()
-	id, err := s.UpsertAdmin(ctx, "admin", "$2a$12$hash")
-	if err != nil {
+	id, changed, err := s.UpsertManagedAdmin(ctx, "admin", "$2a$12$hash")
+	if err != nil || changed {
+		t.Fatalf("first admin: %v changed=%v", err, changed)
+	}
+	viewer, err := s.CreateUser(ctx, "Dana", "$2a$12$v", "viewer")
+	if err != nil || viewer.Role != "viewer" || viewer.Managed {
+		t.Fatalf("create user %+v %v", viewer, err)
+	}
+	if _, err := s.CreateUser(ctx, "dana", "$2a$12$v", "viewer"); err != storage.ErrConflict {
+		t.Fatalf("case-insensitive duplicate user names must conflict: %v", err)
+	}
+	// A new environment administrator replaces the previous one, but other
+	// users stay.
+	if _, _, err := s.UpsertManagedAdmin(ctx, "other", "$2a$12$x"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpsertAdmin(ctx, "other", "$2a$12$x"); err != nil {
-		t.Fatal(err)
+	if _, err := s.UserByUsername(ctx, "admin"); err != storage.ErrNotFound {
+		t.Fatalf("the previous environment administrator must be removed: %v", err)
 	}
-	if _, err := s.AdminByUsername(ctx, "admin"); err == nil {
-		t.Fatal("only one admin may exist: the previous one must be removed")
+	if u, err := s.UserByUsername(ctx, "DANA"); err != nil || u.ID != viewer.ID {
+		t.Fatalf("other users must stay: %+v %v", u, err)
 	}
-	id, _ = s.UpsertAdmin(ctx, "admin", "$2a$12$hash")
+	id, _, _ = s.UpsertManagedAdmin(ctx, "admin", "$2a$12$hash")
+	if _, changed, _ := s.UpsertManagedAdmin(ctx, "admin", "$2a$12$new"); !changed {
+		t.Fatal("a new password must be reported as changed")
+	}
 	h := []byte("0123456789abcdef0123456789abcdef")
 	if err := s.CreateSession(ctx, h, id, "csrf", time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	sess, err := s.SessionByHash(ctx, h, time.Hour)
-	if err != nil || sess.Username != "admin" || sess.CSRFToken != "csrf" {
+	if err != nil || sess.Username != "admin" || sess.CSRFToken != "csrf" || sess.Role != "admin" || !sess.Managed {
 		t.Fatalf("session %+v %v", sess, err)
 	}
 	if err := s.CreateSession(ctx, []byte("expired-token-hash-000000000000"), id, "c", time.Now().Add(-time.Minute)); err != nil {
@@ -137,6 +152,32 @@ func TestSessionsAndAdmin(t *testing.T) {
 	}
 	if _, err := s.SessionByHash(ctx, []byte("expired-token-hash-000000000000"), time.Hour); err != storage.ErrNotFound {
 		t.Fatalf("expired session must not authenticate: %v", err)
+	}
+
+	// Role changes apply to the next request; disabling ends the sessions.
+	vh := []byte("viewer-token-hash-00000000000000")
+	if err := s.CreateSession(ctx, vh, viewer.ID, "c", time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	op := "operator"
+	if _, err := s.UpdateUser(ctx, viewer.ID, storage.UserChanges{Role: &op}); err != nil {
+		t.Fatal(err)
+	}
+	if vs, err := s.SessionByHash(ctx, vh, time.Hour); err != nil || vs.Role != "operator" {
+		t.Fatalf("role change must apply to the session: %+v %v", vs, err)
+	}
+	yes := true
+	if _, err := s.UpdateUser(ctx, viewer.ID, storage.UserChanges{Disabled: &yes}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SessionByHash(ctx, vh, time.Hour); err != storage.ErrNotFound {
+		t.Fatalf("a disabled user's session must end: %v", err)
+	}
+	if err := s.DeleteUser(ctx, viewer.ID); err != nil {
+		t.Fatal(err)
+	}
+	if users, err := s.ListUsers(ctx); err != nil || len(users) != 1 || !users[0].Managed {
+		t.Fatalf("users after delete %+v %v", users, err)
 	}
 }
 

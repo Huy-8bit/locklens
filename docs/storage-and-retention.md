@@ -20,7 +20,7 @@ recorded in `schema_migrations`; `/readyz` reports the schema version.
 
 | Table | Content | Retention |
 | --- | --- | --- |
-| `admin_users`, `auth_sessions` | Administrator (bcrypt hash) and server-side sessions (SHA-256 of the token only) | Sessions until expiry |
+| `users`, `auth_sessions` | Users with roles (bcrypt hashes) and server-side sessions (SHA-256 of the token only) | Sessions until expiry |
 | `targets`, `target_status` | Targets with the **encrypted** DSN and display fields (host, port, database, user — no password); latest status | Soft-deleted targets are removed once their history and incidents are gone |
 | `metric_points` | `(target, metric, label, ts, value)`; `value` is NULL when unknown | History |
 | `query_identities`, `query_samples`, `statement_collections` | Query identities (text only with opt-in), per-collection statement deltas, collection metadata (interval, reset, evictions) | History |

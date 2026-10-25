@@ -13,7 +13,7 @@ export default function SqlPage() {
   const wanted = Number(useParams().targetId ?? 0)
   return (
     <>
-      <PageHeader title="SQL editor" subtitle="One read-only statement at a time, run with the instance's separate browsing role in a transaction that is always rolled back. At most 500 rows or 1 MiB; statements are never stored." />
+      <PageHeader title="SQL editor" subtitle="One read-only statement at a time, run with the instance's browsing role (never an administrative one) in a read-only transaction that is always rolled back. At most 500 rows or 1 MiB; statements are never stored." />
       <Load q={live} label="Loading instances">
         {(d) => {
           const list = d.targets.map((t) => t.target)

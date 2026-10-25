@@ -91,7 +91,8 @@ the detailed explanation.
 - **Host metrics** require node_exporter on the database host; managed
   services cannot provide them. In Docker Desktop and similar, node_exporter
   sees the Linux VM.
-- **Single administrator**, no roles, SSO, or audit log; no in-place master key
+- **Three fixed roles** (administrator, operator, viewer), no SSO, no
+  per-environment permissions, no general audit log; no in-place master key
   rotation; no built-in TLS termination.
 - **Scale.** Tested locally with up to 20 targets on one machine
   ([test-report.md](test-report.md)). Larger fleets have not been measured;

@@ -89,7 +89,50 @@ export interface FleetEntry {
   counts: TargetCounts
 }
 
+export type Role = 'admin' | 'operator' | 'viewer'
+
+export type Permission = 'view' | 'workspace.structure' | 'workspace.data' | 'workspace.sql' | 'incidents.acknowledge' | 'targets.manage' | 'settings.manage' | 'users.manage'
+
+export interface User {
+  id: number
+  username: string
+  role: Role
+  disabled: boolean
+  /** The administrator configured by the environment; changed only there. */
+  managed: boolean
+  created_at: string
+  updated_at: string
+  last_login_at: string | null
+}
+
+/** What adding a connection string would do (POST /targets/inspect). */
+export interface SetupPlan {
+  ok: boolean
+  error: string | null
+  hint: string | null
+  mode: 'direct' | 'create_roles' | 'reuse_roles' | 'unsupported' | ''
+  reason: string
+  host: string
+  port: number
+  database: string
+  user: string
+  server_version: string
+  is_standby: boolean
+  superuser: boolean
+  sees_all_sessions: boolean
+  workspace_allowed: boolean
+  pg_stat_statements: boolean
+  suggested_name: string
+  statements: string[]
+  existing_roles: string[]
+  warnings: string[]
+}
+
 export interface Session {
+  user_id: number
+  role: Role
+  managed: boolean
+  permissions: Permission[]
   username: string
   csrf_token: string
   expires_at: string

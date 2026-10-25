@@ -5,19 +5,34 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import axe from 'axe-core'
 import { vi } from 'vitest'
 import { ScopeProvider } from '../lib/scope'
+import { StaticAuthProvider } from '../auth'
+import type { Role, Session } from '../api/types'
 
-/** Renders an element inside the router and a fresh query client. */
-export function renderAt(path: string, routePattern: string, element: ReactElement) {
+const PERMS: Record<Role, Session['permissions']> = {
+  viewer: ['view', 'workspace.structure'],
+  operator: ['view', 'workspace.structure', 'workspace.data', 'workspace.sql', 'incidents.acknowledge'],
+  admin: ['view', 'workspace.structure', 'workspace.data', 'workspace.sql', 'incidents.acknowledge', 'targets.manage', 'settings.manage', 'users.manage'],
+}
+
+/** A signed-in session with a role, as the server would return it. */
+export function sessionFor(role: Role, managed = false): Session {
+  return { user_id: 1, username: role === 'admin' ? 'admin' : `${role}-user`, role, managed, permissions: PERMS[role], csrf_token: 'tok', expires_at: '', server: { version: 'test', demo_mode: false, time: '' } }
+}
+
+/** Renders an element inside the router, a fresh query client, and a session (admin by default). */
+export function renderAt(path: string, routePattern: string, element: ReactElement, session: Session = sessionFor('admin')) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <ScopeProvider>
-        <MemoryRouter initialEntries={[path]}>
-          <Routes>
-            <Route path={routePattern} element={element} />
-          </Routes>
-        </MemoryRouter>
-      </ScopeProvider>
+      <StaticAuthProvider session={session}>
+        <ScopeProvider>
+          <MemoryRouter initialEntries={[path]}>
+            <Routes>
+              <Route path={routePattern} element={element} />
+            </Routes>
+          </MemoryRouter>
+        </ScopeProvider>
+      </StaticAuthProvider>
     </QueryClientProvider>,
   )
 }

@@ -35,9 +35,21 @@ All problems are reported at once.
 | `LOCKLENS_LOG_FORMAT` | `text` | `text` or `json` (stderr). Logs never contain DSNs, passwords, or query text. |
 | `LOCKLENS_SHUTDOWN_TIMEOUT` | `10s` | Grace period for in-flight requests and collectors on SIGINT/SIGTERM. |
 
-## Administrator
+## Users and the environment administrator
 
-LockLens has a single administrator account.
+LockLens has users with one of three roles:
+
+| Role | Can |
+| --- | --- |
+| Administrator | everything: users, instances, investigation access, rule thresholds, incident import |
+| Operator | read everything, preview table rows, run read-only SQL, acknowledge incidents |
+| Viewer | read dashboards, queries, sessions, topology, and incidents; browse table structure |
+
+The **environment administrator** comes from `LOCKLENS_ADMIN_USER` and
+`LOCKLENS_ADMIN_PASSWORD`. It is always an enabled administrator and cannot be
+changed or deleted in the UI, so access can always be recovered by restarting
+with a new password. Other users are added under **Settings → Users** (or
+`POST /api/v1/users`); users change their own password under **Account**.
 
 - On the first start, set `LOCKLENS_ADMIN_PASSWORD` (12 to 72 bytes) or
   `LOCKLENS_ADMIN_PASSWORD_HASH` (a bcrypt hash). The password is hashed with
@@ -50,15 +62,21 @@ LockLens has a single administrator account.
 
 - On later starts both variables may be omitted; the stored account is used.
 - If the configured password differs from the stored one, the stored hash is
-  replaced and **all sessions are ended**. This is also how you reset a
-  forgotten password.
+  replaced and **that administrator's sessions are ended**. This is also how
+  you reset a forgotten password. Changing `LOCKLENS_ADMIN_USER` replaces the
+  previous environment administrator; other users stay.
+- A role change applies to the user's next request. Disabling a user or
+  resetting their password ends their sessions.
 - Five failed logins per client per minute are allowed; further attempts are
   rejected until the window passes.
 
 ## Targets
 
-Targets are normally managed in the UI (**Settings → Add target**) or through
-the API ([api.md](api.md)). Per target:
+Targets are normally added in the UI from a single connection string
+(**Settings → Add instance**, see
+[investigation-workspace.md](investigation-workspace.md#adding-an-instance-from-one-connection-string))
+or through the API ([api.md](api.md)). The advanced form sets every option.
+Per target:
 
 | Setting | Default | Range | Notes |
 | --- | --- | --- | --- |

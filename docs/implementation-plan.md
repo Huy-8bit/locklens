@@ -122,7 +122,7 @@ command; TLS and a real node_exporter were not exercised.
 - `snapshot diff`
 - Release binaries
 - Code-splitting the UI bundle (about 800 KB minified, 233 KB gzip)
-- Master key rotation command; multiple users and roles
+- Master key rotation command
 
 
 ## Investigation workspace audit (2026-10-24)
@@ -220,3 +220,24 @@ data only.
 - [x] Unit tests (fleet Overview, SQL editor, explorer access), make check,
   integration harness, browser E2E for the new main path, axe with contrast on
   every page in both themes, screenshots at 1600/390 px in both themes
+
+## Roles and one-connection-string setup (2026-10-25)
+
+- [x] Users with roles (administrator, operator, viewer): migration `0006`
+  (`admin_users` → `users`), the environment administrator kept as a managed
+  account, permission checks on every mutating route and per workspace action,
+  users API, own password change, audit records under the user's name
+- [x] UI: Settings → Users, Account page, role in the account menu, pages and
+  controls hidden by role (SQL editor, row preview, acknowledgement, Settings)
+- [x] Add an instance from one connection string: plan (`direct`,
+  `create_roles`, `reuse_roles`, `unsupported`), automatic least-privilege
+  roles for a superuser after confirmation (migration `0007`, passwords
+  encrypted per cluster), reuse on standbys; the investigation role may be the
+  monitoring role when it is not administrative
+- [x] Tests: role matrix over the API routes, auth, DSN rewriting, storage
+  users, onboarding against real PostgreSQL (create, reuse on the standby,
+  reader cannot terminate backends or read server files), unit tests for the
+  pages, browser E2E for superuser onboarding and a viewer
+- [x] Live check against the external Try_Hard lab (PostgreSQL 16 primary and
+  replica, e-commerce dataset, read-only pgbench load, a row-lock chain)
+

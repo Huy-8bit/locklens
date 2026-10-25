@@ -1,4 +1,4 @@
-// Package auth implements LockLens' single-administrator authentication.
+// Package auth implements LockLens' authentication and role-based access.
 //
 // Passwords are hashed with bcrypt. Logged-in browsers hold an opaque random
 // token in an HttpOnly, SameSite=Strict cookie; only its SHA-256 hash is
@@ -41,13 +41,21 @@ var ErrInvalidCredentials = errors.New("invalid username or password")
 // ErrRateLimited is returned when too many logins failed recently.
 var ErrRateLimited = errors.New("too many failed login attempts; try again later")
 
-// HashPassword returns a bcrypt hash.
-func HashPassword(password string) (string, error) {
+// ValidatePassword checks the password length rules.
+func ValidatePassword(password string) error {
 	if len(password) < 12 {
-		return "", errors.New("the admin password must be at least 12 characters long")
+		return errors.New("the password must be at least 12 characters long")
 	}
 	if len(password) > 72 {
-		return "", errors.New("the admin password must be at most 72 bytes long (bcrypt limit)")
+		return errors.New("the password must be at most 72 bytes long (bcrypt limit)")
+	}
+	return nil
+}
+
+// HashPassword returns a bcrypt hash.
+func HashPassword(password string) (string, error) {
+	if err := ValidatePassword(password); err != nil {
+		return "", err
 	}
 	h, err := bcrypt.GenerateFromPassword([]byte(password), BcryptCost)
 	return string(h), err
@@ -61,7 +69,8 @@ func IsBcryptHash(s string) bool {
 
 // Store is the subset of the monitoring store used by the service.
 type Store interface {
-	AdminByUsername(ctx context.Context, username string) (storage.AdminUser, error)
+	UserByUsername(ctx context.Context, username string) (storage.User, error)
+	TouchLogin(ctx context.Context, id int64) error
 	CreateSession(ctx context.Context, tokenHash []byte, userID int64, csrf string, expires time.Time) error
 	SessionByHash(ctx context.Context, tokenHash []byte, idle time.Duration) (storage.AuthSession, error)
 	DeleteSession(ctx context.Context, tokenHash []byte) error
@@ -85,11 +94,18 @@ func NewService(store Store, idle time.Duration, secureCookie bool) *Service {
 
 // Session is an authenticated session.
 type Session struct {
-	Username  string
+	UserID   int64
+	Username string
+	Role     Role
+	// Managed is the environment administrator.
+	Managed   bool
 	CSRFToken string
 	ExpiresAt time.Time
 	tokenHash []byte
 }
+
+// Can reports whether the session's user has a permission.
+func (s Session) Can(p Permission) bool { return s.Role.Can(p) }
 
 func randomToken() (string, error) {
 	b := make([]byte, 32)
@@ -109,7 +125,7 @@ func (s *Service) Login(ctx context.Context, w http.ResponseWriter, clientKey, u
 	if !s.limiter.allow(clientKey) {
 		return Session{}, ErrRateLimited
 	}
-	u, err := s.store.AdminByUsername(ctx, username)
+	u, err := s.store.UserByUsername(ctx, username)
 	switch {
 	case errors.Is(err, storage.ErrNotFound):
 		_ = bcrypt.CompareHashAndPassword(s.dummyHash, []byte(password))
@@ -118,7 +134,9 @@ func (s *Service) Login(ctx context.Context, w http.ResponseWriter, clientKey, u
 	case err != nil:
 		return Session{}, err
 	}
-	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
+	// A disabled account answers like a wrong password, after the same
+	// bcrypt work, so it cannot be told apart from an unknown user.
+	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil || u.Disabled {
 		s.limiter.fail(clientKey)
 		return Session{}, ErrInvalidCredentials
 	}
@@ -135,9 +153,10 @@ func (s *Service) Login(ctx context.Context, w http.ResponseWriter, clientKey, u
 	if err := s.store.CreateSession(ctx, hashToken(token), u.ID, csrf, expires); err != nil {
 		return Session{}, err
 	}
+	_ = s.store.TouchLogin(ctx, u.ID)
 	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: token, Path: "/", HttpOnly: true, Secure: s.secureCookie,
 		SameSite: http.SameSiteStrictMode, Expires: expires})
-	return Session{Username: u.Username, CSRFToken: csrf, ExpiresAt: expires, tokenHash: hashToken(token)}, nil
+	return Session{UserID: u.ID, Username: u.Username, Role: Role(u.Role), Managed: u.Managed, CSRFToken: csrf, ExpiresAt: expires, tokenHash: hashToken(token)}, nil
 }
 
 // Authenticate returns the session of a request, or an error.
@@ -151,7 +170,8 @@ func (s *Service) Authenticate(r *http.Request) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	return Session{Username: sess.Username, CSRFToken: sess.CSRFToken, ExpiresAt: sess.ExpiresAt, tokenHash: h}, nil
+	return Session{UserID: sess.UserID, Username: sess.Username, Role: Role(sess.Role), Managed: sess.Managed,
+		CSRFToken: sess.CSRFToken, ExpiresAt: sess.ExpiresAt, tokenHash: h}, nil
 }
 
 // Logout deletes the session and clears the cookie.

@@ -222,15 +222,19 @@ the API. The test:
 8. exports the HTML report (no scripts or credentials) and opens it in an
    offline browser context with JavaScript disabled, checking it loads nothing;
 9. exports JSON and imports it again under Settings;
-10. adds an instance with an environment, tests its connection (version and
-    query statistics shown, no password echoed, SQL text collection on by
-    default), and saves it;
-11. checks Databases, standby replication (streaming), Topology, Connections,
+10. adds an instance from the lab's superuser connection string: the plan
+    lists the `CREATE ROLE`/`GRANT` statements without the password, the
+    roles are created after confirmation, and the instance is stored with
+    `locklens_monitor`; the advanced form still tests a connection;
+11. adds a viewer under Settings → Users, signs in as that viewer in a second
+    browser context, and checks that the SQL Editor and Settings are not
+    offered and that the API refuses SQL and the users list with 403;
+12. checks Databases, standby replication (streaming), Topology, Connections,
     Incidents, Settings store sizes, and the other theme;
-12. runs axe-core, including color contrast, on every page (serious and
+13. runs axe-core, including color contrast, on every page (serious and
     critical violations fail);
-13. signs out from the account menu and checks the API returns 401;
-14. fails on any browser console error or failed request (except the expected
+14. signs out from the account menu and checks the API returns 401;
+15. fails on any browser console error or failed request (except the expected
     401s before signing in and the refused UPDATE's 400).
 
 Reports and traces are written to `test-results/e2e-report` and

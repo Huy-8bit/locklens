@@ -5,6 +5,7 @@ import {
   Cable,
   CalendarDays,
   ChevronDown,
+  CircleUser,
   CircleCheck,
   Database,
   FolderTree,
@@ -26,7 +27,7 @@ import {
 } from 'lucide-react'
 import { useFleet, useIncidents, useSystem } from '../api/hooks'
 import type { SystemResponse } from '../api/types'
-import { useAuth } from '../auth'
+import { ROLE_LABEL, useAuth, useCan } from '../auth'
 import { useEventStream } from '../lib/events'
 import { RANGES, useScope, type Range } from '../lib/scope'
 import { useTheme } from '../lib/theme'
@@ -161,6 +162,7 @@ function Notifications() {
 
 function UserMenu() {
   const { session, logout } = useAuth()
+  const can = useCan()
   const [theme, toggleTheme] = useTheme()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -174,7 +176,7 @@ function UserMenu() {
         </span>
         <span className="hidden text-left leading-tight lg:block">
           <span className="block text-sm font-semibold text-ink">{name}</span>
-          <span className="block text-xs text-muted">Administrator</span>
+          <span className="block text-xs text-muted">{session ? ROLE_LABEL[session.role] : ''}</span>
         </span>
         <ChevronDown aria-hidden className="hidden h-4 w-4 text-muted lg:block" />
         <span className="sr-only">Account menu</span>
@@ -185,9 +187,14 @@ function UserMenu() {
             {theme === 'dark' ? <Sun aria-hidden className="h-4 w-4" /> : <Moon aria-hidden className="h-4 w-4" />}
             Switch to {theme === 'dark' ? 'light' : 'dark'} theme
           </button>
-          <Link role="menuitem" to="/settings" onClick={() => setOpen(false)} className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-surface-2">
-            <Settings aria-hidden className="h-4 w-4" /> Settings
+          <Link role="menuitem" to="/account" onClick={() => setOpen(false)} className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-surface-2">
+            <CircleUser aria-hidden className="h-4 w-4" /> Account
           </Link>
+          {can('targets.manage') && (
+            <Link role="menuitem" to="/settings" onClick={() => setOpen(false)} className="flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-surface-2">
+              <Settings aria-hidden className="h-4 w-4" /> Settings
+            </Link>
+          )}
           <button type="button" role="menuitem" onClick={() => void logout()} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-crit hover:bg-surface-2">
             <LogOut aria-hidden className="h-4 w-4" /> Log out
           </button>
@@ -211,6 +218,7 @@ function LiveSwitch() {
 
 export function Shell() {
   const { env, setEnv, range, setRange } = useScope()
+  const can = useCan()
   useEventStream(true)
   const fleet = useFleet()
   const incidents = useIncidents({ state: 'open' })
@@ -249,12 +257,12 @@ export function Shell() {
         <NavItem to="/sessions" icon={<Users />}>Sessions</NavItem>
         <NavItem to="/blocking" icon={<Lock />}>Blocking</NavItem>
         <NavItem to="/explorer" icon={<FolderTree />}>Explorer</NavItem>
-        <NavItem to="/sql" icon={<SquareTerminal />}>SQL Editor</NavItem>
+        {can('workspace.sql') && <NavItem to="/sql" icon={<SquareTerminal />}>SQL Editor</NavItem>}
         <NavItem to="/incidents" icon={<TriangleAlert />} badge={openCount > 0 ? <span className="rounded-full bg-[#dc2626] px-2 text-[11px] font-semibold leading-5 text-white">{openCount}</span> : undefined}>
           Incidents
         </NavItem>
         <NavItem to="/connections" icon={<Cable />}>Connections</NavItem>
-        <NavItem to="/settings" icon={<Settings />}>Settings</NavItem>
+        {can('targets.manage') && <NavItem to="/settings" icon={<Settings />}>Settings</NavItem>}
       </div>
       <div className="mt-auto">
         <SystemStatus />

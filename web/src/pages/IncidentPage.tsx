@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { ArrowLeft, Download } from 'lucide-react'
 import { useAcknowledge, useIncident, useIncidentEvents } from '../api/hooks'
+import { useCan } from '../auth'
 import type { Finding, IncidentEvent, Report } from '../api/types'
 import { BlockingTree } from '../components/BlockingTree'
 import { FindingCard } from '../components/FindingCard'
@@ -38,6 +39,7 @@ export default function IncidentPage() {
   const q = useIncident(id)
   const events = useIncidentEvents(id)
   const ack = useAcknowledge(id)
+  const can = useCan()
   const [note, setNote] = useState('')
   const [includeQuery, setIncludeQuery] = useState(false)
   return (
@@ -117,6 +119,8 @@ export default function IncidentPage() {
                       Acknowledged by {i.acknowledged_by} at {time(i.acknowledged_at, { date: true })}
                       {i.ack_note ? `: “${i.ack_note}”` : ''}
                     </p>
+                  ) : !can('incidents.acknowledge') ? (
+                    <p className="text-sm text-muted">Not acknowledged. Operators and administrators can acknowledge incidents.</p>
                   ) : (
                     <form
                       className="space-y-2"

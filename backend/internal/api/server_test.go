@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/locklens/locklens/internal/auth"
 	"github.com/locklens/locklens/internal/obs"
+	"github.com/locklens/locklens/internal/storage"
 )
 
 func req(target string) *http.Request { return httptest.NewRequest(http.MethodGet, target, nil) }
@@ -220,6 +222,65 @@ func TestFleetRoutesRequireAuth(t *testing.T) {
 		s.ServeHTTP(w, httptest.NewRequest(http.MethodGet, p, nil))
 		if w.Code != http.StatusUnauthorized {
 			t.Errorf("%s: %d", p, w.Code)
+		}
+	}
+}
+
+// roleStore is an auth store where every session cookie belongs to a user
+// with a fixed role.
+type roleStore struct{ role string }
+
+func (roleStore) UserByUsername(context.Context, string) (storage.User, error) {
+	return storage.User{}, storage.ErrNotFound
+}
+func (roleStore) TouchLogin(context.Context, int64) error { return nil }
+func (roleStore) CreateSession(context.Context, []byte, int64, string, time.Time) error {
+	return nil
+}
+func (r roleStore) SessionByHash(context.Context, []byte, time.Duration) (storage.AuthSession, error) {
+	return storage.AuthSession{UserID: 7, Username: "someone", Role: r.role, CSRFToken: "csrf", ExpiresAt: time.Now().Add(time.Hour)}, nil
+}
+func (roleStore) DeleteSession(context.Context, []byte) error { return nil }
+
+func TestRoutePermissions(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	routes := []struct {
+		method, path, body string
+		need               auth.Permission
+	}{
+		{"GET", "/api/v1/users", "", auth.PermManageUsers},
+		{"POST", "/api/v1/users", "{}", auth.PermManageUsers},
+		{"PUT", "/api/v1/users/1", "{}", auth.PermManageUsers},
+		{"DELETE", "/api/v1/users/1", "", auth.PermManageUsers},
+		{"POST", "/api/v1/targets", "{}", auth.PermManageTargets},
+		{"POST", "/api/v1/targets/test", "{}", auth.PermManageTargets},
+		{"POST", "/api/v1/targets/inspect", "{}", auth.PermManageTargets},
+		{"POST", "/api/v1/targets/quick", "{}", auth.PermManageTargets},
+		{"PUT", "/api/v1/targets/1", "{}", auth.PermManageTargets},
+		{"DELETE", "/api/v1/targets/1", "", auth.PermManageTargets},
+		{"POST", "/api/v1/targets/1/test", "", auth.PermManageTargets},
+		{"PUT", "/api/v1/targets/1/workspace/policy", "{}", auth.PermManageTargets},
+		{"PUT", "/api/v1/settings/rules", "{}", auth.PermManageSettings},
+		{"PUT", "/api/v1/topology", "{}", auth.PermManageSettings},
+		{"DELETE", "/api/v1/topology/1", "", auth.PermManageSettings},
+		{"POST", "/api/v1/incidents/import", "{}", auth.PermManageSettings},
+		{"POST", "/api/v1/incidents/1/acknowledge", "{}", auth.PermAcknowledge},
+		{"POST", "/api/v1/targets/1/workspace/run", `{"action":"data","request_id":"r-123456"}`, auth.PermBrowseData},
+		{"POST", "/api/v1/targets/1/workspace/run", `{"action":"sql","request_id":"r-123456"}`, auth.PermRunSQL},
+		{"POST", "/api/v1/targets/1/workspace/run", `{"action":"explain","request_id":"r-123456"}`, auth.PermRunSQL},
+	}
+	for _, role := range auth.Roles {
+		s := New(Deps{Auth: auth.NewService(roleStore{string(role)}, time.Hour, false), Metrics: obs.NewMetrics(), Log: log})
+		for _, rt := range routes {
+			r := httptest.NewRequest(rt.method, rt.path, strings.NewReader(rt.body))
+			r.AddCookie(&http.Cookie{Name: auth.CookieName, Value: "token"})
+			r.Header.Set(auth.CSRFHeader, "csrf")
+			w := httptest.NewRecorder()
+			s.ServeHTTP(w, r)
+			forbidden := w.Code == http.StatusForbidden && strings.Contains(w.Body.String(), "your role does not allow")
+			if want := !role.Can(rt.need); forbidden != want {
+				t.Errorf("%s %s %s as %s: status %d, forbidden=%v want %v", rt.method, rt.path, rt.body, role, w.Code, forbidden, want)
+			}
 		}
 	}
 }

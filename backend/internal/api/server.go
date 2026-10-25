@@ -26,6 +26,7 @@ import (
 	"github.com/locklens/locklens/internal/collector"
 	"github.com/locklens/locklens/internal/model"
 	"github.com/locklens/locklens/internal/obs"
+	"github.com/locklens/locklens/internal/onboard"
 	"github.com/locklens/locklens/internal/settings"
 	"github.com/locklens/locklens/internal/storage"
 	"github.com/locklens/locklens/internal/targets"
@@ -44,6 +45,7 @@ const (
 // Deps are the server's collaborators.
 type Deps struct {
 	Workspace *workspace.Service
+	Onboard   *onboard.Service
 	Store     *storage.Store
 	Auth      *auth.Service
 	Targets   *targets.Service
@@ -97,6 +99,15 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/auth/login", s.login)
 	m.HandleFunc("POST /api/v1/auth/logout", s.authed(s.logout))
 	m.HandleFunc("GET /api/v1/session", s.authed(s.session))
+	m.HandleFunc("PUT /api/v1/session/password", s.authed(s.changeOwnPassword))
+
+	// Users (admin only).
+	m.HandleFunc("GET /api/v1/users", s.allow(auth.PermManageUsers, s.listUsers))
+	m.HandleFunc("POST /api/v1/users", s.allow(auth.PermManageUsers, s.createUser))
+	m.HandleFunc("PUT /api/v1/users/{id}", s.allow(auth.PermManageUsers, s.updateUser))
+	m.HandleFunc("DELETE /api/v1/users/{id}", s.allow(auth.PermManageUsers, s.deleteUser))
+
+	// Reads need any role (every role can view); changes name their permission.
 
 	m.HandleFunc("GET /api/v1/fleet", s.authed(s.fleet))
 	m.HandleFunc("GET /api/v1/fleet/metrics", s.authed(s.fleetMetrics))
@@ -104,20 +115,22 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/fleet/live", s.authed(s.fleetLive))
 	m.HandleFunc("GET /api/v1/system", s.authed(s.system))
 	m.HandleFunc("GET /api/v1/topology", s.authed(s.topology))
-	m.HandleFunc("PUT /api/v1/topology", s.authed(s.putTopology))
-	m.HandleFunc("DELETE /api/v1/topology/{id}", s.authed(s.deleteTopology))
+	m.HandleFunc("PUT /api/v1/topology", s.allow(auth.PermManageSettings, s.putTopology))
+	m.HandleFunc("DELETE /api/v1/topology/{id}", s.allow(auth.PermManageSettings, s.deleteTopology))
 	m.HandleFunc("GET /api/v1/targets/{id}/history-bounds", s.authed(s.historyBounds))
 	m.HandleFunc("GET /api/v1/targets/{id}/workspace/policy", s.authed(s.workspacePolicy))
-	m.HandleFunc("PUT /api/v1/targets/{id}/workspace/policy", s.authed(s.putWorkspacePolicy))
+	m.HandleFunc("PUT /api/v1/targets/{id}/workspace/policy", s.allow(auth.PermManageTargets, s.putWorkspacePolicy))
 	m.HandleFunc("POST /api/v1/targets/{id}/workspace/run", s.authed(s.workspaceRun))
 	m.HandleFunc("POST /api/v1/targets/{id}/workspace/cancel", s.authed(s.workspaceCancel))
 	m.HandleFunc("GET /api/v1/targets", s.authed(s.listTargets))
-	m.HandleFunc("POST /api/v1/targets", s.authed(s.createTarget))
-	m.HandleFunc("POST /api/v1/targets/test", s.authed(s.testNewTarget))
+	m.HandleFunc("POST /api/v1/targets", s.allow(auth.PermManageTargets, s.createTarget))
+	m.HandleFunc("POST /api/v1/targets/test", s.allow(auth.PermManageTargets, s.testNewTarget))
+	m.HandleFunc("POST /api/v1/targets/inspect", s.allow(auth.PermManageTargets, s.inspectConnection))
+	m.HandleFunc("POST /api/v1/targets/quick", s.allow(auth.PermManageTargets, s.quickAddTarget))
 	m.HandleFunc("GET /api/v1/targets/{id}", s.authed(s.getTarget))
-	m.HandleFunc("PUT /api/v1/targets/{id}", s.authed(s.updateTarget))
-	m.HandleFunc("DELETE /api/v1/targets/{id}", s.authed(s.deleteTarget))
-	m.HandleFunc("POST /api/v1/targets/{id}/test", s.authed(s.testTarget))
+	m.HandleFunc("PUT /api/v1/targets/{id}", s.allow(auth.PermManageTargets, s.updateTarget))
+	m.HandleFunc("DELETE /api/v1/targets/{id}", s.allow(auth.PermManageTargets, s.deleteTarget))
+	m.HandleFunc("POST /api/v1/targets/{id}/test", s.allow(auth.PermManageTargets, s.testTarget))
 	m.HandleFunc("GET /api/v1/targets/{id}/overview", s.authed(s.targetOverview))
 	m.HandleFunc("GET /api/v1/targets/{id}/metrics", s.authed(s.targetMetrics))
 	m.HandleFunc("GET /api/v1/targets/{id}/activity", s.authed(s.targetActivity))
@@ -133,15 +146,15 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/targets/{id}/gaps", s.authed(s.targetGaps))
 
 	m.HandleFunc("GET /api/v1/incidents", s.authed(s.listIncidents))
-	m.HandleFunc("POST /api/v1/incidents/import", s.authed(s.importIncident))
+	m.HandleFunc("POST /api/v1/incidents/import", s.allow(auth.PermManageSettings, s.importIncident))
 	m.HandleFunc("GET /api/v1/incidents/{id}", s.authed(s.getIncident))
 	m.HandleFunc("GET /api/v1/incidents/{id}/events", s.authed(s.incidentEvents))
-	m.HandleFunc("POST /api/v1/incidents/{id}/acknowledge", s.authed(s.acknowledgeIncident))
+	m.HandleFunc("POST /api/v1/incidents/{id}/acknowledge", s.allow(auth.PermAcknowledge, s.acknowledgeIncident))
 	m.HandleFunc("GET /api/v1/incidents/{id}/export", s.authed(s.exportIncident))
 
 	m.HandleFunc("POST /api/v1/snapshots/analyze", s.authed(s.analyzeSnapshot))
 	m.HandleFunc("GET /api/v1/settings/rules", s.authed(s.getRuleSettings))
-	m.HandleFunc("PUT /api/v1/settings/rules", s.authed(s.putRuleSettings))
+	m.HandleFunc("PUT /api/v1/settings/rules", s.allow(auth.PermManageSettings, s.putRuleSettings))
 	m.HandleFunc("GET /api/v1/storage", s.authed(s.storageStats))
 	m.HandleFunc("GET /api/v1/events", s.authed(func(w http.ResponseWriter, r *http.Request) { s.d.Hub.ServeHTTP(w, r) }))
 
@@ -226,6 +239,17 @@ func (s *Server) authed(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// allow is authed plus a permission check. Missing permission answers 403.
+func (s *Server) allow(p auth.Permission, h http.HandlerFunc) http.HandlerFunc {
+	return s.authed(func(w http.ResponseWriter, r *http.Request) {
+		if !sessionOf(r).Can(p) {
+			writeError(w, r, http.StatusForbidden, "forbidden", "your role does not allow this action")
+			return
+		}
+		h(w, r)
+	})
+}
+
 func sessionOf(r *http.Request) auth.Session {
 	s, _ := r.Context().Value(keySession).(auth.Session)
 	return s
@@ -250,6 +274,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(true)
 	_ = enc.Encode(v)
+}
+
+// writeFieldErrors answers 422 with one message per invalid field.
+func writeFieldErrors(w http.ResponseWriter, r *http.Request, fields map[string]string) {
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]apiError{"error": {Code: "validation", Message: "invalid input", Fields: fields, RequestID: requestID(r)}})
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, status int, code, msg string) {

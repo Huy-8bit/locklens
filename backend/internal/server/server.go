@@ -18,6 +18,7 @@ import (
 	"github.com/locklens/locklens/internal/incidents"
 	"github.com/locklens/locklens/internal/model"
 	"github.com/locklens/locklens/internal/obs"
+	"github.com/locklens/locklens/internal/onboard"
 	"github.com/locklens/locklens/internal/retention"
 	"github.com/locklens/locklens/internal/secret"
 	"github.com/locklens/locklens/internal/settings"
@@ -103,6 +104,7 @@ func Run(ctx context.Context, cfg Config, version string, log *slog.Logger) erro
 
 	tool := model.Tool{Name: "locklens", Version: version}
 	handler := api.New(api.Deps{Workspace: ws, Store: store, Auth: auth.NewService(store, cfg.SessionIdle, cfg.CookieSecure), Targets: tsvc,
+		Onboard: onboard.New(store, box, tsvc, ws),
 		Manager: manager, Settings: st, Hub: hub, Metrics: metrics, Log: log, Tool: tool, UI: webui.FS(),
 		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode})
 
@@ -160,32 +162,33 @@ func bootstrapAdmin(ctx context.Context, store *storage.Store, cfg Config, log *
 	if hash != "" && !auth.IsBcryptHash(hash) {
 		return errors.New("LOCKLENS_ADMIN_PASSWORD_HASH is not a bcrypt hash (create one with: locklens admin hash-password)")
 	}
+	existing, existingErr := store.UserByUsername(ctx, cfg.AdminUser)
 	if cfg.AdminPassword != "" {
-		existing, err := store.AdminByUsername(ctx, cfg.AdminUser)
-		if err == nil && auth.VerifyPassword(existing.PasswordHash, cfg.AdminPassword) {
+		if existingErr == nil && auth.VerifyPassword(existing.PasswordHash, cfg.AdminPassword) {
 			hash = existing.PasswordHash
 		} else {
+			var err error
 			if hash, err = auth.HashPassword(cfg.AdminPassword); err != nil {
 				return fmt.Errorf("LOCKLENS_ADMIN_PASSWORD: %w", err)
 			}
 		}
 	}
 	if hash == "" {
-		if _, err := store.AdminByUsername(ctx, cfg.AdminUser); err == nil {
+		if existingErr == nil && existing.Managed {
 			return nil
 		}
 		return errors.New("no administrator configured: set LOCKLENS_ADMIN_PASSWORD (or LOCKLENS_ADMIN_PASSWORD_HASH) for the first start")
 	}
-	prev, prevErr := store.AdminByUsername(ctx, cfg.AdminUser)
-	if _, err := store.UpsertAdmin(ctx, cfg.AdminUser, hash); err != nil {
+	id, changed, err := store.UpsertManagedAdmin(ctx, cfg.AdminUser, hash)
+	if err != nil {
 		return fmt.Errorf("bootstrap admin: %w", err)
 	}
-	if prevErr == nil && prev.PasswordHash != hash {
-		// A changed password logs everybody out.
-		if err := store.DeleteAllSessions(ctx); err != nil {
+	if changed {
+		// A changed password ends that administrator's sessions.
+		if err := store.DeleteUserSessions(ctx, id); err != nil {
 			return err
 		}
-		log.Info("admin password changed; existing sessions were ended")
+		log.Info("admin password changed; the administrator's sessions were ended")
 	}
 	return nil
 }
