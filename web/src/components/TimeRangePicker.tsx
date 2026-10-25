@@ -25,13 +25,22 @@ export function TimeRangePicker({ compact = false }: { compact?: boolean }) {
   const [toText, setToText] = useState('')
   const [error, setError] = useState('')
   const ref = useRef<HTMLDivElement>(null)
+  // The current time, refreshed every 15 s, so rendering stays pure (it
+  // decides whether "move forward" can go anywhere).
+  const [now, setNow] = useState(0)
+
+  useEffect(() => {
+    const tick = () => setNow(Date.now())
+    const first = window.setTimeout(tick, 0)
+    const id = window.setInterval(tick, 15_000)
+    return () => {
+      window.clearTimeout(first)
+      window.clearInterval(id)
+    }
+  }, [])
 
   useEffect(() => {
     if (!open) return
-    const [f, t] = rangeWindow(range)
-    setFromText(local(f))
-    setToText(local(t))
-    setError('')
     const onDown = (e: MouseEvent) => ref.current && !ref.current.contains(e.target as Node) && setOpen(false)
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
     document.addEventListener('mousedown', onDown)
@@ -40,7 +49,20 @@ export function TimeRangePicker({ compact = false }: { compact?: boolean }) {
       document.removeEventListener('mousedown', onDown)
       window.removeEventListener('keydown', onKey)
     }
-  }, [open, range])
+  }, [open])
+
+  // Opening the panel fills the absolute fields with the current window.
+  const toggle = () => {
+    if (!open) {
+      const t0 = Date.now()
+      const [f, t] = rangeWindow(range, t0)
+      setFromText(local(f))
+      setToText(local(t))
+      setError('')
+      setNow(t0)
+    }
+    setOpen((o) => !o)
+  }
 
   const apply = (e: FormEvent) => {
     e.preventDefault()
@@ -54,7 +76,6 @@ export function TimeRangePicker({ compact = false }: { compact?: boolean }) {
     setOpen(false)
   }
 
-  const now = Date.now()
   const atNow = !isAbsolute(range) || now - rangeWindow(range, now)[1] < 5000
 
   return (
@@ -69,7 +90,7 @@ export function TimeRangePicker({ compact = false }: { compact?: boolean }) {
           type="button"
           aria-haspopup="dialog"
           aria-expanded={open}
-          onClick={() => setOpen((o) => !o)}
+          onClick={toggle}
           className={cx('flex h-9 items-center gap-2 px-3 text-sm font-medium text-ink hover:bg-surface-2', !compact && 'border-x border-line')}
         >
           <CalendarDays aria-hidden className="h-4 w-4 text-ink-2" />
