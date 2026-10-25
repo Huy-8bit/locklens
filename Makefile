@@ -16,6 +16,7 @@ LDFLAGS   := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(
 export LOCKLENS_PG_PORT ?= 55432
 export LOCKLENS_STANDBY_PORT ?= 55433
 export LOCKLENS_STANDBY2_PORT ?= 55437
+export LOCKLENS_STANDBY3_PORT ?= 55438
 export LOCKLENS_BACKEND_PORT ?= 8091
 DEMO_DSN ?= postgres://demo_app:demo-app-pw@127.0.0.1:$(LOCKLENS_PG_PORT)/locklens_demo?sslmode=disable
 OBSERVER_DSN ?= postgres://locklens_observer:observer-pw@127.0.0.1:$(LOCKLENS_PG_PORT)/locklens_demo?sslmode=disable
@@ -133,7 +134,7 @@ down: ## Stop LockLens (its data is kept)
 ## ---- demo lab (deploy/compose.lab.yaml, project "locklens-lab")
 
 .PHONY: lab-up
-lab-up: ## Start LockLens with the lab: primary, two standbys, workload, node_exporter (http://127.0.0.1:8080)
+lab-up: ## Start LockLens with the lab: primary, three standbys, workload, node_exporter (http://127.0.0.1:8080)
 	$(LAB_COMPOSE) up -d --build --wait --wait-timeout 300
 
 .PHONY: lab-up-host

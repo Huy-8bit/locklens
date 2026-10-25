@@ -85,6 +85,7 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
   await test.step('sign in and land on the fleet overview', async () => {
     await page.goto('/')
     await expect(page.getByRole('heading', { name: 'Sign in to LockLens' })).toBeVisible()
+    await page.getByLabel('Username').fill('admin')
     await page.getByLabel('Password').fill('not-the-password')
     await page.getByRole('button', { name: 'Sign in' }).click()
     await expect(page.getByRole('alert')).toBeVisible()

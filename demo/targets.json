@@ -43,5 +43,20 @@
     },
     "environment": "lab",
     "node_exporter_url": "http://node-exporter:9100/metrics"
+  },
+  {
+    "name": "lab-standby-3",
+    "description": "Third lab hot standby streaming from lab-primary (demo data only)",
+    "dsn_env": "LOCKLENS_LAB_STANDBY3_DSN",
+    "interval_seconds": 10,
+    "max_connections": 2,
+    "workspace": {
+      "metadata": true,
+      "data": true,
+      "dsn_env": "LOCKLENS_LAB_STANDBY3_READER_DSN",
+      "sql": true
+    },
+    "environment": "lab",
+    "node_exporter_url": "http://node-exporter:9100/metrics"
   }
 ]

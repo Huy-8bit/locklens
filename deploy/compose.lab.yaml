@@ -1,5 +1,5 @@
 # LockLens demo lab: an overlay on compose.yaml that adds a PostgreSQL primary
-# and two hot standbys to monitor, a continuous backend workload, an
+# and three hot standbys to monitor, a continuous backend workload, an
 # on-demand scenario runner, and node_exporter, and registers the lab
 # databases in LockLens at startup.
 #
@@ -35,9 +35,9 @@ services:
       - max_wal_senders=10
       - -c
       - max_replication_slots=10
-      # Both standbys clone the primary at the same time on first start; keep
-      # some WAL so one clone's checkpoint cannot remove segments the other
-      # clone still streams.
+      # All standbys clone the primary at the same time on first start; keep
+      # some WAL so one clone's checkpoint cannot remove segments the others
+      # still stream.
       - -c
       - wal_keep_size=256MB
       - -c
@@ -111,6 +111,31 @@ services:
       timeout: 3s
       retries: 90
 
+  standby-3:
+    image: *pg-image
+    depends_on:
+      primary:
+        condition: service_healthy
+    user: postgres
+    entrypoint: ["/usr/local/bin/standby-entrypoint.sh"]
+    command: ["postgres", "-c", "hot_standby=on", "-c", "max_connections=60", "-c", "max_prepared_transactions=10",
+              "-c", "max_wal_senders=10", "-c", "max_replication_slots=10", "-c", "shared_preload_libraries=pg_stat_statements",
+              "-c", "track_io_timing=on"]
+    environment:
+      POSTGRES_PASSWORD: lab-postgres-pw
+      REPLICATION_PASSWORD: replicator-pw
+      REPLICATION_SLOT: standby3_slot
+    ports:
+      - "127.0.0.1:${LOCKLENS_STANDBY3_PORT:-55438}:5432"
+    volumes:
+      - ../demo/postgres/standby-entrypoint.sh:/usr/local/bin/standby-entrypoint.sh:ro
+      - standby-3-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d locklens_demo"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+
   backend:
     depends_on:
       primary:
@@ -119,9 +144,13 @@ services:
         condition: service_healthy
       standby-2:
         condition: service_healthy
+      standby-3:
+        condition: service_healthy
     environment:
       LOCKLENS_DEMO_MODE: "true"
       LOCKLENS_BOOTSTRAP_TARGETS_FILE: /etc/locklens/targets.json
+      LOCKLENS_LAB_STANDBY3_DSN: postgres://postgres:lab-postgres-pw@standby-3:5432/locklens_demo?sslmode=disable
+      LOCKLENS_LAB_STANDBY3_READER_DSN: postgres://demo_reader:demo-reader-pw@standby-3:5432/locklens_demo?sslmode=disable
       LOCKLENS_LAB_PRIMARY_DSN: postgres://locklens_observer:observer-pw@primary:5432/locklens_demo?sslmode=disable
       LOCKLENS_LAB_STANDBY_DSN: postgres://locklens_observer:observer-pw@standby:5432/locklens_demo?sslmode=disable
       LOCKLENS_LAB_STANDBY2_DSN: postgres://locklens_observer:observer-pw@standby-2:5432/locklens_demo?sslmode=disable
@@ -192,3 +221,4 @@ volumes:
   primary-data:
   standby-data:
   standby-2-data:
+  standby-3-data:

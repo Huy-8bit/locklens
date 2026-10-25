@@ -8,8 +8,8 @@ See what your databases are doing right now, find out who is blocking whom,
 and keep the evidence when something goes wrong.
 
 [![CI](https://github.com/Huy-8bit/locklens/actions/workflows/ci.yml/badge.svg)](https://github.com/Huy-8bit/locklens/actions/workflows/ci.yml)
-[![Backend image](https://img.shields.io/docker/v/johnnynguyen882/locklens-backend?label=backend%20image&sort=date)](https://hub.docker.com/r/johnnynguyen882/locklens-backend)
-[![Frontend image](https://img.shields.io/docker/v/johnnynguyen882/locklens-frontend?label=frontend%20image&sort=date)](https://hub.docker.com/r/johnnynguyen882/locklens-frontend)
+[![Backend image](https://img.shields.io/docker/v/johnnynguyen882/locklens-backend?label=backend%20image&sort=semver)](https://hub.docker.com/r/johnnynguyen882/locklens-backend)
+[![Frontend image](https://img.shields.io/docker/v/johnnynguyen882/locklens-frontend?label=frontend%20image&sort=semver)](https://hub.docker.com/r/johnnynguyen882/locklens-frontend)
 ![PostgreSQL 14–18](https://img.shields.io/badge/PostgreSQL-14%E2%80%9318-336791)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
