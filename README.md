@@ -8,12 +8,12 @@ See what your databases are doing right now, find out who is blocking whom,
 and keep the evidence when something goes wrong.
 
 [![CI](https://github.com/Huy-8bit/locklens/actions/workflows/ci.yml/badge.svg)](https://github.com/Huy-8bit/locklens/actions/workflows/ci.yml)
-[![Docker pulls](https://img.shields.io/docker/pulls/johnnynguyen882/locklens)](https://hub.docker.com/r/johnnynguyen882/locklens)
-[![Image size](https://img.shields.io/docker/image-size/johnnynguyen882/locklens/latest)](https://hub.docker.com/r/johnnynguyen882/locklens)
+[![Backend image](https://img.shields.io/docker/v/johnnynguyen882/locklens-backend?label=backend%20image&sort=date)](https://hub.docker.com/r/johnnynguyen882/locklens-backend)
+[![Frontend image](https://img.shields.io/docker/v/johnnynguyen882/locklens-frontend?label=frontend%20image&sort=date)](https://hub.docker.com/r/johnnynguyen882/locklens-frontend)
 ![PostgreSQL 14–18](https://img.shields.io/badge/PostgreSQL-14%E2%80%9318-336791)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-[Quick start](#quick-start) · [Features](#features) · [Documentation](#documentation) · [Docker Hub](https://hub.docker.com/r/johnnynguyen882/locklens) · [Contributing](#contributing)
+[Quick start](#quick-start) · [Features](#features) · [Documentation](#documentation) · [Deployment](docs/deployment.md) · [Contributing](#contributing)
 
 ![LockLens overview](docs/images/overview.png)
 
@@ -30,9 +30,9 @@ and keep the evidence when something goes wrong.
 - **Observe-only by design.** LockLens connects with a read-only role. It
   never cancels queries, terminates sessions, changes configuration, or runs
   DDL/DML on your databases.
-- **One small binary.** Web UI, API, collectors, and a CLI in a single Go
-  binary or Docker image. Its only dependency is a PostgreSQL database for its
-  own history.
+- **Two small images.** A Go backend (API, collectors, CLI) and an nginx
+  frontend that serves the web UI and proxies the API. Their only dependency
+  is a PostgreSQL database for LockLens' own history.
 
 ## Features
 
@@ -84,7 +84,8 @@ See the [quickstart](docs/quickstart.md) for every scenario and what to expect.
 
 ### Run LockLens from the repository
 
-Starts only LockLens and its own store; add your databases in the UI.
+Starts the backend, the frontend, and LockLens' own store; add your databases
+in the UI.
 
 ```sh
 make up                          # creates deploy/.env with random secrets and prints the admin password
@@ -104,18 +105,24 @@ docker run -d --name locklens-store --network locklens \
   -e POSTGRES_USER=locklens -e POSTGRES_PASSWORD=change-me -e POSTGRES_DB=locklens \
   -v locklens-store:/var/lib/postgresql postgres:18-alpine
 
-docker run -d --name locklens --network locklens -p 127.0.0.1:8080:8080 \
-  -e LOCKLENS_LISTEN=0.0.0.0:8080 \
+docker run -d --name locklens-backend --network locklens \
   -e LOCKLENS_STORE_DSN='postgres://locklens:change-me@locklens-store:5432/locklens?sslmode=disable' \
   -e LOCKLENS_MASTER_KEY \
   -e LOCKLENS_ADMIN_PASSWORD='choose-a-long-password' \
   -e LOCKLENS_COOKIE_SECURE=false \
-  johnnynguyen882/locklens:latest
+  -e LOCKLENS_TRUSTED_PROXIES=locklens-frontend \
+  johnnynguyen882/locklens-backend:latest
+
+docker run -d --name locklens-frontend --network locklens -p 127.0.0.1:8080:8080 \
+  -e LOCKLENS_BACKEND_URL=http://locklens-backend:8080 \
+  johnnynguyen882/locklens-frontend:latest
 ```
 
-Use a released tag (`X.Y.Z`) in production, and put LockLens behind HTTPS
-before exposing it beyond your machine (then drop `LOCKLENS_COOKIE_SECURE`).
-All settings: [configuration](docs/configuration.md).
+The frontend serves the UI and proxies `/api/` to the backend, so only the
+frontend is published. Use the same released tag (`X.Y.Z`) for both images in
+production, and put LockLens behind HTTPS before exposing it beyond your
+machine (then drop `LOCKLENS_COOKIE_SECURE`). See [deployment](docs/deployment.md)
+and [configuration](docs/configuration.md).
 
 ### Connect your databases
 
@@ -138,9 +145,13 @@ only those. Standbys reuse the roles of their primary.
 Requires Go 1.26+ and Node.js 24.15+ (or 22.22.2+).
 
 ```sh
-make build                       # bin/locklens with the web UI embedded
+make build                       # web/dist (the UI) and bin/locklens (API server and CLI)
 bin/locklens server              # needs LOCKLENS_STORE_DSN, LOCKLENS_MASTER_KEY, LOCKLENS_ADMIN_PASSWORD
+make image                       # the two Docker images: locklens-backend:local, locklens-frontend:local
 ```
+
+The backend serves only the API; serve the UI with the frontend image or, for
+development, with `make dev` (Vite proxies `/api/` to a local backend).
 
 ## Command line
 
@@ -167,10 +178,11 @@ Reference: [CLI](docs/cli-reference.md).
 ## How it works
 
 ```text
+                              backend (locklens server)                                frontend (nginx)
 PostgreSQL targets ──read-only──► collectors ──► write queue ──► monitoring store
                                       │                                │
                                       ▼                                ▼
-                           rules + incident recorder         REST API + live events ──► web UI
+                           rules + incident recorder         REST API + live events ◄──/api/── web UI ◄── browser
 ```
 
 One worker per target runs its collectors on a schedule under a global
@@ -200,7 +212,7 @@ Details in [security](docs/security.md). To report a vulnerability, see
 | --- | --- |
 | **Getting started** | [Quickstart](docs/quickstart.md) · [Configuration](docs/configuration.md) · [UI guide](docs/ui-design.md) · [Troubleshooting](docs/troubleshooting.md) |
 | **Concepts** | [Architecture](docs/architecture.md) · [Collectors](docs/collectors.md) · [PostgreSQL observation](docs/postgresql-observation.md) · [Blocking graph](docs/blocking-graph.md) · [Query analysis](docs/query-analysis.md) · [Rules](docs/rules.md) · [Incidents](docs/incidents.md) · [Explorer and SQL](docs/investigation-workspace.md) |
-| **Operations** | [Storage and retention](docs/storage-and-retention.md) · [Security](docs/security.md) · [Limitations](docs/limitations.md) |
+| **Operations** | [Deployment](docs/deployment.md) · [Storage and retention](docs/storage-and-retention.md) · [Security](docs/security.md) · [Limitations](docs/limitations.md) |
 | **Reference** | [HTTP API](docs/api.md) · [CLI](docs/cli-reference.md) · [Snapshot format](docs/snapshot-format.md) |
 | **Development** | [Development](docs/development.md) · [Testing](docs/testing.md) · [Test report](docs/test-report.md) |
 
@@ -216,7 +228,8 @@ make web-check      # frontend typecheck, lint, unit and accessibility tests
 make test-integration && make e2e   # real PostgreSQL and browser tests (slower)
 ```
 
-Repository layout: `backend/` (Go), `web/` (React), `deploy/` (Docker),
+Repository layout: `backend/` (Go, with its Dockerfile), `web/` (React, with
+its Dockerfile and nginx config), `deploy/` (Compose files),
 `demo/` (lab fixtures), `tests/e2e/` (CLI, server, and browser tests),
 `docs/`.
 

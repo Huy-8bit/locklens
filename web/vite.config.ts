@@ -2,8 +2,9 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
-// The Go server serves the built UI from the same origin. During development
-// Vite proxies API calls to a locally running `locklens server`.
+// In production the frontend image (nginx) serves the built UI and proxies
+// /api/ to the backend. During development Vite does the same for a locally
+// running `locklens server`.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {

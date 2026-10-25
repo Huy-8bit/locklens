@@ -67,18 +67,32 @@ jobs:
       - name: Build
         run: npm run build
 
-  # Builds the server image after the unit tests pass and pushes it to Docker Hub.
-  # Pushes happen only for pushes to main and v* tags, never for pull requests.
-  # Requires the repository secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN
-  # (a Docker Hub access token with Read & Write scope, not the password).
+  # Builds the two images after the unit tests pass and pushes them to Docker
+  # Hub: locklens-backend (API, collectors, CLI) and locklens-frontend (web UI
+  # on nginx, proxying /api/ to the backend). Pushes happen only for pushes to
+  # main and v* tags, never for pull requests. Requires the repository secrets
+  # DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a Docker Hub access token with
+  # Read, Write, Delete scope; the description update needs Delete).
   docker:
-    name: Build and push the Docker image
+    name: Build and push ${{ matrix.image }}
     runs-on: ubuntu-latest
     needs: [checks, web]
     if: github.event_name == 'push'
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: locklens-backend
+            context: backend
+            readme: deploy/dockerhub/backend.md
+            description: LockLens backend - PostgreSQL monitoring API, collectors, incident recorder, and CLI
+          - image: locklens-frontend
+            context: web
+            readme: deploy/dockerhub/frontend.md
+            description: LockLens web UI on nginx - proxies /api/ to the LockLens backend
     env:
-      IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/locklens
+      IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -104,8 +118,7 @@ jobs:
       - name: Build and push (linux/amd64, linux/arm64)
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: deploy/Dockerfile
+          context: ${{ matrix.context }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -113,17 +126,16 @@ jobs:
           build-args: |
             VERSION=${{ github.ref_type == 'tag' && github.ref_name || format('main-{0}', github.sha) }}
             COMMIT=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      # Docker Hub's short description and Overview tab. Needs a token with
-      # Read, Write, Delete scope (Docker Hub requires it for this API).
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      # Docker Hub's short description and Overview tab.
       - name: Update the Docker Hub description
         if: github.ref == 'refs/heads/main'
         uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ secrets.DOCKERHUB_USERNAME }}/locklens
-          short-description: PostgreSQL monitoring and investigation - sessions, queries, blocking, replication
-          readme-filepath: deploy/DOCKERHUB.md
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}
+          short-description: ${{ matrix.description }}
+          readme-filepath: ${{ matrix.readme }}
           enable-url-completion: true

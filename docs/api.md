@@ -34,6 +34,12 @@ The API is designed for the bundled UI on the same origin. It is versioned
   the request does not opt out (`include_text=false`), and in live
   activity of an opted-in target).
 
+## Paths
+
+The backend answers `/api/`, the operational endpoints below, and `404` (with a
+hint) for anything else: the web UI is served by the frontend image, which
+proxies `/api/` to the backend ([deployment.md](deployment.md)).
+
 ## Operational endpoints (no authentication)
 
 | Method and path | Description |

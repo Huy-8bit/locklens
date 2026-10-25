@@ -23,7 +23,7 @@ git clone <this repository> locklens && cd locklens
 make lab-up
 ```
 
-`make lab-up` builds the `locklens:local` image (the first build takes a few
+`make lab-up` builds the `locklens-backend:local` and `locklens-frontend:local` images (the first build takes a few
 minutes) and starts the lab, project `locklens-lab`, on loopback only, waiting
 until each container is healthy:
 
@@ -34,7 +34,8 @@ until each container is healthy:
 | `standby`, `standby-2` | Hot standbys streaming from `primary` |
 | `backend-simulator` | A small API with continuous synthetic traffic on `primary` |
 | `node-exporter` | Host metrics of the Docker VM |
-| `locklens` | `locklens server` in demo mode, with the three databases pre-registered as targets |
+| `backend` | `locklens server` in demo mode, with the three databases pre-registered as targets |
+| `frontend` | The web UI (nginx), proxying `/api/` to `backend`; the only container published to your machine (port 8080) |
 
 `make up` (without `lab`) starts only LockLens and its store, for your own
 databases; see [Option B](#option-b-your-own-databases). The two use separate
@@ -133,7 +134,7 @@ make lab-down     # removes the lab's containers and volumes (project "locklens-
 ### With Docker (recommended)
 
 ```sh
-make up      # LockLens and its store only, on http://127.0.0.1:8080
+make up      # backend, frontend, and store only, on http://127.0.0.1:8080
 make down    # stop; the data is kept
 ```
 
@@ -151,7 +152,7 @@ reach (a Docker service name or `host.docker.internal`), not `localhost`.
 Requires Go 1.26+ and Node.js 22+ (for the UI).
 
 ```sh
-make build-all    # web UI + bin/locklens (UI embedded)
+make build-all    # web UI (web/dist) + bin/locklens (API server and CLI)
 ```
 
 ### Prepare
@@ -180,12 +181,15 @@ make build-all    # web UI + bin/locklens (UI embedded)
 export LOCKLENS_STORE_DSN='postgres://locklens_store:...@store-host:5432/locklens?sslmode=verify-full'
 export LOCKLENS_MASTER_KEY="$(openssl rand -base64 32)"   # keep it: it decrypts stored DSNs
 read -rs LOCKLENS_ADMIN_PASSWORD && export LOCKLENS_ADMIN_PASSWORD
-bin/locklens server
+bin/locklens server   # the API on 127.0.0.1:8080
 ```
 
-Open <http://127.0.0.1:8080>, sign in as `admin`, and add targets under
-**Settings → Add instance**. **Test connection** shows the version, visibility,
-and whether `pg_stat_statements` is usable before you save.
+The server serves the API only. For the UI, run the frontend image against it
+(`docker run -p 127.0.0.1:3000:8080 -e LOCKLENS_BACKEND_URL=http://host.docker.internal:8080 locklens-frontend:local`
+after `make image`), or Vite during development
+(`cd web && LOCKLENS_DEV_API=http://127.0.0.1:8080 npm run dev`). Open the UI,
+sign in as `admin`, and add instances under **Settings → Add instance**. When
+the server listens beyond loopback, see [deployment.md](deployment.md).
 
 Next: [configuration.md](configuration.md) for all settings,
 [security.md](security.md) before exposing the server beyond your machine.

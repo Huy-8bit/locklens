@@ -310,10 +310,14 @@ and the production/demo import boundary. Direct Go commands target the module:
 integration tests require the explicit disposable DSNs supplied by
 `scripts/integration-test.sh`, which creates a temporary Go workspace.
 
-`make docker-smoke` builds the production image in `deploy/Dockerfile`, starts
-an isolated Compose stack on random loopback ports, verifies readiness,
-embedded HTML and JavaScript, SPA routing, the CLI and lab runner, and a
-non-root runtime user, then removes only that stack's containers and volumes.
+`make docker-smoke` builds both images (`backend/Dockerfile`,
+`web/Dockerfile`), starts an isolated Compose stack on random loopback ports,
+and verifies backend health and readiness (migrations), that the backend
+serves no UI, the frontend's UI, hashed assets, SPA routing, security and
+cache headers, the `/api/` proxy (401 without a session, login with an
+`HttpOnly`/`SameSite=Strict` cookie, an authenticated call, and a refused
+cross-origin mutation), the CLI and lab runner, and non-root users in both
+images, then removes only that stack's containers and volumes.
 `make e2e` installs the separate Playwright dependencies in `tests/e2e/` and
 runs its browser flows against another isolated stack.
 

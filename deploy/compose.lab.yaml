@@ -111,7 +111,7 @@ services:
       timeout: 3s
       retries: 90
 
-  locklens:
+  backend:
     depends_on:
       primary:
         condition: service_healthy
@@ -134,7 +134,7 @@ services:
 
   # Scenario runner, started on demand: make lab SCENARIO=row-blocking
   lab:
-    image: locklens:local
+    image: locklens-backend:local
     profiles: ["lab"]
     entrypoint: ["locklens-lab"]
     depends_on:

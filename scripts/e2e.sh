@@ -30,7 +30,7 @@ cleanup() {
   local status=$?
   if [[ $status -ne 0 ]]; then
     mkdir -p test-results
-    dc logs --no-color locklens >test-results/e2e-locklens.log 2>&1 || true
+    dc logs --no-color backend frontend >test-results/e2e-locklens.log 2>&1 || true
     echo "LockLens server log: test-results/e2e-locklens.log"
   fi
   if [[ "${LOCKLENS_E2E_KEEP:-0}" == "1" ]]; then

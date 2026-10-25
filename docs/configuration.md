@@ -19,7 +19,8 @@ All problems are reported at once.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `LOCKLENS_LISTEN` | `127.0.0.1:8080` | `host:port` to listen on. Loopback by default; binding to another address exposes the UI to the network, so put TLS in front of it. `locklens server --listen` overrides it. |
+| `LOCKLENS_LISTEN` | `127.0.0.1:8080` (`0.0.0.0:8080` in the backend image) | `host:port` the API listens on. Expose it to the frontend only; put TLS in front of the frontend. `locklens server --listen` overrides it. |
+| `LOCKLENS_TRUSTED_PROXIES` | unset | Comma-separated IPs, CIDRs, or host names of reverse proxies (the frontend) whose `X-Forwarded-For` names the client for login rate limits and logs; host names are resolved every 30 seconds. Unset: the connecting address is used. Compose sets `frontend`. See [deployment.md](deployment.md#settings-that-connect-the-two). |
 | `LOCKLENS_ADMIN_USER` | `admin` | Administrator user name. |
 | `LOCKLENS_COOKIE_SECURE` | `auto` | `auto` sets the session cookie's `Secure` flag unless the listen address is loopback (plain HTTP on loopback would never send a Secure cookie). Set `true` behind an HTTPS proxy, `false` only for local plain-HTTP setups such as the Docker lab. |
 | `LOCKLENS_SESSION_IDLE` | `12h` | A session ends after this much inactivity (minimum `5m`). Activity extends it. |
@@ -146,3 +147,14 @@ locklens server
 Run `locklens migrate` first if you want schema changes applied as a separate
 deployment step; `locklens server` applies pending migrations itself too (under
 an advisory lock, so several instances starting together are safe).
+
+## Frontend image
+
+The frontend image has one setting:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `LOCKLENS_BACKEND_URL` | `http://backend:8080` | Where nginx proxies `/api/`: `scheme://host:port` of the backend, without a path. It must resolve when the container starts. |
+
+See [deployment.md](deployment.md).
+

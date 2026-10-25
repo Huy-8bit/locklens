@@ -1,13 +1,18 @@
 # Architecture
 
-LockLens is a single Go binary with two modes:
+LockLens consists of a Go backend and a web frontend, shipped as two images
+([deployment.md](deployment.md)). The backend binary has two modes:
 
 - **CLI** (`doctor`, `inspect`, `watch`, `snapshot`): connects to one
   PostgreSQL server, collects once or repeatedly, prints a report. No state
   besides optional snapshot files.
 - **Server** (`locklens server`): background collectors for many targets, a
-  monitoring store, a rule engine and incident recorder, a JSON API with
-  server-sent events, and the embedded React UI.
+  monitoring store, a rule engine and incident recorder, and a JSON API with
+  server-sent events. It serves no UI.
+
+The **frontend** is the React UI, built to static files and served by nginx,
+which also proxies `/api/` to the backend so that the browser sees a single
+origin.
 
 Both modes share the same read-only collection code, blocking graph, and
 report builder, so the CLI and the UI show the same analysis for the same
@@ -27,7 +32,7 @@ flowchart LR
         ST[in-memory state<br/>latest values, history]
         W[writer<br/>bounded queue]
         RC[incidents.Recorder<br/>rules engine]
-        API[api.Server<br/>REST + SSE + UI]
+        API[api.Server<br/>REST + SSE]
         RET[retention]
         AUTH[auth<br/>sessions, CSRF]
     end
@@ -96,8 +101,8 @@ flowchart LR
 | `backend/internal/api` | HTTP handlers, middleware (request IDs, security headers, limits), SSE hub |
 | `backend/internal/obs` | Prometheus-format metrics with bounded labels |
 | `backend/internal/retention` | Periodic cleanup loop |
-| `backend/internal/webui` | Embedded UI assets (`web/dist`, copied by `make web`) |
-| `web/` | React + TypeScript UI (Vite, React Router, TanStack Query, Apache ECharts, CodeMirror, Tailwind CSS) |
+| `backend/internal/onboard` | Adding an instance from one connection string, including LockLens's own least-privilege roles |
+| `web/` | React + TypeScript UI (Vite, React Router, TanStack Query, Apache ECharts, Tailwind CSS), its Dockerfile, and the nginx configuration of the frontend image |
 
 ### Frontend
 

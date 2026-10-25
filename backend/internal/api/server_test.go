@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -157,12 +159,11 @@ func TestMiddlewareHeadersAndErrors(t *testing.T) {
 	if w := do(http.MethodGet, "/api/v1/nope", nil); w.Code != 404 || !strings.Contains(w.Body.String(), "unknown API route") {
 		t.Errorf("unknown route: %d %s", w.Code, w.Body)
 	}
-	if w := do(http.MethodPost, "/", nil); w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("POST /: %d", w.Code)
-	}
-	// Without an embedded UI the root explains how to build it.
-	if w := do(http.MethodGet, "/", nil); w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "make web") {
-		t.Errorf("no UI: %d %s", w.Code, w.Body)
+	// The backend serves no UI; other paths point to the frontend.
+	for _, m := range []string{http.MethodGet, http.MethodPost} {
+		if w := do(m, "/", nil); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "frontend") {
+			t.Errorf("%s /: %d %s", m, w.Code, w.Body)
+		}
 	}
 
 	w = do(http.MethodGet, "/metrics", nil)
@@ -281,6 +282,51 @@ func TestRoutePermissions(t *testing.T) {
 			if want := !role.Can(rt.need); forbidden != want {
 				t.Errorf("%s %s %s as %s: status %d, forbidden=%v want %v", rt.method, rt.path, rt.body, role, w.Code, forbidden, want)
 			}
+		}
+	}
+}
+
+func TestClientKeyBehindTrustedProxy(t *testing.T) {
+	proxies := []netip.Prefix{netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("127.0.0.1/32")}
+	s := New(Deps{Auth: auth.NewService(nil, time.Hour, false), Metrics: obs.NewMetrics(), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), TrustedProxies: proxies})
+	direct := New(Deps{Auth: auth.NewService(nil, time.Hour, false), Metrics: obs.NewMetrics(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	cases := []struct {
+		srv        *Server
+		remote, xf string
+		want       string
+	}{
+		// No trusted proxy: the header is ignored.
+		{direct, "172.18.0.5:4000", "203.0.113.9", "172.18.0.5"},
+		// From the frontend: the client it saw.
+		{s, "172.18.0.5:4000", "203.0.113.9", "203.0.113.9"},
+		// A spoofed left-most value is ignored; the right-most untrusted hop counts.
+		{s, "172.18.0.5:4000", "1.2.3.4, 203.0.113.9", "203.0.113.9"},
+		// Chained trusted proxies are skipped.
+		{s, "172.18.0.5:4000", "198.51.100.7, 127.0.0.1", "198.51.100.7"},
+		// A client that is not a trusted proxy cannot pick its key.
+		{s, "198.51.100.20:5000", "10.9.9.9", "198.51.100.20"},
+		// Garbage stops the walk at the proxy itself.
+		{s, "172.18.0.5:4000", "not-an-ip", "172.18.0.5"},
+	}
+	// A trusted host name: only the addresses it resolves to are proxies.
+	byName := New(Deps{Auth: auth.NewService(nil, time.Hour, false), Metrics: obs.NewMetrics(), Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		TrustedProxyHosts: []string{"frontend"},
+		LookupHost: func(_ context.Context, h string) ([]string, error) {
+			if h == "frontend" {
+				return []string{"172.18.0.7"}, nil
+			}
+			return nil, errors.New("unknown host")
+		}})
+	cases = append(cases, cases[0], cases[0])
+	cases[len(cases)-2].srv, cases[len(cases)-2].remote, cases[len(cases)-2].xf, cases[len(cases)-2].want = byName, "172.18.0.7:4000", "192.168.1.20", "192.168.1.20"
+	// A client on a private network is not a proxy and cannot spoof its key.
+	cases[len(cases)-1].srv, cases[len(cases)-1].remote, cases[len(cases)-1].xf, cases[len(cases)-1].want = byName, "192.168.1.20:4000", "10.0.0.1", "192.168.1.20"
+	for _, c := range cases {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = c.remote
+		r.Header.Set("X-Forwarded-For", c.xf)
+		if got := c.srv.clientKey(r); got != c.want {
+			t.Errorf("remote %s xff %q: got %s, want %s", c.remote, c.xf, got, c.want)
 		}
 	}
 }

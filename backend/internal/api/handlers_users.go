@@ -222,7 +222,7 @@ func (s *Server) changeOwnPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	// UpdateUser ended every session of this user, including this one; sign
 	// in again with the new password.
-	ns, err := s.d.Auth.Login(r.Context(), w, clientKey(r), u.Username, body.New)
+	ns, err := s.d.Auth.Login(r.Context(), w, s.clientKey(r), u.Username, body.New)
 	if err != nil {
 		s.internal(w, r, err)
 		return

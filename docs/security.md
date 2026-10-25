@@ -219,3 +219,21 @@ refuse roles with superuser, `CREATEROLE`, `CREATEDB`, `BYPASSRLS`, or
 server-file privileges, because a single `SELECT` could otherwise call
 functions such as `pg_terminate_backend` or `pg_read_file`.
 
+## Frontend and backend images
+
+The frontend (nginx, unprivileged) serves the UI with the same headers the
+backend sets: `Content-Security-Policy` allowing only `'self'`,
+`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+`Referrer-Policy: no-referrer`, and `Cache-Control: no-store` on the document;
+it does not advertise its version. It proxies `/api/` to the backend with the
+browser's `Host`, so the backend's CSRF `Origin` check and `SameSite=Strict`
+cookie work as on a single server. Publish only the frontend; the backend's
+`/metrics`, `/healthz`, and `/readyz` are unauthenticated and meant for the
+internal network.
+
+Login rate limits are per client address. Behind the frontend, set
+`LOCKLENS_TRUSTED_PROXIES` to the frontend's host name or address only: the
+backend then uses the right-most `X-Forwarded-For` address that is not a
+trusted proxy, and ignores the header from anyone else. Trusting whole client
+networks would let clients on them choose their address.
+

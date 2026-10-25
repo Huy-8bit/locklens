@@ -37,19 +37,17 @@ web-install: ## Install frontend dependencies from the lockfile
 	cd web && $(NPM) ci --no-audit --no-fund
 
 .PHONY: web
-web: web-install ## Build React and copy assets into the Go embed package
+web: web-install ## Build the web UI into web/dist (served by the frontend image or Vite)
 	cd web && $(NPM) run build
-	find backend/internal/webui/dist -mindepth 1 ! -name README.txt -delete
-	cp -R web/dist/. backend/internal/webui/dist/
 
 .PHONY: backend-build
-backend-build: ## Build Go binaries using the last embedded UI build
+backend-build: ## Build the Go binaries (API server and CLI) into bin/
 	$(GO) -C backend build -trimpath -ldflags '$(LDFLAGS)' -o $(abspath $(BIN_DIR))/locklens ./cmd/locklens
 	$(GO) -C backend build -trimpath -o $(abspath $(BIN_DIR))/locklens-demo ./cmd/locklens-demo
 	$(GO) -C backend build -trimpath -o $(abspath $(BIN_DIR))/locklens-lab ./cmd/locklens-lab
 
 .PHONY: build
-build: web ## Build the UI and all Go binaries, including the embedded assets
+build: web ## Build the web UI and the Go binaries
 	$(MAKE) backend-build
 
 .PHONY: build-all
@@ -60,8 +58,8 @@ dev: backend-build web-install ## Start lab databases, the local Go server, and 
 	./scripts/dev.sh
 
 .PHONY: image
-image: ## Build the locklens:local Docker image
-	$(LAB_COMPOSE) build locklens
+image: ## Build the locklens-backend:local and locklens-frontend:local images
+	$(LAB_COMPOSE) build backend frontend
 
 ## ---- checks
 
@@ -130,7 +128,7 @@ up: ## Start LockLens and its store only (http://127.0.0.1:8080); creates deploy
 
 .PHONY: down
 down: ## Stop LockLens (its data is kept)
-	$(COMPOSE) down
+	$(COMPOSE) down --remove-orphans
 
 ## ---- demo lab (deploy/compose.lab.yaml, project "locklens-lab")
 
@@ -188,8 +186,7 @@ doctor: backend-build db-up ## Run locklens doctor against the lab primary
 .PHONY: clean
 clean: ## Remove build output
 	rm -rf $(BIN_DIR) web/dist
-	find backend/internal/webui/dist -mindepth 1 ! -name README.txt -delete
 
 .PHONY: docker-smoke
-docker-smoke: ## Build and verify the image and embedded UI in an isolated stack
+docker-smoke: ## Build and verify both images (backend, frontend) in an isolated stack
 	./scripts/docker-smoke.sh

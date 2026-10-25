@@ -24,7 +24,6 @@ import (
 	"github.com/locklens/locklens/internal/settings"
 	"github.com/locklens/locklens/internal/storage"
 	"github.com/locklens/locklens/internal/targets"
-	"github.com/locklens/locklens/internal/webui"
 	"github.com/locklens/locklens/internal/workspace"
 )
 
@@ -105,7 +104,7 @@ func Run(ctx context.Context, cfg Config, version string, log *slog.Logger) erro
 	tool := model.Tool{Name: "locklens", Version: version}
 	handler := api.New(api.Deps{Workspace: ws, Store: store, Auth: auth.NewService(store, cfg.SessionIdle, cfg.CookieSecure), Targets: tsvc,
 		Onboard: onboard.New(store, box, tsvc, ws),
-		Manager: manager, Settings: st, Hub: hub, Metrics: metrics, Log: log, Tool: tool, UI: webui.FS(),
+		Manager: manager, Settings: st, Hub: hub, Metrics: metrics, Log: log, Tool: tool, TrustedProxies: cfg.TrustedProxies, TrustedProxyHosts: cfg.TrustedProxyHosts,
 		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode})
 
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second,
@@ -127,7 +126,7 @@ func Run(ctx context.Context, cfg Config, version string, log *slog.Logger) erro
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()
-	log.Info("LockLens server started", "listen", ln.Addr().String(), "version", version, "ui_embedded", webui.FS() != nil,
+	log.Info("LockLens server started", "listen", ln.Addr().String(), "version", version, "trusted_proxies", len(cfg.TrustedProxies)+len(cfg.TrustedProxyHosts),
 		"cookie_secure", cfg.CookieSecure, "metrics", cfg.MetricsEnabled, "demo_mode", cfg.DemoMode)
 	if !cfg.CookieSecure && !strings.HasPrefix(cfg.Listen, "127.") && !strings.HasPrefix(cfg.Listen, "localhost") {
 		log.Warn("session cookies are not marked Secure; put LockLens behind TLS or set LOCKLENS_COOKIE_SECURE=true")

@@ -46,7 +46,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	sess, err := s.d.Auth.Login(r.Context(), w, clientKey(r), body.Username, body.Password)
+	sess, err := s.d.Auth.Login(r.Context(), w, s.clientKey(r), body.Username, body.Password)
 	switch {
 	case errors.Is(err, auth.ErrInvalidCredentials):
 		writeError(w, r, http.StatusUnauthorized, "invalid_credentials", err.Error())
@@ -59,7 +59,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	s.d.Log.Info("user logged in", "user", sess.Username, "role", sess.Role, "client", clientKey(r))
+	s.d.Log.Info("user logged in", "user", sess.Username, "role", sess.Role, "client", s.clientKey(r))
 	writeJSON(w, http.StatusOK, s.sessionPayload(sess))
 }
 

@@ -1,4 +1,5 @@
-# LockLens: the server and its monitoring store. Nothing else.
+# LockLens: the backend (API and collectors), the frontend (web UI), and the
+# backend's monitoring store. Nothing else.
 #
 #   make up        create deploy/.env with random secrets on the first run,
 #                  then start LockLens (http://127.0.0.1:8080)
@@ -27,13 +28,14 @@ services:
       retries: 60
     restart: unless-stopped
 
-  locklens:
+  # API, collectors, and incident recorder. Not published: the browser
+  # reaches it through the frontend's /api/ proxy.
+  backend:
     build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+      context: ../backend
       args:
         VERSION: ${LOCKLENS_VERSION:-local}
-    image: locklens:local
+    image: locklens-backend:local
     depends_on:
       store:
         condition: service_healthy
@@ -45,13 +47,34 @@ services:
       LOCKLENS_ADMIN_PASSWORD: ${LOCKLENS_ADMIN_PASSWORD:?set it in deploy/.env (make up creates one)}
       # Plain HTTP on loopback; set true behind an HTTPS proxy.
       LOCKLENS_COOKIE_SECURE: ${LOCKLENS_COOKIE_SECURE:-false}
-    ports:
-      - "127.0.0.1:${LOCKLENS_HTTP_PORT:-8080}:8080"
+      # Believe X-Forwarded-For only from the frontend container (resolved by
+      # name), so login rate limits apply per real client and nobody else can
+      # choose their address.
+      LOCKLENS_TRUSTED_PROXIES: ${LOCKLENS_TRUSTED_PROXIES:-frontend}
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/readyz"]
       interval: 2s
       timeout: 3s
       retries: 60
+    restart: unless-stopped
+
+  # The web UI (nginx), proxying /api/ to the backend.
+  frontend:
+    build:
+      context: ../web
+    image: locklens-frontend:local
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      LOCKLENS_BACKEND_URL: http://backend:8080
+    ports:
+      - "127.0.0.1:${LOCKLENS_HTTP_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/frontend-healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     restart: unless-stopped
 
 volumes:

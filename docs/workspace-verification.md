@@ -19,7 +19,7 @@ were disabled after testing; a bounded five-minute read workload was started for
 | Check | Actual result |
 | --- | --- |
 | `make check` | PASS: formatting, vet (including integration tags), dependency separation, unit tests and race detector |
-| `make build` / backend binaries | PASS: React assets embedded under backend/internal/webui/dist; all three Go commands build |
+| `make build` / backend binaries | PASS at the time: React assets were then embedded in the backend; since the frontend/backend split the UI ships in its own image |
 | Frontend typecheck / lint | PASS |
 | Frontend Vitest | PASS: 21 tests, 7 files |
 | Storage + server integration, PostgreSQL 18.6 | PASS: migrations, rates/gaps, auth, target lifecycle, restricted role, statement aggregates, primary/standby, outage/recovery, metrics API |

@@ -12,18 +12,20 @@ Requirements:
 
 ```bash
 make dev        # start the lab databases, local Go API (:18080), and Vite (:5173)
-make build      # install/build React, embed assets, build all binaries in bin/
+make build      # build the UI into web/dist and the Go binaries into bin/
+make image      # build the two images: locklens-backend:local, locklens-frontend:local
 make test       # backend unit tests and frontend typecheck, lint, unit tests
 make help       # list all targets
 ```
 
-`make backend-build` builds only Go binaries, using the last UI build. On a
-fresh checkout it serves the API without the UI. `make build` always builds
-React before compiling Go. Assets are copied to
-`backend/internal/webui/dist/`, inside the package containing `go:embed`;
-generated assets are ignored. The tracked `README.txt` keeps the embed
-pattern valid before the first frontend build. Migrations remain embedded
-inside `backend/migrations/`.
+The backend and the frontend are built and shipped separately. `make
+backend-build` builds only the Go binaries; the server serves the API only.
+`make web` builds the UI into `web/dist`, which the frontend image serves with
+nginx ([web/Dockerfile](../web/Dockerfile),
+[web/nginx/default.conf.template](../web/nginx/default.conf.template)). Each
+image is built from its own directory: `docker build backend/` and
+`docker build web/`. Migrations are embedded in the backend binary
+(`backend/migrations/`).
 
 ## Repository layout
 
@@ -37,6 +39,7 @@ backend/
   demo/scenario/        contention helpers used only by demos and tests
   demo/lab/             lab scenario implementation
   go.mod, go.sum        Go application module and dependency lockfile
+  Dockerfile            the backend image (locklens-backend)
 web/
   src/app/              application entrypoint, routing, authentication
   src/features/         product pages and their tests
@@ -116,8 +119,9 @@ LOCKLENS_DEV_API=http://127.0.0.1:18080 npm run dev     # Vite on :5173, proxies
 npm run typecheck && npm run lint && npm test
 ```
 
-The Vite proxy keeps the API same-origin, so cookies and CSRF behave as in
-production. `make web` builds and copies the UI for embedding.
+The Vite proxy keeps the API same-origin, so cookies and CSRF behave as with
+the frontend image's nginx proxy in production. `make web` builds the
+production UI into `web/dist`.
 
 ## Conventions
 

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +32,12 @@ type Config struct {
 	MetricsEnabled    bool
 	BootstrapTargets  string
 	DemoMode          bool
+	// TrustedProxies are the networks of reverse proxies (the frontend) whose
+	// X-Forwarded-For header names the real client; TrustedProxyHosts are
+	// host names of such proxies, resolved periodically (for example the
+	// frontend's Compose service name).
+	TrustedProxies    []netip.Prefix
+	TrustedProxyHosts []string
 	LogLevel          string
 	LogFormat         string
 	ShutdownTimeout   time.Duration
@@ -94,6 +102,25 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	c.WriteQueue = num("LOCKLENS_WRITE_QUEUE", 2048, 16, 100000)
 	c.MetricsEnabled = boolean("LOCKLENS_METRICS_ENABLED", true)
 	c.DemoMode = boolean("LOCKLENS_DEMO_MODE", false)
+	for _, part := range strings.Split(getenv("LOCKLENS_TRUSTED_PROXIES"), ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(part)
+		if err != nil {
+			if a, aerr := netip.ParseAddr(part); aerr == nil {
+				p = netip.PrefixFrom(a, a.BitLen())
+			} else if hostPattern.MatchString(part) {
+				c.TrustedProxyHosts = append(c.TrustedProxyHosts, strings.ToLower(part))
+				continue
+			} else {
+				errs = append(errs, fmt.Errorf("LOCKLENS_TRUSTED_PROXIES: %q is not an IP address, CIDR, or host name", part))
+				continue
+			}
+		}
+		c.TrustedProxies = append(c.TrustedProxies, p.Masked())
+	}
 
 	host, _, err := net.SplitHostPort(c.Listen)
 	if err != nil {
@@ -128,6 +155,8 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	}
 	return c, errors.Join(errs...)
 }
+
+var hostPattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,62})(\.[A-Za-z0-9]([A-Za-z0-9-]{0,62}))*$`)
 
 func def(v, d string) string {
 	if strings.TrimSpace(v) == "" {

@@ -7,19 +7,19 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/locklens/locklens/internal/auth"
@@ -55,8 +55,12 @@ type Deps struct {
 	Metrics   *obs.Metrics
 	Log       *slog.Logger
 	Tool      model.Tool
-	// UI is the built web UI (nil when not embedded).
-	UI fs.FS
+	// TrustedProxies are reverse proxies whose X-Forwarded-For is believed.
+	TrustedProxies []netip.Prefix
+	// TrustedProxyHosts are proxy host names, resolved every 30 seconds.
+	TrustedProxyHosts []string
+	// LookupHost resolves TrustedProxyHosts (net.DefaultResolver when nil).
+	LookupHost func(ctx context.Context, host string) ([]string, error)
 	// MetricsEnabled exposes /metrics.
 	MetricsEnabled bool
 	// DemoMode shows the lab guide in the UI.
@@ -67,6 +71,10 @@ type Deps struct {
 type Server struct {
 	d   Deps
 	mux *http.ServeMux
+
+	proxyMu       sync.Mutex
+	proxyAddrs    map[netip.Addr]bool
+	proxyResolved time.Time
 }
 
 // New builds the server and its routes.
@@ -161,7 +169,7 @@ func (s *Server) routes() {
 	m.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "not_found", "unknown API route")
 	})
-	m.HandleFunc("/", s.ui)
+	m.HandleFunc("/", s.notAPI)
 }
 
 // ServeHTTP applies middleware: request ID, panic recovery, security
@@ -387,12 +395,78 @@ func page(r *http.Request) (limit, offset int, err error) {
 	return limit, offset, nil
 }
 
-func clientKey(r *http.Request) string {
+// clientKey identifies the client for login rate limiting and logs. Behind
+// a trusted reverse proxy it is the right-most X-Forwarded-For address that
+// is not itself a trusted proxy; anything a client writes into the header
+// further left is ignored.
+func (s *Server) clientKey(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || !s.trusted(addr) {
+		return host
+	}
+	hops := strings.Split(strings.Join(r.Header.Values("X-Forwarded-For"), ","), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+		if err != nil {
+			break
+		}
+		if !s.trusted(hop) {
+			return hop.Unmap().String()
+		}
 	}
 	return host
+}
+
+func (s *Server) trusted(a netip.Addr) bool {
+	a = a.Unmap()
+	for _, p := range s.d.TrustedProxies {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	if len(s.d.TrustedProxyHosts) == 0 {
+		return false
+	}
+	return s.proxyHostAddrs()[a]
+}
+
+// proxyHostAddrs resolves the trusted proxy host names at most every 30
+// seconds. A failed lookup keeps the previous addresses.
+func (s *Server) proxyHostAddrs() map[netip.Addr]bool {
+	s.proxyMu.Lock()
+	defer s.proxyMu.Unlock()
+	if s.proxyAddrs != nil && time.Since(s.proxyResolved) < 30*time.Second {
+		return s.proxyAddrs
+	}
+	lookup := s.d.LookupHost
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupHost
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	addrs := map[netip.Addr]bool{}
+	ok := false
+	for _, h := range s.d.TrustedProxyHosts {
+		list, err := lookup(ctx, h)
+		if err != nil {
+			continue
+		}
+		ok = true
+		for _, a := range list {
+			if ip, err := netip.ParseAddr(a); err == nil {
+				addrs[ip.Unmap()] = true
+			}
+		}
+	}
+	if ok || s.proxyAddrs == nil {
+		s.proxyAddrs = addrs
+	}
+	s.proxyResolved = time.Now()
+	return s.proxyAddrs
 }
 
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
@@ -412,51 +486,10 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 
 // ui serves the embedded single-page app, falling back to index.html for
 // client-side routes.
-func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.d.UI == nil {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte("The LockLens web UI is not built into this binary. Build it with `make web` and rebuild, or use the API.\n"))
-		return
-	}
-	path := strings.TrimPrefix(r.URL.Path, "/")
-	if path != "" && path != "index.html" {
-		if f, err := s.d.UI.Open(path); err == nil {
-			st, _ := f.Stat()
-			f.Close()
-			if st != nil && !st.IsDir() {
-				if strings.HasPrefix(path, "assets/") {
-					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-				}
-				http.ServeFileFS(w, r, s.d.UI, path)
-				return
-			}
-		}
-		if strings.HasPrefix(path, "assets/") {
-			http.NotFound(w, r)
-			return
-		}
-	}
-	html, err := fs.ReadFile(s.d.UI, "index.html")
-	if err != nil {
-		http.Error(w, "UI unavailable", 503)
-		return
-	}
-	nonceBytes := make([]byte, 24)
-	if _, err = rand.Read(nonceBytes); err != nil {
-		http.Error(w, "UI unavailable", 503)
-		return
-	}
-	nonce := hex.EncodeToString(nonceBytes)
-	html = bytes.Replace(html, []byte("<head>"), []byte(`<head><meta name="csp-nonce" content="`+nonce+`">`), 1)
-	w.Header().Set("Content-Security-Policy", strings.Replace(w.Header().Get("Content-Security-Policy"), "style-src 'self'", "style-src 'self' 'nonce-"+nonce+"'", 1))
-	w.Header().Set("Cache-Control", "no-store")
-	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(html))
+// notAPI answers every path outside /api/ and the operational endpoints. The
+// web UI is a separate image (the frontend) that proxies /api/ here.
+func (s *Server) notAPI(w http.ResponseWriter, r *http.Request) {
+	writeError(w, r, http.StatusNotFound, "not_found", "this is the LockLens backend: the API is under /api/; the web UI is served by the frontend")
 }
 
 // metricStep accepts an explicit minimum resolution and a per-series point cap.
