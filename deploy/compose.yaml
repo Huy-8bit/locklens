@@ -107,7 +107,7 @@ services:
       REPLICATION_PASSWORD: replicator-pw
       REPLICATION_SLOT: standby2_slot
     ports:
-      - "127.0.0.1:${LOCKLENS_STANDBY2_PORT:-55436}:5432"
+      - "127.0.0.1:${LOCKLENS_STANDBY2_PORT:-55437}:5432"
     volumes:
       - ../demo/postgres/standby-entrypoint.sh:/usr/local/bin/standby-entrypoint.sh:ro
       - standby-2-data:/var/lib/postgresql

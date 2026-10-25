@@ -24,7 +24,7 @@ The LockLens bootstrap targets include the primary and both standbys.
 | --- | --- |
 | Primary | `127.0.0.1:55432` |
 | Standby 1 | `127.0.0.1:55433` |
-| Standby 2 | `127.0.0.1:55436` |
+| Standby 2 | `127.0.0.1:55437` |
 | Backend API / health | `http://127.0.0.1:8091/items` / `http://127.0.0.1:8091/healthz` |
 
 The backend service continuously exercises `GET`, `POST`, `PUT`, and `DELETE`
@@ -37,10 +37,17 @@ The API exposes `GET /items`, `POST /items` with `{"payload":"..."}`,
 `GET /items/{id}`, `PUT /items/{id}` with the same JSON body, and
 `DELETE /items/{id}`. Requests and the automatic workload are synthetic.
 
-Start or update the stack with `make up`; inspect replication with
-`docker compose -f deploy/compose.yaml exec primary psql -U postgres -d locklens_demo -c
-"SELECT application_name, state, sync_state FROM pg_stat_replication"` and inspect
-the API at `http://127.0.0.1:8091/items`.
+Start or update the stack with `make up`; inspect replication and exercise the
+API:
+
+```sh
+docker compose -f deploy/compose.yaml exec primary \
+  psql -U postgres -d locklens_demo -c \
+  "SELECT application_name, state, sync_state FROM pg_stat_replication"
+curl http://127.0.0.1:8091/items
+curl -X POST http://127.0.0.1:8091/items \
+  -H 'Content-Type: application/json' -d '{"payload":"manual-test"}'
+```
 
 ## Start and connect
 
