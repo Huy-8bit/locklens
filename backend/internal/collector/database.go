@@ -14,7 +14,7 @@ import (
 // exists from PostgreSQL 15; it is included like any other scope.
 const sqlDatabaseCounters = `
 SELECT coalesce(datid, 0)::bigint, xact_commit, xact_rollback, blks_read, blks_hit,
-       temp_files, temp_bytes, deadlocks, stats_reset
+       temp_files, temp_bytes, deadlocks, tup_returned, tup_fetched, tup_inserted, tup_updated, tup_deleted, stats_reset
 FROM pg_catalog.pg_stat_database`
 
 const sqlServerStart = `SELECT pg_catalog.pg_postmaster_start_time()`
@@ -66,13 +66,14 @@ func readDatabaseCounters(ctx context.Context, tx pgx.Tx, caps observe.Capabilit
 	var (
 		datid                                                   int64
 		commit, rollback, read, hit, tempFiles, tempBytes, dead int64
+		returned, fetched, inserted, updated, deleted           int64
 		reset                                                   *time.Time
 	)
-	_, err = pgx.ForEachRow(rows, []any{&datid, &commit, &rollback, &read, &hit, &tempFiles, &tempBytes, &dead, &reset}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&datid, &commit, &rollback, &read, &hit, &tempFiles, &tempBytes, &dead, &returned, &fetched, &inserted, &updated, &deleted, &reset}, func() error {
 		s.Scopes["db:"+strconv.FormatInt(datid, 10)] = ScopeCounters{StatsReset: reset, Values: map[string]float64{
 			"xact_commit": float64(commit), "xact_rollback": float64(rollback), "blks_read": float64(read),
 			"blks_hit": float64(hit), "temp_files": float64(tempFiles), "temp_bytes": float64(tempBytes),
-			"deadlocks": float64(dead),
+			"deadlocks": float64(dead), "tup_returned": float64(returned), "tup_fetched": float64(fetched), "tup_inserted": float64(inserted), "tup_updated": float64(updated), "tup_deleted": float64(deleted),
 		}}
 		return nil
 	})
@@ -143,6 +144,12 @@ type rateDef struct {
 }
 
 var databaseRates = []rateDef{
+	{"tup_returned", "tuples.returned.per_s", false},
+	{"tup_fetched", "tuples.fetched.per_s", false},
+	{"tup_inserted", "tuples.inserted.per_s", false},
+	{"tup_updated", "tuples.updated.per_s", false},
+	{"tup_deleted", "tuples.deleted.per_s", false},
+
 	{"xact_commit", "xact.commit.per_s", false},
 	{"xact_rollback", "xact.rollback.per_s", false},
 	{"blks_read", "blocks.read.per_s", false},
@@ -186,7 +193,11 @@ func deriveDatabasePoints(prev *CounterSample, cur CounterSample, isStandby bool
 		if v == nil && d.Reason != "" {
 			reasons[d.Reason] = true
 		}
-		points = append(points, observe.Point{Metric: metric, Value: v})
+		var interval *float64
+		if d.Elapsed > 0 {
+			interval = observe.F(d.Elapsed.Seconds())
+		}
+		points = append(points, observe.Point{Metric: metric, Value: v, IntervalSeconds: interval})
 	}
 	for _, def := range databaseRates {
 		if !present[def.counter] {

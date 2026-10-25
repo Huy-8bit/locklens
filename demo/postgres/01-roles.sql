@@ -19,3 +19,11 @@ CREATE ROLE replicator LOGIN REPLICATION PASSWORD 'replicator-pw';
 -- pg_stat_statements (preloaded via shared_preload_libraries) for the
 -- workload views. Installed in the database LockLens connects to.
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+-- locklens_reader is the separate, least-privileged role for LockLens'
+-- catalog and table-data browser: USAGE on the demo schemas and SELECT on
+-- their tables, nothing else.
+CREATE ROLE locklens_reader LOGIN PASSWORD 'reader-pw';
+GRANT USAGE ON SCHEMA public TO locklens_reader;
+ALTER DEFAULT PRIVILEGES FOR ROLE demo_app IN SCHEMA public GRANT SELECT ON TABLES TO locklens_reader;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT ON TABLES TO locklens_reader;

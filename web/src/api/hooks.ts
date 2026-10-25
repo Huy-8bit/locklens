@@ -1,182 +1,166 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, qs } from './client'
+import { api, ApiError, qs } from './client'
 import type {
   ActivityResponse,
+  CommandsResponse,
   FindingRow,
   FleetEntry,
-  HostResponse,
+  GridResult,
   Incident,
   IncidentEvent,
   MetricsResponse,
+  OverviewResponse,
   QueriesResponse,
   QueryDetailResponse,
   Replication,
+  TablesResponse,
   Target,
   TargetInput,
+  TestResult,
   Thresholds,
-  TablesResponse,
+  WorkspacePolicy,
 } from './types'
+import type { Range } from '../lib/time'
 
-// Polling intervals are a fallback; server-sent events invalidate queries as
-// soon as new data is collected (see lib/events.ts).
+// Query keys: ['t', targetId, 'live' | 'hist', ...]. The event stream
+// invalidates a target's 'live' keys after each collection; history keys
+// refresh on a slower interval.
+
 const LIVE = 15_000
+const HIST = 30_000
 
 export function useFleet() {
   return useQuery({ queryKey: ['fleet'], queryFn: () => api<{ targets: FleetEntry[]; generated_at: string }>('/api/v1/fleet'), refetchInterval: LIVE })
 }
 
 export function useTargets() {
-  return useQuery({ queryKey: ['targets'], queryFn: () => api<{ targets: Target[] }>('/api/v1/targets'), refetchInterval: 30_000 })
+  return useQuery({ queryKey: ['targets'], queryFn: () => api<{ targets: Target[] }>('/api/v1/targets') })
 }
 
-/** Loads one target. Id 0 means "no target yet" (the new-target form) and is not fetched; an invalid id still errors. */
 export function useTarget(id: number) {
-  return useQuery({ queryKey: ['target', id], queryFn: () => api<Target>(`/api/v1/targets/${id}`), refetchInterval: LIVE, enabled: id !== 0 })
-}
-
-export interface OverviewResponse {
-  target: Target
-  latest: Record<string, { at: string; value: number | null }>
-  connected: boolean
-  connect_error?: string | null
-  activity_at?: string
-  counts?: ActivityResponse['counts']
-  summary?: { blocked_sessions: number; root_blockers: number; long_transactions: number; idle_in_transaction: number }
-  visibility_warnings?: { code: string; message: string }[]
-  host_configured?: boolean
-  host_error?: string | null
-  findings: FindingRow[]
-  open_incidents: Incident[]
-  open_incident_count: number
+  return useQuery({ queryKey: ['t', id, 'live', 'target'], queryFn: () => api<Target>(`/api/v1/targets/${id}`), enabled: id > 0, refetchInterval: LIVE })
 }
 
 export function useOverview(id: number) {
-  return useQuery({ queryKey: ['overview', id], queryFn: () => api<OverviewResponse>(`/api/v1/targets/${id}/overview`), refetchInterval: LIVE })
+  return useQuery({ queryKey: ['t', id, 'live', 'overview'], queryFn: () => api<OverviewResponse>(`/api/v1/targets/${id}/overview`), refetchInterval: LIVE })
 }
 
-export function useMetrics(id: number, names: string[], range: Record<string, string>) {
-  return useQuery({
-    queryKey: ['metrics', id, names.join(','), range],
-    queryFn: () => api<MetricsResponse>(`/api/v1/targets/${id}/metrics${qs({ names: names.join(','), ...range })}`),
-    refetchInterval: 30_000,
-    placeholderData: keepPreviousData,
-  })
-}
-
-export function useActivity(id: number, snapshotId?: number | null) {
-  return useQuery({
-    queryKey: ['activity', id, snapshotId ?? 'live'],
-    queryFn: () =>
-      api<ActivityResponse>(snapshotId ? `/api/v1/targets/${id}/blocking/snapshots/${snapshotId}` : `/api/v1/targets/${id}/activity`),
-    refetchInterval: snapshotId ? false : 10_000,
-    placeholderData: keepPreviousData,
-  })
-}
-
-export function useSnapshotList(id: number, range: Record<string, string>) {
-  return useQuery({
-    queryKey: ['snapshots', id, range],
-    queryFn: () =>
-      api<{ snapshots: { id: number; at: string; blocked_sessions: number; root_blockers: number; long_transactions: number }[] }>(
-        `/api/v1/targets/${id}/blocking/snapshots${qs({ ...range, blocking: true, limit: 300 })}`,
-      ),
-    refetchInterval: 30_000,
-  })
-}
-
-export interface QueryListParams {
-  range: Record<string, string>
-  sort: string
-  order: 'asc' | 'desc'
-  q: string
-  page: number
-  compare: boolean
-  includeText: boolean
-  includeMonitoring: boolean
-}
-
-export function useQueries(id: number, p: QueryListParams) {
-  return useQuery({
-    queryKey: ['queries', id, p],
-    queryFn: () =>
-      api<QueriesResponse>(
-        `/api/v1/targets/${id}/queries${qs({ ...p.range, sort: p.sort, order: p.order, q: p.q, page: p.page, page_size: 25, compare: p.compare, include_text: p.includeText, include_monitoring: p.includeMonitoring })}`,
-      ),
-    placeholderData: keepPreviousData,
-    refetchInterval: 60_000,
-  })
-}
-
-export function useQueryDetail(id: number, qid: number, range: Record<string, string>, includeText: boolean) {
-  return useQuery({
-    queryKey: ['query', id, qid, range, includeText],
-    queryFn: () => api<QueryDetailResponse>(`/api/v1/targets/${id}/queries/${qid}${qs({ ...range, include_text: includeText })}`),
-    placeholderData: keepPreviousData,
-  })
+export function useActivity(id: number) {
+  return useQuery({ queryKey: ['t', id, 'live', 'activity'], queryFn: () => api<ActivityResponse>(`/api/v1/targets/${id}/activity`), refetchInterval: 10_000 })
 }
 
 export function useTables(id: number) {
-  return useQuery({ queryKey: ['tables', id], queryFn: () => api<TablesResponse>(`/api/v1/targets/${id}/tables`), refetchInterval: 60_000 })
+  return useQuery({ queryKey: ['t', id, 'live', 'tables'], queryFn: () => api<TablesResponse>(`/api/v1/targets/${id}/tables`), refetchInterval: 60_000 })
 }
 
 export function useReplication(id: number) {
   return useQuery({
-    queryKey: ['replication', id],
+    queryKey: ['t', id, 'live', 'replication'],
     queryFn: () => api<{ source: string; replication: Replication | null; observed_at?: string }>(`/api/v1/targets/${id}/replication`),
     refetchInterval: LIVE,
   })
 }
 
-export function useHost(id: number) {
-  return useQuery({ queryKey: ['host', id], queryFn: () => api<HostResponse>(`/api/v1/targets/${id}/host`), refetchInterval: LIVE })
+export function useFindings(id: number, status: 'current' | 'resolved' = 'current') {
+  return useQuery({ queryKey: ['t', id, 'live', 'findings', status], queryFn: () => api<{ findings: FindingRow[] }>(`/api/v1/targets/${id}/findings${qs({ status })}`) })
 }
 
-export function useFindings(id: number, status: 'current' | 'resolved') {
+export function useMetrics(id: number, names: string[], range: Range) {
   return useQuery({
-    queryKey: ['findings', id, status],
-    queryFn: () => api<{ findings: FindingRow[] }>(`/api/v1/targets/${id}/findings${qs({ status })}`),
-    refetchInterval: LIVE,
+    queryKey: ['t', id, 'hist', 'metrics', names.join(','), range],
+    queryFn: () => api<MetricsResponse>(`/api/v1/targets/${id}/metrics${qs({ names: names.join(','), range })}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: HIST,
   })
 }
 
-export interface IncidentListParams { state: string; target: string; rule: string; page: number }
-
-export function useIncidents(p: IncidentListParams) {
+export function useCommands(id: number, range: Range, includeMonitoring = false) {
   return useQuery({
-    queryKey: ['incidents', p],
+    queryKey: ['t', id, 'hist', 'commands', range, includeMonitoring],
+    queryFn: () => api<CommandsResponse>(`/api/v1/targets/${id}/queries/commands${qs({ range, include_monitoring: includeMonitoring || undefined })}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: HIST,
+  })
+}
+
+export interface QueryParams {
+  range: Range
+  sort: string
+  order: 'asc' | 'desc'
+  page: number
+  q: string
+  command: string
+  compare: boolean
+  includeMonitoring: boolean
+  pageSize?: number
+}
+
+export function useQueries(id: number, p: QueryParams) {
+  return useQuery({
+    queryKey: ['t', id, 'hist', 'queries', p],
     queryFn: () =>
-      api<{ incidents: Incident[]; total: number; page_size: number; rules: string[] }>(
-        `/api/v1/incidents${qs({ state: p.state, target: p.target, rule: p.rule, page: p.page, page_size: 25 })}`,
+      api<QueriesResponse>(
+        `/api/v1/targets/${id}/queries${qs({ range: p.range, sort: p.sort, order: p.order, page: p.page, page_size: p.pageSize ?? 25, q: p.q, command: p.command, compare: p.compare || undefined, include_monitoring: p.includeMonitoring || undefined })}`,
       ),
     placeholderData: keepPreviousData,
+    refetchInterval: HIST,
+  })
+}
+
+export function useQueryDetail(id: number, qid: number, range: Range) {
+  return useQuery({
+    queryKey: ['t', id, 'hist', 'query', qid, range],
+    queryFn: () => api<QueryDetailResponse>(`/api/v1/targets/${id}/queries/${qid}${qs({ range })}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: HIST,
+  })
+}
+
+export function useIncidents(params: { state?: string; target?: number; page?: number }) {
+  return useQuery({
+    queryKey: ['incidents', params],
+    queryFn: () => api<{ incidents: Incident[]; total: number; page_size: number; rules: string[] }>(`/api/v1/incidents${qs({ state: params.state, target: params.target, page: params.page })}`),
     refetchInterval: LIVE,
   })
 }
 
 export function useIncident(id: number) {
-  return useQuery({
-    queryKey: ['incident', id],
-    queryFn: () => api<{ incident: Incident; findings: FindingRow[] }>(`/api/v1/incidents/${id}`),
-    refetchInterval: LIVE,
-  })
+  return useQuery({ queryKey: ['incidents', 'one', id], queryFn: () => api<{ incident: Incident; findings: FindingRow[] }>(`/api/v1/incidents/${id}`) })
 }
 
 export function useIncidentEvents(id: number) {
-  return useQuery({
-    queryKey: ['incident-events', id],
-    queryFn: () => api<{ events: IncidentEvent[]; has_more: boolean }>(`/api/v1/incidents/${id}/events?limit=2000`),
-    refetchInterval: LIVE,
-  })
+  return useQuery({ queryKey: ['incidents', 'events', id], queryFn: () => api<{ events: IncidentEvent[]; has_more: boolean }>(`/api/v1/incidents/${id}/events?limit=1000`) })
 }
 
 export function useAcknowledge(id: number) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (note: string) => api<Incident>(`/api/v1/incidents/${id}/acknowledge`, { method: 'POST', json: { note } }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['incident', id] })
-      void qc.invalidateQueries({ queryKey: ['incidents'] })
-    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['incidents'] }),
+  })
+}
+
+export function useSaveTarget(id?: number) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (input: TargetInput) =>
+      api<Target>(id ? `/api/v1/targets/${id}` : '/api/v1/targets', { method: id ? 'PUT' : 'POST', json: { ...input, dsn: input.dsn || undefined } }),
+    onSuccess: () => void qc.invalidateQueries(),
+  })
+}
+
+export function useDeleteTarget() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, purge }: { id: number; purge: boolean }) => api<undefined>(`/api/v1/targets/${id}${qs({ purge: purge || undefined })}`, { method: 'DELETE' }),
+    onSuccess: () => void qc.invalidateQueries(),
+  })
+}
+
+export function useTestConnection() {
+  return useMutation({
+    mutationFn: ({ id, dsn }: { id?: number; dsn?: string }) =>
+      id && !dsn ? api<TestResult>(`/api/v1/targets/${id}/test`, { method: 'POST' }) : api<TestResult>('/api/v1/targets/test', { method: 'POST', json: { dsn } }),
   })
 }
 
@@ -191,70 +175,105 @@ export function useImportIncident() {
   })
 }
 
-export interface StorageTable {
-  table: string
-  bytes: number
-  estimated_rows: number
-}
-
-export function useStorageStats() {
-  return useQuery({ queryKey: ['storage'], queryFn: () => api<{ tables: StorageTable[] | null }>('/api/v1/storage'), refetchInterval: 5 * 60_000 })
-}
-
 export function useRuleSettings() {
-  return useQuery({
-    queryKey: ['rule-settings'],
-    queryFn: () =>
-      api<{ thresholds: Thresholds; defaults: Thresholds; rule_versions: Record<string, number>; trigger_rules: string[] }>('/api/v1/settings/rules'),
-  })
+  return useQuery({ queryKey: ['rule-settings'], queryFn: () => api<{ thresholds: Thresholds; defaults: Thresholds }>('/api/v1/settings/rules') })
 }
 
-export function useSaveRuleSettings() {
+export function useSaveRules() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (th: Thresholds) => api<{ thresholds: Thresholds }>('/api/v1/settings/rules', { method: 'PUT', json: th }),
+    mutationFn: (t: Thresholds) => api<unknown>('/api/v1/settings/rules', { method: 'PUT', json: t }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['rule-settings'] }),
   })
 }
 
-export function useSaveTarget(id?: number) {
+export function useStorage() {
+  return useQuery({ queryKey: ['storage'], queryFn: () => api<{ tables: { table: string; bytes: number; estimated_rows: number }[] | null }>('/api/v1/storage') })
+}
+
+// Workspace: catalog metadata and table data, run on demand against the
+// target with its separate, least-privileged role.
+
+export function usePolicy(id: number) {
+  return useQuery({ queryKey: ['t', id, 'policy'], queryFn: () => api<WorkspacePolicy>(`/api/v1/targets/${id}/workspace/policy`) })
+}
+
+export function useSavePolicy(id: number) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (input: TargetInput) =>
-      id ? api<Target>(`/api/v1/targets/${id}`, { method: 'PUT', json: input }) : api<Target>('/api/v1/targets', { method: 'POST', json: input }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['targets'] })
-      void qc.invalidateQueries({ queryKey: ['fleet'] })
-      if (id) void qc.invalidateQueries({ queryKey: ['target', id] })
-    },
+    mutationFn: (p: { metadata_enabled: boolean; data_enabled: boolean; dsn?: string }) =>
+      api<WorkspacePolicy>(`/api/v1/targets/${id}/workspace/policy`, { method: 'PUT', json: { ...p, sql_enabled: false, history_enabled: false } }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['t', id] }),
   })
 }
 
-export function useDeleteTarget() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: ({ id, purge, keepIncidents }: { id: number; purge: boolean; keepIncidents: boolean }) =>
-      api<undefined>(`/api/v1/targets/${id}${qs({ purge, keep_incidents: keepIncidents })}`, { method: 'DELETE' }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['targets'] })
-      void qc.invalidateQueries({ queryKey: ['fleet'] })
-    },
+// The server runs at most two workspace operations per target at a time and
+// answers 429 beyond that; a page opening several catalog views at once
+// queues them here instead.
+const WORKSPACE_SLOTS = 2
+const running = new Map<number, number>()
+const waiting = new Map<number, (() => void)[]>()
+
+async function acquire(id: number): Promise<void> {
+  if ((running.get(id) ?? 0) < WORKSPACE_SLOTS) {
+    running.set(id, (running.get(id) ?? 0) + 1)
+    return
+  }
+  await new Promise<void>((resolve) => waiting.set(id, [...(waiting.get(id) ?? []), resolve]))
+}
+
+function release(id: number): void {
+  const next = waiting.get(id)?.shift()
+  if (next) next()
+  else running.set(id, Math.max(0, (running.get(id) ?? 1) - 1))
+}
+
+/** Retries only "busy" (another browser tab may be using the slots). */
+function retryBusy(n: number, e: Error): boolean {
+  return e instanceof ApiError && e.status === 429 && n < 3
+}
+
+export async function runWorkspace<T>(id: number, input: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  await acquire(id)
+  try {
+    signal?.throwIfAborted()
+    return await api<T>(`/api/v1/targets/${id}/workspace/run`, { method: 'POST', json: { request_id: crypto.randomUUID(), ...input }, signal })
+  } finally {
+    release(id)
+  }
+}
+
+export function useCatalog<T = GridResult>(id: number, enabled: boolean, kind: string, schema = '', relation = '') {
+  return useQuery({
+    queryKey: ['t', id, 'catalog', kind, schema, relation],
+    queryFn: ({ signal }) => runWorkspace<T>(id, { action: 'metadata', kind, schema, relation }, signal),
+    enabled,
+    staleTime: 30_000,
+    retry: retryBusy,
+    retryDelay: (n) => 500 * 2 ** n,
   })
 }
 
-export interface TestResult {
-  ok: boolean
-  duration_ms: number
-  target: string
-  capabilities: Target['status']['capabilities']
-  checks: { name: string; status: 'ok' | 'warn' | 'fail' | 'skip'; detail: string; hint?: string }[]
-  error: string | null
-  hint: string | null
+export interface DataRequest {
+  schema: string
+  relation: string
+  sort?: string
+  desc?: boolean
+  filter_column?: string
+  filter_op?: string
+  filter_value?: string
+  limit: number
+  offset: number
 }
 
-export function useTestConnection() {
-  return useMutation({
-    mutationFn: ({ id, dsn }: { id?: number; dsn?: string }) =>
-      id && !dsn ? api<TestResult>(`/api/v1/targets/${id}/test`, { method: 'POST' }) : api<TestResult>('/api/v1/targets/test', { method: 'POST', json: { dsn } }),
+export function useTableData(id: number, enabled: boolean, req: DataRequest) {
+  return useQuery({
+    queryKey: ['t', id, 'data', req],
+    queryFn: ({ signal }) => runWorkspace<GridResult>(id, { action: 'data', data: req }, signal),
+    enabled,
+    placeholderData: keepPreviousData,
+    staleTime: 15_000,
+    retry: retryBusy,
+    retryDelay: (n) => 500 * 2 ** n,
   })
 }

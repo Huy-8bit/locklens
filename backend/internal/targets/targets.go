@@ -30,12 +30,14 @@ import (
 // Input is a create or update request. DSN may be empty on update to keep
 // the stored one.
 type Input struct {
-	Name             string  `json:"name"`
-	Description      string  `json:"description"`
-	DSN              string  `json:"dsn"`
-	Enabled          *bool   `json:"enabled"`
-	IntervalSeconds  int     `json:"interval_seconds"`
-	QueryTextEnabled bool    `json:"query_text_enabled"`
+	Name            string `json:"name"`
+	Description     string `json:"description"`
+	DSN             string `json:"dsn"`
+	Enabled         *bool  `json:"enabled"`
+	IntervalSeconds int    `json:"interval_seconds"`
+	// QueryTextEnabled defaults to true on create and keeps the stored value
+	// on update when omitted.
+	QueryTextEnabled *bool   `json:"query_text_enabled"`
 	MaxConnections   int     `json:"max_connections"`
 	NodeExporterURL  *string `json:"node_exporter_url"`
 }
@@ -177,7 +179,7 @@ func (s *Service) Create(ctx context.Context, in Input) (View, error) {
 	enabled := in.Enabled == nil || *in.Enabled
 	t, err := s.store.CreateTarget(ctx, storage.Target{Name: in.Name, Description: in.Description, DSNCiphertext: ct,
 		DisplayHost: tgt.Host, DisplayPort: int(tgt.Port), DisplayDatabase: tgt.Database, DisplayUser: tgt.User,
-		Enabled: enabled, IntervalSeconds: in.IntervalSeconds, QueryTextEnabled: in.QueryTextEnabled,
+		Enabled: enabled, IntervalSeconds: in.IntervalSeconds, QueryTextEnabled: in.QueryTextEnabled == nil || *in.QueryTextEnabled,
 		MaxConnections: in.MaxConnections, NodeExporterURL: in.NodeExporterURL})
 	if err != nil {
 		return View{}, err
@@ -199,7 +201,10 @@ func (s *Service) Update(ctx context.Context, id int64, in Input) (View, error) 
 	}
 	t := cur
 	t.Name, t.Description, t.IntervalSeconds = in.Name, in.Description, in.IntervalSeconds
-	t.QueryTextEnabled, t.MaxConnections, t.NodeExporterURL = in.QueryTextEnabled, in.MaxConnections, in.NodeExporterURL
+	t.MaxConnections, t.NodeExporterURL = in.MaxConnections, in.NodeExporterURL
+	if in.QueryTextEnabled != nil {
+		t.QueryTextEnabled = *in.QueryTextEnabled
+	}
 	if in.Enabled != nil {
 		t.Enabled = *in.Enabled
 	}
@@ -381,6 +386,17 @@ type BootstrapEntry struct {
 	// DSNEnv names an environment variable holding the DSN, so bootstrap
 	// files need not contain credentials.
 	DSNEnv string `json:"dsn_env"`
+	// Workspace optionally enables catalog and table-data browsing with a
+	// separate, least-privileged role (configured by the server only while
+	// the target has no workspace configuration yet).
+	Workspace *BootstrapWorkspace `json:"workspace"`
+}
+
+// BootstrapWorkspace is the investigation access of a bootstrap target.
+type BootstrapWorkspace struct {
+	Metadata bool   `json:"metadata"`
+	Data     bool   `json:"data"`
+	DSNEnv   string `json:"dsn_env"`
 }
 
 // Bootstrap creates targets that do not exist yet (matched by name). It is

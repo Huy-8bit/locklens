@@ -582,7 +582,7 @@ func (w *worker) collectDatabase(ctx context.Context) error {
 func (w *worker) collectStatements(ctx context.Context) error {
 	var (
 		entries map[observe.QueryKey]statementCounters
-		meta    map[observe.QueryKey][3]*string
+		meta    map[observe.QueryKey][4]*string
 		hidden  int
 		dealloc *int64
 		reset   *time.Time
@@ -614,8 +614,8 @@ func (w *worker) collectStatements(ctx context.Context) error {
 			pts = append(pts, observe.Point{Metric: "statements.calls.per_s"}, observe.Point{Metric: "statements.exec_ms.per_s"})
 		} else {
 			pts = append(pts,
-				observe.Point{Metric: "statements.calls.per_s", Value: observe.F(float64(calls) / *coll.Interval)},
-				observe.Point{Metric: "statements.exec_ms.per_s", Value: observe.F(ms / *coll.Interval)})
+				observe.Point{Metric: "statements.calls.per_s", IntervalSeconds: coll.Interval, Value: observe.F(float64(calls) / *coll.Interval)},
+				observe.Point{Metric: "statements.exec_ms.per_s", IntervalSeconds: coll.Interval, Value: observe.F(ms / *coll.Interval)})
 		}
 	}
 	w.state.mu.Lock()
@@ -723,6 +723,10 @@ func (w *worker) collectHost(ctx context.Context) error {
 		w.state.mu.Unlock()
 		return err
 	}
+	var interval *float64
+	if w.prevHost != nil && scrape.At.After(w.prevHost.At) {
+		interval = observe.F(scrape.At.Sub(w.prevHost.At).Seconds())
+	}
 	d := hostmetrics.Derive(w.prevHost, scrape)
 	w.prevHost = &scrape
 	hm := observe.HostMetrics{At: scrape.At, CPUUtilization: d.CPUUtilization, MemTotalBytes: d.MemTotal,
@@ -731,10 +735,10 @@ func (w *worker) collectHost(ctx context.Context) error {
 		{Metric: "host.cpu_utilization_ratio", Value: d.CPUUtilization},
 		{Metric: "host.memory_available_bytes", Value: d.MemAvailable},
 		{Metric: "host.memory_total_bytes", Value: d.MemTotal},
-		{Metric: "host.disk_read_bytes.per_s", Value: d.DiskReadBps},
-		{Metric: "host.disk_write_bytes.per_s", Value: d.DiskWriteBps},
-		{Metric: "host.network_receive_bytes.per_s", Value: d.NetRxBps},
-		{Metric: "host.network_transmit_bytes.per_s", Value: d.NetTxBps},
+		{Metric: "host.disk_read_bytes.per_s", IntervalSeconds: interval, Value: d.DiskReadBps},
+		{Metric: "host.disk_write_bytes.per_s", IntervalSeconds: interval, Value: d.DiskWriteBps},
+		{Metric: "host.network_receive_bytes.per_s", IntervalSeconds: interval, Value: d.NetRxBps},
+		{Metric: "host.network_transmit_bytes.per_s", IntervalSeconds: interval, Value: d.NetTxBps},
 	}
 	for _, fs := range d.Filesystems {
 		hm.Filesystems = append(hm.Filesystems, observe.Filesystem{Mountpoint: fs.Mountpoint, FSType: fs.FSType, SizeBytes: fs.Size, AvailBytes: fs.Avail})

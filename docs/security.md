@@ -15,7 +15,8 @@ responsible for. To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 - **Secrets stay secret.** Connection strings and passwords are never returned
   by the API, shown in the UI, written to logs, exports, snapshots, or metric
   labels.
-- **Query text is opt-in** per target.
+- **SQL text is collected by default** and can be switched off per target;
+  table rows are readable only through a separate, opt-in role.
 - **Local by default.** The server binds to `127.0.0.1:8080` unless told
   otherwise.
 
@@ -110,10 +111,9 @@ settings in the DSN are honoured and never weakened.
 
 SQL text can contain personal data or secrets in literals. LockLens therefore:
 
-- does not collect it unless the target's **Collect query text** option is on
-  (confirmation required);
-- returns it only to authenticated requests that ask for it, for opted-in
-  targets;
+- collects it by default so the workload pages are useful, and lets the
+  administrator switch it off per target (**Collect SQL text**);
+- returns it only to authenticated requests;
 - excludes it from exports unless explicitly requested;
 - never puts it in logs, error messages, or Prometheus labels;
 - deletes a target's stored statement texts when the option is turned off.
@@ -163,3 +163,13 @@ Disable `/metrics` with `LOCKLENS_METRICS_ENABLED=false` if needed.
 - Encryption of the monitoring store at rest beyond the DSN column (use
   disk or database-level encryption).
 - Built-in TLS termination.
+
+## Investigation access
+
+Metadata, application rows and explicit SQL are independent, default-deny target
+capabilities with separate credentials. The current administrator can configure these
+capabilities; they are not per-user RBAC. SQL uses PostgreSQL read-only transactions,
+limits, disposable connections and session-owned cancellation. This is not a sandbox
+for arbitrary function side effects. Review the dedicated role's SELECT, ownership,
+PUBLIC and function grants. Workspace audits do not store raw SQL/results. Optional
+browser history has a separate opt-in policy. See [the full access model](investigation-workspace.md).

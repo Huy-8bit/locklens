@@ -3,7 +3,10 @@ package api
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"time"
+
+	"github.com/locklens/locklens/internal/observe"
 
 	"github.com/locklens/locklens/internal/rules"
 	"github.com/locklens/locklens/internal/storage"
@@ -47,8 +50,14 @@ func (s *Server) listQueries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "filter is too long")
 		return
 	}
-	// Text requires both the client's request and the target's opt-in.
-	includeText := q.Get("include_text") == "true" && t.QueryTextEnabled
+	// Text is returned when the target collects it, unless the client asks
+	// for include_text=false.
+	includeText := q.Get("include_text") != "false" && t.QueryTextEnabled
+	command := q.Get("command")
+	if command != "" && !slices.Contains(observe.Commands, command) {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "unknown command class")
+		return
+	}
 	// LockLens' own monitoring statements are real load but rarely what an
 	// investigation is about; they are hidden unless asked for.
 	exclude := t.User
@@ -57,7 +66,7 @@ func (s *Server) listQueries(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, total, err := s.d.Store.ListQueries(r.Context(), storage.QueryListParams{TargetID: t.ID, From: from, To: to,
 		Compare: compare, Filter: filter, IncludeText: includeText, Sort: sort, Desc: q.Get("order") != "asc",
-		Limit: limit, Offset: offset, ExcludeUser: exclude})
+		Limit: limit, Offset: offset, ExcludeUser: exclude, Command: command})
 	if err != nil {
 		s.internal(w, r, err)
 		return
@@ -126,7 +135,7 @@ func (s *Server) getQuery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	includeText := r.URL.Query().Get("include_text") == "true" && t.QueryTextEnabled
+	includeText := r.URL.Query().Get("include_text") != "false" && t.QueryTextEnabled
 	ident, first, last, err := s.d.Store.QueryIdentity(r.Context(), t.ID, qid, includeText)
 	if errors.Is(err, storage.ErrNotFound) {
 		writeError(w, r, http.StatusNotFound, "not_found", "query identity not found")
@@ -136,7 +145,11 @@ func (s *Server) getQuery(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	step := stepFor(from, to, time.Minute)
+	step, err := metricStep(r, from, to, time.Minute)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 	buckets, err := s.d.Store.QueryBuckets(r.Context(), t.ID, qid, from, to, step)
 	if err != nil {
 		s.internal(w, r, err)
@@ -172,4 +185,43 @@ func (s *Server) getQuery(w http.ResponseWriter, r *http.Request) {
 		"previous":   map[string]any{"from": from.Add(-window), "to": from, "totals": prev, "mean_exec_ms": prev.MeanMS(), "coverage": covPrev},
 		"comparison": rules.Compare(prev, cur, s.d.Settings.Thresholds()),
 	})
+}
+
+// queryCommands breaks the workload down by statement command class
+// (select, insert, update, ...): totals for the window and a time series.
+func (s *Server) queryCommands(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.targetOr404(w, r)
+	if !ok {
+		return
+	}
+	from, to, err := timeRange(r, time.Hour)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	exclude := t.User
+	if r.URL.Query().Get("include_monitoring") == "true" {
+		exclude = ""
+	}
+	step := stepFor(from, to, time.Minute)
+	totals, buckets, coverage, err := s.d.Store.CommandBreakdown(r.Context(), t.ID, from, to, step, exclude)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	cov, err := s.d.Store.StatementCoverage(r.Context(), t.ID, from, to)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	resp := map[string]any{"from": from, "to": to, "step_seconds": step.Seconds(), "commands": observe.Commands,
+		"totals": totals, "buckets": buckets, "coverage_buckets": coverage, "coverage": cov, "monitoring_user": t.User, "monitoring_hidden": exclude != ""}
+	if v, ok := s.view(t.ID); ok && v.Capabilities != nil {
+		resp["available"] = v.Capabilities.StatStatements
+		resp["unavailable_reason"] = v.Capabilities.StatementsReason
+	} else if t.Status.Capabilities != nil {
+		resp["available"] = t.Status.Capabilities.StatStatements
+		resp["unavailable_reason"] = t.Status.Capabilities.StatementsReason
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

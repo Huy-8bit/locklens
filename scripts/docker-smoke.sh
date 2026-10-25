@@ -24,7 +24,7 @@ trap 'exit 130' INT TERM
 base="http://127.0.0.1:$LOCKLENS_HTTP_PORT"
 curl -fsS "$base/healthz" >/dev/null
 curl -fsS "$base/readyz" >/dev/null
-curl -fsS "$base/" >"$work/index.html"
+curl -fsS -D "$work/headers.txt" "$base/" >"$work/index.html"
 asset=$(python3 - "$work/index.html" <<'PY'
 import re, sys
 html = open(sys.argv[1]).read()
@@ -37,7 +37,16 @@ PY
 curl -fsS "$base$asset" >"$work/app.js"
 test -s "$work/app.js"
 curl -fsS "$base/targets/1/blocking" >"$work/route.html"
-cmp "$work/index.html" "$work/route.html"
+python3 - "$work/index.html" "$work/route.html" "$work/headers.txt" <<'PYSMOKE'
+import pathlib, re, sys
+first, route, headers = [pathlib.Path(p).read_text() for p in sys.argv[1:]]
+pattern = r'(<meta name="csp-nonce" content=")[a-f0-9]+(">)'
+nonce = re.search(r'name="csp-nonce" content="([a-f0-9]+)"', first).group(1)
+other = re.search(r'name="csp-nonce" content="([a-f0-9]+)"', route).group(1)
+assert nonce != other, 'CSP nonces must be generated for each document'
+assert "'nonce-" + nonce + "'" in headers, 'CSP nonce does not match document'
+assert re.sub(pattern, r'\1NONCE\2', first) == re.sub(pattern, r'\1NONCE\2', route), 'SPA route serves different assets'
+PYSMOKE
 "${compose[@]}" exec -T locklens locklens version
 "${compose[@]}" run --rm --no-deps lab list
 user=$("${compose[@]}" exec -T locklens id -u)

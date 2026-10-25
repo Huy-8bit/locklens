@@ -58,6 +58,7 @@ services:
     volumes:
       - ../demo/postgres/01-roles.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
       - ../demo/postgres/02-replication-hba.sh:/docker-entrypoint-initdb.d/02-replication-hba.sh:ro
+      - ../demo/postgres/03-demo-data.sql:/docker-entrypoint-initdb.d/03-demo-data.sql:ro
       - primary-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d locklens_demo"]
@@ -117,6 +118,9 @@ services:
       LOCKLENS_BOOTSTRAP_TARGETS_FILE: /etc/locklens/targets.json
       LOCKLENS_LAB_PRIMARY_DSN: postgres://locklens_observer:observer-pw@primary:5432/locklens_demo?sslmode=disable
       LOCKLENS_LAB_STANDBY_DSN: postgres://locklens_observer:observer-pw@standby:5432/locklens_demo?sslmode=disable
+      # Separate SELECT-only role for the table browser (fake lab credentials).
+      LOCKLENS_LAB_PRIMARY_READER_DSN: postgres://locklens_reader:reader-pw@primary:5432/locklens_demo?sslmode=disable
+      LOCKLENS_LAB_STANDBY_READER_DSN: postgres://locklens_reader:reader-pw@standby:5432/locklens_demo?sslmode=disable
     volumes:
       - ../demo/targets.json:/etc/locklens/targets.json:ro
     ports:

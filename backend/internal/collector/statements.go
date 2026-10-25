@@ -34,9 +34,11 @@ type statementsState struct {
 	entries    map[observe.QueryKey]statementCounters
 }
 
-// readStatements reads pg_stat_statements. Query text is selected only when
-// the target opted in; otherwise the column is never transferred.
-func readStatements(ctx context.Context, tx pgx.Tx, caps observe.Capabilities, includeText bool) (map[observe.QueryKey]statementCounters, map[observe.QueryKey][3]*string, int, error) {
+// readStatements reads pg_stat_statements. The normalised text is always read
+// to classify each statement's command (select, insert, ...); it is kept only
+// when the target collects query text, otherwise it is dropped here and never
+// stored.
+func readStatements(ctx context.Context, tx pgx.Tx, caps observe.Capabilities, includeText bool) (map[observe.QueryKey]statementCounters, map[observe.QueryKey][4]*string, int, error) {
 	view := pgx.Identifier{caps.StatementsSchema, "pg_stat_statements"}.Sanitize()
 	// Rows of other roles without pg_read_all_stats have a NULL queryid and
 	// are counted as hidden.
@@ -45,16 +47,16 @@ SELECT s.userid, s.dbid, s.toplevel, s.queryid,
        coalesce(d.datname, s.dbid::text), coalesce(r.rolname, s.userid::text),
        s.calls, s.total_exec_time, s.rows, s.shared_blks_hit, s.shared_blks_read,
        s.temp_blks_written, s.wal_bytes::float8,
-       CASE WHEN $1::bool THEN s.query END
+       s.query
 FROM ` + view + ` AS s
 LEFT JOIN pg_catalog.pg_database AS d ON d.oid = s.dbid
 LEFT JOIN pg_catalog.pg_roles AS r ON r.oid = s.userid`
-	rows, err := tx.Query(ctx, sql, includeText)
+	rows, err := tx.Query(ctx, sql)
 	if err != nil {
 		return nil, nil, 0, err
 	}
 	entries := map[observe.QueryKey]statementCounters{}
-	meta := map[observe.QueryKey][3]*string{}
+	meta := map[observe.QueryKey][4]*string{}
 	hidden := 0
 	var (
 		userid, dbid uint32
@@ -79,8 +81,15 @@ LEFT JOIN pg_catalog.pg_roles AS r ON r.oid = s.userid`
 			}
 		}
 		entries[k] = c
-		d, u := datname, usr
-		meta[k] = [3]*string{&d, &u, text}
+		d, u, cmd := datname, usr, observe.CommandOther
+		if text != nil {
+			cmd = observe.ClassifyCommand(*text)
+		}
+		kept := text
+		if !includeText {
+			kept = nil
+		}
+		meta[k] = [4]*string{&d, &u, kept, &cmd}
 		return nil
 	})
 	return entries, meta, hidden, err
@@ -108,7 +117,7 @@ func readStatementsInfo(ctx context.Context, tx pgx.Tx, caps observe.Capabilitie
 //     are deltas.
 //   - Evictions (dealloc increased) lose the evicted entries' counts in this
 //     window; that is reported, not hidden.
-func diffStatements(prev *statementsState, cur statementsState, meta map[observe.QueryKey][3]*string, hidden int) observe.StatementsCollection {
+func diffStatements(prev *statementsState, cur statementsState, meta map[observe.QueryKey][4]*string, hidden int) observe.StatementsCollection {
 	out := observe.StatementsCollection{At: cur.at, Entries: len(cur.entries), Hidden: hidden, Deltas: []observe.QueryDelta{}}
 	if prev == nil {
 		return out
@@ -142,7 +151,7 @@ func diffStatements(prev *statementsState, cur statementsState, meta map[observe
 		}
 		d.Key = k
 		if m, ok := meta[k]; ok {
-			d.DatName, d.UserName, d.Text = *m[0], *m[1], m[2]
+			d.DatName, d.UserName, d.Text, d.Command = *m[0], *m[1], m[2], *m[3]
 		}
 		out.Deltas = append(out.Deltas, d)
 	}

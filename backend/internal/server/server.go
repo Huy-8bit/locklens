@@ -24,6 +24,7 @@ import (
 	"github.com/locklens/locklens/internal/storage"
 	"github.com/locklens/locklens/internal/targets"
 	"github.com/locklens/locklens/internal/webui"
+	"github.com/locklens/locklens/internal/workspace"
 )
 
 // NewLogger builds the structured logger. Logs go to stderr.
@@ -92,15 +93,16 @@ func Run(ctx context.Context, cfg Config, version string, log *slog.Logger) erro
 	}
 	manager.SetAnalyzer(recorder)
 	tsvc := targets.NewService(store, box, manager, version)
+	ws := workspace.New(store, box)
 
 	if cfg.BootstrapTargets != "" {
-		if err := bootstrapTargets(ctx, tsvc, cfg.BootstrapTargets, log); err != nil {
+		if err := bootstrapTargets(ctx, tsvc, ws, store, cfg.BootstrapTargets, log); err != nil {
 			return err
 		}
 	}
 
 	tool := model.Tool{Name: "locklens", Version: version}
-	handler := api.New(api.Deps{Store: store, Auth: auth.NewService(store, cfg.SessionIdle, cfg.CookieSecure), Targets: tsvc,
+	handler := api.New(api.Deps{Workspace: ws, Store: store, Auth: auth.NewService(store, cfg.SessionIdle, cfg.CookieSecure), Targets: tsvc,
 		Manager: manager, Settings: st, Hub: hub, Metrics: metrics, Log: log, Tool: tool, UI: webui.FS(),
 		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode})
 
@@ -188,7 +190,7 @@ func bootstrapAdmin(ctx context.Context, store *storage.Store, cfg Config, log *
 	return nil
 }
 
-func bootstrapTargets(ctx context.Context, svc *targets.Service, path string, log *slog.Logger) error {
+func bootstrapTargets(ctx context.Context, svc *targets.Service, ws *workspace.Service, store *storage.Store, path string, log *slog.Logger) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("LOCKLENS_BOOTSTRAP_TARGETS_FILE: %w", err)
@@ -207,7 +209,39 @@ func bootstrapTargets(ctx context.Context, svc *targets.Service, path string, lo
 	if n > 0 {
 		log.Info("bootstrap targets created", "count", n)
 	}
+	for _, e := range entries {
+		if e.Workspace != nil {
+			bootstrapWorkspace(ctx, ws, store, e, log)
+		}
+	}
 	return nil
+}
+
+// bootstrapWorkspace configures investigation access for a bootstrap target
+// that has none yet. Failures are logged, not fatal: monitoring works
+// without it, and the administrator can configure it in the UI.
+func bootstrapWorkspace(ctx context.Context, ws *workspace.Service, store *storage.Store, e targets.BootstrapEntry, log *slog.Logger) {
+	t, err := store.GetTargetByName(ctx, e.Name)
+	if err != nil {
+		log.Warn("bootstrap workspace: target not found", "target", e.Name)
+		return
+	}
+	p, err := store.WorkspacePolicy(ctx, t.ID)
+	if err != nil || p.Configured {
+		return
+	}
+	dsn := Getenv(e.Workspace.DSNEnv)
+	if dsn == "" {
+		log.Warn("bootstrap workspace: no DSN", "target", e.Name, "env", e.Workspace.DSNEnv)
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := ws.Configure(cctx, t.ID, storage.WorkspacePolicy{Metadata: e.Workspace.Metadata, Data: e.Workspace.Data}, dsn); err != nil {
+		log.Warn("bootstrap workspace: not configured", "target", e.Name, "error", workspace.SafeError(err).Message)
+		return
+	}
+	log.Info("bootstrap workspace configured", "target", e.Name, "metadata", e.Workspace.Metadata, "data", e.Workspace.Data)
 }
 
 // statementsInterval is 60 s in production; the lab samples pg_stat_statements

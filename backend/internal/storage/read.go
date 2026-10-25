@@ -13,76 +13,143 @@ import (
 	"github.com/locklens/locklens/internal/observe"
 )
 
-// SeriesPoint is one downsampled bucket. Value is nil when every sample in
-// the bucket was unknown; buckets without samples are absent (a gap).
+// SeriesPoint represents a bucket in (from, to]. Unknown or interrupted buckets
+// remain null, even if other samples in that bucket are known.
 type SeriesPoint struct {
 	T       time.Time `json:"t"`
 	V       *float64  `json:"v"`
 	Samples int       `json:"n"`
 	Known   int       `json:"known"`
+	Gap     bool      `json:"gap,omitempty"`
 }
-
-// Series is one metric (and label) over time.
 type Series struct {
-	Metric string        `json:"metric"`
-	Label  string        `json:"label,omitempty"`
-	Agg    string        `json:"aggregation"`
-	Points []SeriesPoint `json:"points"`
+	Metric     string        `json:"metric"`
+	Label      string        `json:"label,omitempty"`
+	Agg        string        `json:"aggregation"`
+	Collector  string        `json:"collector"`
+	LastSample *time.Time    `json:"last_sample_at,omitempty"`
+	Points     []SeriesPoint `json:"points"`
 }
 
-// aggFor picks the downsampling aggregate from the metric name: discrete
-// counts (".delta") are summed, maxima keep the maximum, everything else is
-// averaged.
-func aggFor(metric string) string {
+// MetricAggregation is deliberately conservative. Pressure gauges retain peaks,
+// sizes retain the last observation, and rates use measured elapsed intervals.
+func MetricAggregation(metric string) string {
 	switch {
 	case strings.HasSuffix(metric, ".delta"):
 		return "sum"
-	case strings.Contains(metric, "max_") || strings.Contains(metric, "oldest"):
+	case strings.HasSuffix(metric, ".per_s"):
+		return "time_weighted_mean"
+	case metric == "cache.hit_ratio":
+		return "mean_interval_ratio"
+	case strings.HasPrefix(metric, "sessions."), strings.HasPrefix(metric, "connections."),
+		strings.HasPrefix(metric, "blocking."), strings.HasPrefix(metric, "transactions."),
+		strings.Contains(metric, "lag"), strings.Contains(metric, "delay"), strings.Contains(metric, "max_"),
+		strings.HasSuffix(metric, "utilization_ratio"), strings.HasSuffix(metric, "used_ratio"):
 		return "max"
+	default:
+		return "last"
 	}
-	return "avg"
+}
+func MetricCollector(metric string) string {
+	if strings.HasPrefix(metric, "db.") {
+		return "tables"
+	}
+	for _, p := range []string{"sessions.", "connections.", "blocking.", "transactions."} {
+		if strings.HasPrefix(metric, p) {
+			return "activity"
+		}
+	}
+	if strings.HasPrefix(metric, "host.") {
+		return "host"
+	}
+	if strings.HasPrefix(metric, "statements.") {
+		return "statements"
+	}
+	for _, p := range []string{"replication.", "standby.", "slots."} {
+		if strings.HasPrefix(metric, p) {
+			return "replication"
+		}
+	}
+	return "database"
 }
 
-// QuerySeries returns downsampled series for metrics in (from, to].
+const MaxSeriesPoints = 12000
+
+var ErrSeriesLimit = errors.New("response exceeds 12000 points; request fewer metrics or a larger step")
+
+// QuerySeries bounds both the time window and total response cardinality. The
+// request context cancels PostgreSQL work when a client changes its selection.
 func (s *Store) QuerySeries(ctx context.Context, targetID int64, metrics []string, from, to time.Time, step time.Duration) ([]Series, error) {
+	if step <= 0 || !to.After(from) || to.Sub(from) > 31*24*time.Hour || len(metrics) > 20 {
+		return nil, errors.New("invalid series bounds")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	out := []Series{}
+	total := 0
 	for _, m := range metrics {
-		agg := aggFor(m)
+		agg, collector := MetricAggregation(m), MetricCollector(m)
+		expression := "(array_agg(value ORDER BY ts DESC))[1]"
+		switch agg {
+		case "sum", "max":
+			expression = agg + "(value)"
+		case "mean_interval_ratio":
+			expression = "avg(value)"
+		case "time_weighted_mean":
+			expression = "CASE WHEN count(interval_seconds)=count(*) THEN sum(value * interval_seconds) / NULLIF(sum(interval_seconds),0) END"
+		}
 		rows, err := s.pool.Query(ctx, fmt.Sprintf(`
-SELECT label, date_bin($5::interval, ts, '2000-01-01 00:00:00+00') AS bucket, %s(value), count(*), count(value)
-FROM metric_points
-WHERE target_id = $1 AND metric = $2 AND ts > $3 AND ts <= $4
-GROUP BY label, bucket
-ORDER BY label, bucket`, agg), targetID, m, from.UTC(), to.UTC(), step)
+WITH buckets AS (
+ SELECT label, date_bin($5::interval, ts - interval '1 microsecond', $3::timestamptz) AS bucket,
+ CASE WHEN count(value)=count(*) THEN %s END AS value, count(*) AS samples, count(value) AS known, max(ts) AS last_sample
+ FROM metric_points WHERE target_id=$1 AND metric=$2 AND ts>$3 AND ts<=$4
+ GROUP BY label, bucket
+)
+SELECT label, bucket, value, samples, known, last_sample,
+ EXISTS (SELECT 1 FROM collection_gaps g WHERE g.target_id=$1 AND g.collector=$6
+ AND g.ended_at>bucket AND g.started_at<bucket+$5::interval) AS gap
+FROM buckets ORDER BY label, bucket LIMIT $7`, expression), targetID, m, from.UTC(), to.UTC(), step, collector, MaxSeriesPoints-total+1)
 		if err != nil {
 			return nil, s.red.Error(err)
 		}
 		byLabel := map[string]*Series{}
 		var order []string
-		var (
-			label        string
-			bucket       time.Time
-			value        *float64
-			count, known int
-		)
-		_, err = pgx.ForEachRow(rows, []any{&label, &bucket, &value, &count, &known}, func() error {
-			sr, ok := byLabel[label]
-			if !ok {
-				sr = &Series{Metric: m, Label: label, Agg: agg, Points: []SeriesPoint{}}
+		for rows.Next() {
+			var label string
+			var p SeriesPoint
+			var last time.Time
+			if err := rows.Scan(&label, &p.T, &p.V, &p.Samples, &p.Known, &last, &p.Gap); err != nil {
+				rows.Close()
+				return nil, s.red.Error(err)
+			}
+			total++
+			if total > MaxSeriesPoints {
+				rows.Close()
+				return nil, ErrSeriesLimit
+			}
+			if p.Gap {
+				p.V = nil
+			}
+			sr := byLabel[label]
+			if sr == nil {
+				sr = &Series{Metric: m, Label: label, Agg: agg, Collector: collector, Points: []SeriesPoint{}}
 				byLabel[label] = sr
 				order = append(order, label)
 			}
-			sr.Points = append(sr.Points, SeriesPoint{T: bucket.UTC(), V: value, Samples: count, Known: known})
-			return nil
-		})
-		if err != nil {
+			p.T = p.T.UTC()
+			last = last.UTC()
+			sr.LastSample = &last
+			sr.Points = append(sr.Points, p)
+		}
+		if err := rows.Err(); err != nil {
 			return nil, s.red.Error(err)
 		}
+		rows.Close()
 		if len(order) == 0 {
-			out = append(out, Series{Metric: m, Agg: agg, Points: []SeriesPoint{}})
+			out = append(out, Series{Metric: m, Agg: agg, Collector: collector, Points: []SeriesPoint{}})
 		}
-		for _, l := range order {
-			out = append(out, *byLabel[l])
+		for _, label := range order {
+			out = append(out, *byLabel[label])
 		}
 	}
 	return out, nil
@@ -125,6 +192,7 @@ type QueryRow struct {
 	UserName    string   `json:"username"`
 	TopLevel    bool     `json:"toplevel"`
 	QueryID     int64    `json:"queryid,string"`
+	Command     string   `json:"command"`
 	Text        *string  `json:"query_text"`
 	Calls       int64    `json:"calls"`
 	TotalMS     float64  `json:"total_exec_ms"`
@@ -151,6 +219,8 @@ type QueryListParams struct {
 	Offset      int
 	// ExcludeUser hides statements of one role (LockLens' monitoring role).
 	ExcludeUser string
+	// Command restricts the list to one command class; empty means all.
+	Command string
 }
 
 var querySorts = map[string]string{
@@ -192,7 +262,7 @@ WITH cur AS (
     SELECT identity_id, sum(calls) AS calls, sum(total_exec_ms) AS total_ms
     FROM query_samples WHERE $4::bool AND target_id = $1 AND ts > $5 AND ts <= $2 GROUP BY identity_id
 ), tot AS (SELECT sum(total_ms) AS t FROM cur)
-SELECT i.id, i.server_major, i.datname, i.username, i.toplevel, i.queryid,
+SELECT i.id, i.server_major, i.datname, i.username, i.toplevel, i.queryid, i.command,
        CASE WHEN $6::bool THEN i.query_text END,
        cur.calls, cur.total_ms, cur.rows, cur.hit, cur.rd, cur.temp, cur.wal,
        cur.total_ms / NULLIF(tot.t, 0), prev.calls, prev.total_ms,
@@ -204,10 +274,11 @@ CROSS JOIN tot
 WHERE ($7 = '' OR i.datname ILIKE '%' || $7 || '%' OR i.username ILIKE '%' || $7 || '%'
       OR i.queryid::text = $7 OR ($6::bool AND i.query_text ILIKE '%' || $7 || '%'))
   AND ($10 = '' OR i.username <> $10)
+  AND ($11 = '' OR i.command = $11)
 ORDER BY ` + order + ` ` + dir + ` NULLS LAST, i.id
 LIMIT $8 OFFSET $9`
 	rows, err := s.pool.Query(ctx, sql, p.TargetID, p.From.UTC(), p.To.UTC(), p.Compare, prevFrom.UTC(), p.IncludeText,
-		strings.TrimSpace(p.Filter), p.Limit, p.Offset, p.ExcludeUser)
+		strings.TrimSpace(p.Filter), p.Limit, p.Offset, p.ExcludeUser, p.Command)
 	if err != nil {
 		return nil, 0, s.red.Error(err)
 	}
@@ -215,7 +286,7 @@ LIMIT $8 OFFSET $9`
 	out := []QueryRow{}
 	for rows.Next() {
 		var q QueryRow
-		if err := rows.Scan(&q.IdentityID, &q.ServerMajor, &q.DatName, &q.UserName, &q.TopLevel, &q.QueryID, &q.Text,
+		if err := rows.Scan(&q.IdentityID, &q.ServerMajor, &q.DatName, &q.UserName, &q.TopLevel, &q.QueryID, &q.Command, &q.Text,
 			&q.Calls, &q.TotalMS, &q.Rows, &q.BlkHit, &q.BlkRead, &q.TempW, &q.WALBytes, &q.Share, &q.PrevCalls,
 			&q.PrevTotalMS, &total); err != nil {
 			rows.Close()
@@ -224,6 +295,102 @@ LIMIT $8 OFFSET $9`
 		out = append(out, q)
 	}
 	return out, total, s.red.Error(rows.Err())
+}
+
+// CommandTotals is the workload of one command class in a window.
+type CommandTotals struct {
+	Command    string   `json:"command"`
+	Calls      int64    `json:"calls"`
+	TotalMS    float64  `json:"total_exec_ms"`
+	Rows       int64    `json:"rows"`
+	Statements int      `json:"statements"`
+	MeanMS     *float64 `json:"mean_exec_ms"`
+}
+
+// CommandBucket is one time bucket of one command class.
+type CommandBucket struct {
+	T       time.Time `json:"t"`
+	Command string    `json:"command"`
+	Calls   int64     `json:"calls"`
+	TotalMS float64   `json:"total_exec_ms"`
+	Rows    int64     `json:"rows"`
+}
+
+// CoverageBucket is the statement-collection time inside one bucket. A
+// bucket with coverage and no command rows had no statement activity (zero);
+// a bucket without coverage is unknown.
+type CoverageBucket struct {
+	T       time.Time `json:"t"`
+	Covered float64   `json:"covered_seconds"`
+}
+
+// CommandBreakdown aggregates statement deltas by command class: totals for
+// (from, to], per-bucket sums, and per-bucket coverage. Statements of
+// excludeUser are left out.
+func (s *Store) CommandBreakdown(ctx context.Context, targetID int64, from, to time.Time, step time.Duration, excludeUser string) ([]CommandTotals, []CommandBucket, []CoverageBucket, error) {
+	totals := []CommandTotals{}
+	rows, err := s.pool.Query(ctx, `
+SELECT i.command, sum(q.calls)::bigint, sum(q.total_exec_ms), sum(q.rows)::bigint, count(DISTINCT q.identity_id)
+FROM query_samples q JOIN query_identities i ON i.id = q.identity_id
+WHERE q.target_id = $1 AND q.ts > $2 AND q.ts <= $3 AND ($4 = '' OR i.username <> $4)
+GROUP BY i.command ORDER BY 3 DESC`, targetID, from.UTC(), to.UTC(), excludeUser)
+	if err != nil {
+		return nil, nil, nil, s.red.Error(err)
+	}
+	for rows.Next() {
+		var c CommandTotals
+		if err := rows.Scan(&c.Command, &c.Calls, &c.TotalMS, &c.Rows, &c.Statements); err != nil {
+			rows.Close()
+			return nil, nil, nil, s.red.Error(err)
+		}
+		if c.Calls > 0 {
+			m := c.TotalMS / float64(c.Calls)
+			c.MeanMS = &m
+		}
+		totals = append(totals, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, nil, s.red.Error(err)
+	}
+	buckets := []CommandBucket{}
+	rows, err = s.pool.Query(ctx, `
+SELECT date_bin($5::interval, q.ts, $2), i.command, sum(q.calls)::bigint, sum(q.total_exec_ms), sum(q.rows)::bigint
+FROM query_samples q JOIN query_identities i ON i.id = q.identity_id
+WHERE q.target_id = $1 AND q.ts > $2 AND q.ts <= $3 AND ($4 = '' OR i.username <> $4)
+GROUP BY 1, 2 ORDER BY 1, 2`, targetID, from.UTC(), to.UTC(), excludeUser, step)
+	if err != nil {
+		return nil, nil, nil, s.red.Error(err)
+	}
+	for rows.Next() {
+		var b CommandBucket
+		if err := rows.Scan(&b.T, &b.Command, &b.Calls, &b.TotalMS, &b.Rows); err != nil {
+			rows.Close()
+			return nil, nil, nil, s.red.Error(err)
+		}
+		buckets = append(buckets, b)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, nil, s.red.Error(err)
+	}
+	coverage := []CoverageBucket{}
+	rows, err = s.pool.Query(ctx, `
+SELECT date_bin($4::interval, ts, $2), sum(interval_seconds)
+FROM statement_collections WHERE target_id = $1 AND ts > $2 AND ts <= $3 AND interval_seconds IS NOT NULL
+GROUP BY 1 ORDER BY 1`, targetID, from.UTC(), to.UTC(), step)
+	if err != nil {
+		return nil, nil, nil, s.red.Error(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c CoverageBucket
+		if err := rows.Scan(&c.T, &c.Covered); err != nil {
+			return nil, nil, nil, s.red.Error(err)
+		}
+		coverage = append(coverage, c)
+	}
+	return totals, buckets, coverage, s.red.Error(rows.Err())
 }
 
 // Coverage summarises statement collections in a window.
@@ -253,9 +420,9 @@ func (s *Store) QueryIdentity(ctx context.Context, targetID, id int64, includeTe
 	var q QueryRow
 	var first, last time.Time
 	err := s.pool.QueryRow(ctx, `
-SELECT id, server_major, datname, username, toplevel, queryid, CASE WHEN $3 THEN query_text END, first_seen, last_seen
+SELECT id, server_major, datname, username, toplevel, queryid, command, CASE WHEN $3 THEN query_text END, first_seen, last_seen
 FROM query_identities WHERE target_id = $1 AND id = $2`, targetID, id, includeText).
-		Scan(&q.IdentityID, &q.ServerMajor, &q.DatName, &q.UserName, &q.TopLevel, &q.QueryID, &q.Text, &first, &last)
+		Scan(&q.IdentityID, &q.ServerMajor, &q.DatName, &q.UserName, &q.TopLevel, &q.QueryID, &q.Command, &q.Text, &first, &last)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return q, first, last, ErrNotFound
 	}
@@ -264,6 +431,7 @@ FROM query_identities WHERE target_id = $1 AND id = $2`, targetID, id, includeTe
 
 // QueryBucket is one time bucket of an identity's activity.
 type QueryBucket struct {
+	Gap      bool      `json:"gap,omitempty"`
 	T        time.Time `json:"t"`
 	Calls    int64     `json:"calls"`
 	TotalMS  float64   `json:"total_exec_ms"`
@@ -274,15 +442,19 @@ type QueryBucket struct {
 // QueryBuckets returns downsampled activity of one identity.
 func (s *Store) QueryBuckets(ctx context.Context, targetID, id int64, from, to time.Time, step time.Duration) ([]QueryBucket, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT date_bin($5::interval, ts, '2000-01-01 00:00:00+00') AS b, sum(calls), sum(total_exec_ms), sum(rows), sum(interval_seconds)
-FROM query_samples WHERE target_id = $1 AND identity_id = $2 AND ts > $3 AND ts <= $4
-GROUP BY b ORDER BY b`, targetID, id, from.UTC(), to.UTC(), step)
+WITH buckets AS (
+ SELECT date_bin($5::interval, ts - interval '1 microsecond', $3::timestamptz) AS b, sum(calls) AS calls, sum(total_exec_ms) AS ms, sum(rows) AS rows, sum(interval_seconds) AS covered
+ FROM query_samples WHERE target_id = $1 AND identity_id = $2 AND ts > $3 AND ts <= $4
+ GROUP BY b
+)
+SELECT b,calls,ms,rows,covered,EXISTS(SELECT 1 FROM collection_gaps g WHERE g.target_id=$1 AND g.collector='statements' AND g.ended_at>b AND g.started_at<b+$5::interval)
+FROM buckets ORDER BY b LIMIT 1001`, targetID, id, from.UTC(), to.UTC(), step)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (QueryBucket, error) {
 		var b QueryBucket
-		err := r.Scan(&b.T, &b.Calls, &b.TotalMS, &b.Rows, &b.Interval)
+		err := r.Scan(&b.T, &b.Calls, &b.TotalMS, &b.Rows, &b.Interval, &b.Gap)
 		b.T = b.T.UTC()
 		return b, err
 	})

@@ -19,7 +19,7 @@ welcome.
   (for example lock wait time) without a source that supports them. Link the
   official PostgreSQL documentation for any new semantics.
 - **No credential or query-text leaks.** Never print, log, return, or export a
-  DSN or any part of an unparsable DSN. Query text stays opt-in per target and
+  DSN or any part of an unparsable DSN. SQL text collection stays switchable per target, row browsing stays opt-in, and SQL text
   never goes into metric labels.
 - **No mock data in production code.** UI elements show real data or explicit
   empty, partial, or unavailable states.

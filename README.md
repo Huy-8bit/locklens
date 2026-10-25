@@ -13,12 +13,22 @@ LockLens **only observes**. It connects with a read-only role in read-only
 transactions and never cancels queries, terminates sessions, changes
 configuration, creates or drops indexes, runs `VACUUM`, or fails over.
 
-![Fleet overview](docs/images/fleet.png)
+![Instance overview](docs/images/overview.png)
 
 ## Features
 
-- **Fleet overview** of many instances: state (healthy, degraded,
-  unreachable), freshness, open incidents, and current findings per target.
+- **What the database is doing now**: one overview per instance with
+  connections, running queries, queries and transactions per second, cache hit
+  ratio, rows read and written, blocking, oldest transaction, size, and
+  replication lag, plus history charts.
+- **Queries by type**: every statement from `pg_stat_statements` classified as
+  SELECT, INSERT, UPDATE, DELETE, DDL, transaction control, and so on, with
+  executions per second, time, and rows per type over time, and the full
+  normalised SQL of each statement.
+- **Data explorer**: schemas, tables, columns, indexes, constraints, and the
+  rows themselves (paged, sortable, filterable), through a separate
+  least-privileged role that is switched off by default.
+- **All instances** at a glance: state, freshness, load, open incidents.
 - **Health**: sessions by state, connections versus the limit, commit and
   rollback rates, cache hit ratio, temp files, deadlocks, WAL rate,
   checkpoints and background writer (version-aware), `pg_stat_io` on 16+,
@@ -49,9 +59,12 @@ configuration, creates or drops indexes, runs `VACUUM`, or fails over.
   retention in batches, bounded buffering when the store is down, visible
   collection gaps.
 - **Security**: single administrator with bcrypt and server-side sessions,
-  CSRF protection, encrypted connection strings, query text off by default.
+  CSRF protection, encrypted connection strings, row browsing off by default
+  and through a separate role.
 
-![Incident with evidence](docs/images/incident.png)
+![Queries by statement type](docs/images/queries.png)
+
+![Data explorer](docs/images/explorer.png)
 
 ## Try it in about 10 minutes
 
@@ -71,10 +84,13 @@ standby — are already registered. Then create a problem:
 make lab SCENARIO=chain      # A -> B -> C blocking chain for 3 minutes
 ```
 
-Watch it on the target's **Blocking** page; within about 20 seconds an
-incident appears under **Incidents**. Other scenarios: `row-blocking`,
-`idle-blocker`, `connection-pressure`, `regression`, `temp-files`,
-`replication`, `healthy`, and `make lab-outage`. When done:
+Watch it on **Live activity** ("Who is blocking whom"); within about 20
+seconds an incident appears under **Alerts**. For a realistic mix of SELECT,
+INSERT, UPDATE, and DELETE traffic, run `make lab SCENARIO=shop` and open
+**Queries**; browse the demo `shop` schema under **Data explorer**. Other
+scenarios: `row-blocking`, `idle-blocker`, `connection-pressure`,
+`regression`, `temp-files`, `replication`, `healthy`, and `make lab-outage`.
+When done:
 
 ```sh
 make down                    # removes the lab's containers and volumes
@@ -103,7 +119,7 @@ CREATE ROLE locklens_observer LOGIN PASSWORD '…';
 GRANT pg_read_all_stats TO locklens_observer;
 ```
 
-Add targets in **Settings → Add target**. All settings:
+Add instances in **Settings → Add instance**. All settings:
 [docs/configuration.md](docs/configuration.md). Before exposing the UI
 beyond your machine, read [docs/security.md](docs/security.md).
 
@@ -164,8 +180,14 @@ rather than zero. Details: [docs/architecture.md](docs/architecture.md),
 
 ## Privacy and safety
 
-- Query text is **off by default** and enabled per target; it never appears
-  in logs, metric labels, or exports unless explicitly requested.
+- SQL text is **collected by default** so the Queries and Live activity pages
+  can show it; it can be switched off per instance. Normalised statements
+  replace literal values with `$1, $2, …`, but running queries can contain
+  literals. SQL text never appears in logs or metric labels, and exports
+  include it only when explicitly requested.
+- **Table rows** are readable only after an administrator configures a
+  separate, SELECT-only role for an instance and enables row browsing; every
+  access is audited without the data.
 - Connection strings are encrypted at rest (AES-256-GCM) and never returned by
   the API or shown in the UI, logs, exports, or snapshots.
 - The server listens on 127.0.0.1 by default; cookies are `HttpOnly` and
@@ -179,7 +201,7 @@ rather than zero. Details: [docs/architecture.md](docs/architecture.md),
 ```text
 locklens/
 ├── backend/            # Go module: cmd/, internal/, migrations/, demo/
-├── web/                # React: src/app, features, components, api, lib, styles
+├── web/                # React: src/pages, components, api, lib
 ├── deploy/             # Dockerfile and Compose definitions
 ├── demo/               # PostgreSQL fixtures and bootstrap targets
 ├── scripts/            # development, test, smoke, and lab entrypoints
@@ -230,9 +252,11 @@ Earlier functional test results: [docs/test-report.md](docs/test-report.md).
 
 ## Documentation
 
+- [UI guide](docs/ui-design.md): pages, what each one answers, and how to read the charts
+
 | Topic | Document |
 | --- | --- |
-| Getting started | [quickstart](docs/quickstart.md), [configuration](docs/configuration.md), [troubleshooting](docs/troubleshooting.md) |
+| Getting started | [quickstart](docs/quickstart.md), [configuration](docs/configuration.md), [troubleshooting](docs/troubleshooting.md), [local workload sandbox](docs/local-lab.md) |
 | Concepts | [architecture](docs/architecture.md), [collectors](docs/collectors.md), [PostgreSQL observation](docs/postgresql-observation.md), [blocking graph](docs/blocking-graph.md), [query analysis](docs/query-analysis.md), [rules](docs/rules.md), [incidents](docs/incidents.md) |
 | Operations | [storage and retention](docs/storage-and-retention.md), [security](docs/security.md), [limitations](docs/limitations.md) |
 | Reference | [HTTP API](docs/api.md), [CLI](docs/cli-reference.md), [snapshot format](docs/snapshot-format.md) |

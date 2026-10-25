@@ -151,10 +151,10 @@ export interface Incident {
 
 export interface IncidentEvent { id: number; at: string; kind: string; summary: string; payload: Record<string, unknown> }
 
-export interface SeriesPoint { t: string; v: number | null; n: number; known: number }
-export interface Series { metric: string; label?: string; aggregation: string; points: SeriesPoint[] }
+export interface SeriesPoint { gap?: boolean; t: string; v: number | null; n: number; known: number }
+export interface Series { last_sample_at?: string; collector?: string; metric: string; label?: string; aggregation: string; points: SeriesPoint[] }
 export interface Gap { collector: string; from: string; to: string; reason: string }
-export interface MetricsResponse { from: string; to: string; step_seconds: number; series: Series[]; gaps: Gap[] }
+export interface MetricsResponse { collectors?: Record<string, CollectorStatus>; annotations?: { id: number; title: string; opened_at: string; resolved_at?: string | null; severity: string }[]; annotations_truncated?: boolean; gaps_truncated?: boolean; collection_interval_seconds?: number; from: string; to: string; step_seconds: number; series: Series[]; gaps: Gap[] }
 
 // Blocking report (internal/report).
 export interface WaitingLock {
@@ -300,6 +300,8 @@ export interface QueryItem {
   toplevel: boolean
   /** 64-bit identifier, sent as a string to keep every digit. */
   queryid: string
+  /** Statement class: select, insert, update, delete, merge, copy, ddl, transaction, maintenance, utility, other. */
+  command: string
   query_text: string | null
   calls: number
   total_exec_ms: number
@@ -345,7 +347,7 @@ export interface QueryDetailResponse {
   from: string
   to: string
   step_seconds: number
-  buckets: { t: string; calls: number; total_exec_ms: number; rows: number; covered_seconds: number }[]
+  buckets: { gap?: boolean; t: string; calls: number; total_exec_ms: number; rows: number; covered_seconds: number }[]
   query_text_enabled: boolean
   text_included: boolean
   current: { from: string; to: string; totals: WindowTotals; mean_exec_ms: number | null; coverage: Coverage }
@@ -474,3 +476,69 @@ export interface HostResponse {
 }
 
 export type Thresholds = Record<string, number>
+
+export interface CommandTotals { command: string; calls: number; total_exec_ms: number; rows: number; statements: number; mean_exec_ms: number | null }
+export interface CommandBucket { t: string; command: string; calls: number; total_exec_ms: number; rows: number }
+export interface CommandsResponse {
+  from: string
+  to: string
+  step_seconds: number
+  commands: string[]
+  totals: CommandTotals[]
+  buckets: CommandBucket[]
+  /** Collection time per bucket: covered with no rows means zero activity; absent means unknown. */
+  coverage_buckets: { t: string; covered_seconds: number }[]
+  coverage: Coverage
+  monitoring_user: string
+  monitoring_hidden: boolean
+  available?: boolean
+  unavailable_reason?: string
+}
+
+export interface OverviewResponse {
+  target: Target
+  latest: Record<string, LatestValue>
+  connected: boolean
+  connect_error?: string | null
+  activity_at?: string
+  counts?: ActivityCounts
+  summary?: Report['analysis']['summary']
+  visibility_warnings?: Warning[]
+  host_configured?: boolean
+  host_error?: string | null
+  findings: FindingRow[]
+  open_incidents: Incident[]
+  open_incident_count: number
+}
+
+export interface TestResult {
+  ok: boolean
+  duration_ms: number
+  target: string
+  capabilities: Capabilities | null
+  checks: { name: string; status: string; detail?: string }[]
+  error: string | null
+  hint: string | null
+}
+
+export interface WorkspacePolicy {
+  target_id: number
+  metadata_enabled: boolean
+  data_enabled: boolean
+  sql_enabled: boolean
+  history_enabled: boolean
+  configured: boolean
+  updated_at: string
+}
+
+/** A bounded result from the workspace (catalog sections and table data). All values are text or null. */
+export interface GridResult {
+  columns: { name: string; type_oid: number }[]
+  rows: (string | null)[][]
+  truncated: boolean
+  cell_truncated: boolean
+  bytes: number
+  duration_ms: number
+  pagination?: string
+  next?: string
+}

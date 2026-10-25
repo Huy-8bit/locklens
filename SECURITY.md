@@ -13,42 +13,45 @@ only.
 
 ## Security model
 
-LockLens is a read-only observer that runs on an operator's machine and
-connects to a PostgreSQL server with credentials the operator provides.
+LockLens is a read-only observer. The CLI runs on an operator's machine; the
+server (`locklens server`) runs as a single-administrator web application that
+stores encrypted connection strings and collected data in its own PostgreSQL
+database. The full description is in [docs/security.md](docs/security.md).
 
-What LockLens does to protect you:
+In short:
 
 - **Read-only.** Connections set `default_transaction_read_only=on`, every
-  collection runs in a `READ ONLY` transaction, and there is no code to cancel,
-  terminate, or modify anything. Demo code that writes lives in `demo/` and is
-  checked not to be imported by the CLI.
-- **Credentials.** DSNs and passwords are never written to stdout, stderr,
-  logs, or snapshot files. Connection strings that cannot be parsed are never
-  echoed, because a malformed string cannot be redacted reliably. Other errors
-  pass through a redactor that replaces the exact DSN and password values,
-  including URL-encoded forms, rather than relying on pattern matching alone.
-- **Query text is opt-in** (`--include-query`) and length-limited.
-- **Terminal safety.** Strings chosen by database clients, such as
-  `application_name` and query text, are stripped of control characters and
-  bidirectional overrides before being printed, so they cannot inject terminal
-  escape sequences.
-- **TLS** behaviour follows the DSN and libpq conventions; LockLens never
-  disables or weakens it.
-- **Snapshot files** are written atomically with mode `0600`.
-- **Bounded load.** Small connection pool, server-side `statement_timeout` and
-  `lock_timeout`, a minimum `watch` interval, and `pg_blocking_pids()` called
-  only for waiting backends.
+  collection runs in a `READ ONLY` transaction with statement, lock, and idle
+  timeouts, and there is no code to cancel, terminate, or modify anything on a
+  monitored server. Code that writes (demo and lab) lives in `demo/` and is
+  checked not to be imported by `locklens`.
+- **Credentials.** DSNs are encrypted at rest with AES-256-GCM and a master key
+  from the environment, never returned by the API, and never written to logs,
+  exports, snapshots, or metric labels. Errors pass through a redactor that
+  removes exact secret values; unparsable DSNs are never echoed.
+- **Web application.** Loopback bind by default, bcrypt-hashed administrator
+  password, server-side sessions in HttpOnly `SameSite=Strict` cookies, CSRF
+  tokens plus Origin checks, a strict Content Security Policy, request size and
+  range limits, and generic error messages.
+- **SQL text** is opt-in in the CLI (`--include-query`); the server collects
+  it by default per target (it can be switched off) and excludes it from
+  exports unless explicitly requested. Table rows are readable only through a
+  separate, opt-in, SELECT-only role.
+- **Output safety.** Strings chosen by database clients are neutralised before
+  they reach a terminal and escaped in HTML.
 
 What you are responsible for:
 
+- Keep the server on loopback or behind TLS (set `LOCKLENS_COOKIE_SECURE=true`).
+- Generate a real `LOCKLENS_MASTER_KEY` and keep it out of version control and
+  separate from store backups.
+- Use least-privileged monitoring roles (`pg_read_all_stats`, never a
+  superuser) and TLS (`sslmode=verify-full`) over untrusted networks.
 - Prefer `LOCKLENS_DSN`, `PGPASSWORD`, or `~/.pgpass` over `--dsn`: command-line
   arguments are visible in the process list.
-- Use the least privileged role that meets your needs: a login role, plus
-  `pg_read_all_stats` for complete reports. Never a superuser just for LockLens.
-- Treat snapshot files and `--include-query` output as sensitive: they contain
-  user, database, and application names, client addresses, and possibly SQL.
-- Use `sslmode=verify-full` (with `sslrootcert`) when connecting over untrusted
-  networks.
+- Treat snapshot files, exports, and store backups as sensitive operational
+  data.
+- Never reuse the Docker lab's fake credentials and key.
 
 Known limitations relevant to security are listed in
 [docs/limitations.md](docs/limitations.md#security-considerations).

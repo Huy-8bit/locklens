@@ -34,7 +34,7 @@ export function onUnauthorized(fn: Listener): () => void {
 }
 
 interface ErrorBody {
-  error?: { code?: string; message?: string; fields?: Record<string, string>; request_id?: string }
+  error?: { code?: string; message?: string; fields?: Record<string, string>; position?: number; request_id?: string }
 }
 
 export async function api<T>(path: string, init: RequestInit & { json?: unknown } = {}): Promise<T> {
@@ -51,7 +51,8 @@ export async function api<T>(path: string, init: RequestInit & { json?: unknown 
   let res: Response
   try {
     res = await fetch(path, { ...init, method, headers, body, credentials: 'same-origin' })
-  } catch {
+  } catch (error) {
+    if (init.signal?.aborted) throw error
     throw new ApiError(0, 'network', 'Cannot reach the LockLens server.')
   }
   if (res.status === 204) {
@@ -71,7 +72,7 @@ export async function api<T>(path: string, init: RequestInit & { json?: unknown 
     if (res.status === 401 && !path.endsWith('/auth/login')) {
       unauthorizedListeners.forEach((fn) => fn())
     }
-    throw new ApiError(res.status, e?.code ?? 'http_error', e?.message ?? `Request failed with HTTP ${res.status}`, e?.fields ?? {}, e?.request_id ?? '')
+    throw new ApiError(res.status, e?.code ?? 'http_error', e?.message ?? `Request failed with HTTP ${res.status}`, { ...e?.fields, ...(e?.position ? { position: String(e.position) } : {}) }, e?.request_id ?? '')
   }
   return parsed as T
 }

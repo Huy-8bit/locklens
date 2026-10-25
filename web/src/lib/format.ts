@@ -1,126 +1,90 @@
-// Formatting helpers. Every function renders null/undefined as an explicit
-// "unknown" marker (or a supplied label) and never as zero.
+// Formatting helpers. null/undefined always render as "—" (unknown), never 0.
 
-export const UNKNOWN = 'unknown'
+export const UNKNOWN = '—'
 
-export function isKnown(v: number | null | undefined): v is number {
-  return typeof v === 'number' && Number.isFinite(v)
-}
+type N = number | null | undefined
 
-export function fmtNumber(v: number | null | undefined, digits = 0, empty = UNKNOWN): string {
-  if (!isKnown(v)) return empty
+const known = (v: N): v is number => v !== null && v !== undefined && Number.isFinite(v)
+
+export function num(v: N, digits = 0): string {
+  if (!known(v)) return UNKNOWN
   return v.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: 0 })
 }
 
-export function fmtRate(v: number | null | undefined, unit = '/s', empty = UNKNOWN): string {
-  if (!isKnown(v)) return empty
+/** Compact count: 1.2k, 3.4M. */
+export function compact(v: N): string {
+  if (!known(v)) return UNKNOWN
+  const a = Math.abs(v)
+  if (a >= 1e9) return `${(v / 1e9).toFixed(a >= 1e10 ? 0 : 1)}B`
+  if (a >= 1e6) return `${(v / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M`
+  if (a >= 1e4) return `${(v / 1e3).toFixed(0)}k`
+  if (a >= 1e3) return `${(v / 1e3).toFixed(1)}k`
+  return num(v, a < 10 ? 2 : a < 100 ? 1 : 0)
+}
+
+/** Per-second rate with a unit suffix. */
+export function rate(v: N, unit = '/s'): string {
+  if (!known(v)) return UNKNOWN
   if (v > 0 && v < 0.01) return `<0.01${unit}`
-  const digits = Math.abs(v) < 10 ? 2 : Math.abs(v) < 100 ? 1 : 0
-  return `${v.toLocaleString('en-US', { maximumFractionDigits: digits })}${unit}`
+  return `${compact(v)}${unit}`
 }
 
-export function fmtPercent(ratio: number | null | undefined, empty = UNKNOWN): string {
-  if (!isKnown(ratio)) return empty
-  const p = ratio * 100
-  return `${p.toLocaleString('en-US', { maximumFractionDigits: p < 10 ? 1 : 0 })}%`
+export function pct(v: N, digits = 1): string {
+  if (!known(v)) return UNKNOWN
+  return `${(v * 100).toFixed(digits)}%`
 }
 
-export function fmtBytes(v: number | null | undefined, empty = UNKNOWN): string {
-  if (!isKnown(v)) return empty
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']
-  let n = Math.abs(v)
+export function bytes(v: N): string {
+  if (!known(v)) return UNKNOWN
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let x = Math.abs(v)
   let i = 0
-  while (n >= 1024 && i < units.length - 1) {
-    n /= 1024
+  while (x >= 1024 && i < units.length - 1) {
+    x /= 1024
     i++
   }
-  const sign = v < 0 ? '-' : ''
-  return `${sign}${n.toLocaleString('en-US', { maximumFractionDigits: n < 10 ? 1 : 0 })} ${units[i]}`
+  return `${v < 0 ? '-' : ''}${x.toFixed(x >= 100 || i === 0 ? 0 : 1)} ${units[i]}`
 }
 
-export function fmtDuration(seconds: number | null | undefined, empty = UNKNOWN): string {
-  if (!isKnown(seconds)) return empty
-  const s = Math.max(0, seconds)
-  if (s < 1) return `${Math.round(s * 1000)} ms`
-  if (s < 60) return `${s < 10 ? s.toFixed(1) : Math.round(s)} s`
-  const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ${String(Math.floor(s % 60)).padStart(2, '0')}s`
+/** Milliseconds as a human duration (0.42 ms, 12 ms, 1.4 s, 3m 2s). */
+export function ms(v: N): string {
+  if (!known(v)) return UNKNOWN
+  if (v < 1) return `${v.toFixed(2)} ms`
+  if (v < 1000) return `${v.toFixed(v < 10 ? 1 : 0)} ms`
+  return seconds(v / 1000)
+}
+
+export function seconds(v: N): string {
+  if (!known(v)) return UNKNOWN
+  if (v < 1) return `${Math.round(v * 1000)} ms`
+  if (v < 60) return `${v.toFixed(v < 10 ? 1 : 0)} s`
+  const m = Math.floor(v / 60)
+  if (m < 60) return `${m}m ${Math.floor(v % 60)}s`
   const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ${String(m % 60).padStart(2, '0')}m`
-  return `${Math.floor(h / 24)}d ${String(h % 24).padStart(2, '0')}h`
+  if (h < 48) return `${h}h ${m % 60}m`
+  return `${Math.floor(h / 24)}d ${h % 24}h`
 }
 
-export function fmtMs(v: number | null | undefined, empty = UNKNOWN): string {
-  if (!isKnown(v)) return empty
-  if (v < 1) return `${v.toFixed(3)} ms`
-  if (v < 1000) return `${v.toFixed(v < 10 ? 2 : 1)} ms`
-  return fmtDuration(v / 1000)
+export function ago(iso: string | null | undefined, now = Date.now()): string {
+  if (!iso) return 'never'
+  const s = (now - Date.parse(iso)) / 1000
+  if (!Number.isFinite(s)) return UNKNOWN
+  if (s < 2) return 'just now'
+  return `${seconds(Math.max(0, s))} ago`
 }
 
-export type TimeZoneMode = 'local' | 'utc'
-
-let tzMode: TimeZoneMode = 'local'
-export function setTimeZoneMode(m: TimeZoneMode): void {
-  tzMode = m
-}
-export function getTimeZoneMode(): TimeZoneMode {
-  return tzMode
-}
-
-export function timeZoneLabel(mode: TimeZoneMode = tzMode): string {
-  if (mode === 'utc') return 'UTC'
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const offset = -new Date().getTimezoneOffset()
-  const sign = offset >= 0 ? '+' : '-'
-  const hh = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0')
-  const mm = String(Math.abs(offset) % 60).padStart(2, '0')
-  return `${tz} (UTC${sign}${hh}:${mm})`
-}
-
-export function fmtTime(iso: string | null | undefined, opts: { seconds?: boolean; date?: boolean } = {}, empty = '—'): string {
-  if (!iso) return empty
+export function time(iso: string | null | undefined, opts: { date?: boolean; seconds?: boolean } = {}): string {
+  if (!iso) return UNKNOWN
   const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return empty
-  const o: Intl.DateTimeFormatOptions = {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-    timeZone: tzMode === 'utc' ? 'UTC' : undefined,
-  }
-  if (opts.seconds !== false) o.second = '2-digit'
-  if (opts.date !== false) {
-    o.year = 'numeric'
-    o.month = '2-digit'
-    o.day = '2-digit'
-  }
-  return new Intl.DateTimeFormat('en-CA', o).format(d).replace(',', '')
+  if (Number.isNaN(d.getTime())) return UNKNOWN
+  const t = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: opts.seconds === false ? undefined : '2-digit' })
+  if (!opts.date) return t
+  return `${d.toLocaleDateString('en-CA')} ${t}`
 }
 
-export function fmtAgo(iso: string | null | undefined, now = Date.now(), empty = 'never'): string {
-  if (!iso) return empty
-  const s = (now - new Date(iso).getTime()) / 1000
-  return `${fmtDuration(s)} ago`
-}
-
-/** Formats a value given a unit hint used by evidence and charts. */
-export function fmtUnit(v: unknown, unit?: string): string {
-  if (v === null || v === undefined) return UNKNOWN
-  if (typeof v === 'number') {
-    switch (unit) {
-      case 's':
-        return fmtDuration(v)
-      case 'ms':
-        return fmtMs(v)
-      case 'bytes':
-        return fmtBytes(v)
-      case 'ratio':
-        return fmtPercent(v)
-      default:
-        return `${fmtNumber(v, 3)}${unit ? ` ${unit}` : ''}`
-    }
-  }
-  if (typeof v === 'boolean') return v ? 'yes' : 'no'
-  if (Array.isArray(v)) return v.join(', ')
-  if (typeof v === 'string') return v
-  return JSON.stringify(v)
+/** Age in seconds of an ISO timestamp relative to a reference ISO time. */
+export function ageOf(iso: string | null | undefined, ref: string | null | undefined): number | null {
+  if (!iso || !ref) return null
+  const a = Date.parse(ref) - Date.parse(iso)
+  return Number.isFinite(a) ? Math.max(0, a / 1000) : null
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"sync"
@@ -299,5 +300,77 @@ func TestFindingsSync(t *testing.T) {
 	res, _ := s.ListFindings(ctx, storage.FindingFilter{TargetID: tg.ID, Status: "resolved"})
 	if len(res) != 1 || res[0].ResolvedAt == nil {
 		t.Fatalf("missing findings must be resolved: %+v", res)
+	}
+}
+
+func TestSeriesAggregationAndGaps(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+	a := target(t, s, "series-alpha")
+	b := target(t, s, "series-beta")
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for idx, seconds := range []int{10, 30} {
+		v := float64(idx*20 + 10)
+		pts := []observe.Point{
+			{Metric: "xact.commit.per_s", Value: observe.F(v), IntervalSeconds: observe.F(float64(10 + idx*10))},
+			{Metric: "sessions.active", Value: observe.F(v)},
+			{Metric: "deadlocks.delta", Value: observe.F(v)},
+			{Metric: "db.total_size_bytes", Value: observe.F(40 - v)},
+			{Metric: "partial", Value: observe.F(v)},
+			{Metric: "legacy.per_s", Value: observe.F(v)},
+		}
+		if idx == 1 {
+			pts[4].Value = nil
+		}
+		if err := s.InsertPoints(ctx, a.ID, from.Add(time.Duration(seconds)*time.Second), pts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.InsertPoints(ctx, b.ID, from.Add(10*time.Second), []observe.Point{{Metric: "sessions.active", Value: observe.F(999)}}); err != nil {
+		t.Fatal(err)
+	}
+	names := []string{"xact.commit.per_s", "sessions.active", "deadlocks.delta", "db.total_size_bytes", "partial", "legacy.per_s", "absent"}
+	series, err := s.QuerySeries(ctx, a.ID, names, from, from.Add(time.Minute), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []float64{70.0 / 3, 30, 40, 10}
+	for i, v := range want {
+		if len(series[i].Points) != 1 || series[i].Points[0].V == nil || math.Abs(*series[i].Points[0].V-v) > 1e-9 {
+			t.Fatalf("%s: %+v", names[i], series[i])
+		}
+	}
+	if series[4].Points[0].V != nil || series[5].Points[0].V != nil || len(series[6].Points) != 0 {
+		t.Fatalf("unknown/legacy/absent values fabricated: %+v", series)
+	}
+	if err := s.InsertGap(ctx, a.ID, "activity", from.Add(15*time.Second), from.Add(20*time.Second), "test interruption"); err != nil {
+		t.Fatal(err)
+	}
+	series, err = s.QuerySeries(ctx, a.ID, []string{"sessions.active", "deadlocks.delta"}, from, from.Add(time.Minute), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !series[0].Points[0].Gap || series[0].Points[0].V != nil || series[1].Points[0].V == nil {
+		t.Fatalf("collector gap isolation broken: %+v", series)
+	}
+	points := make([]observe.Point, storage.MaxSeriesPoints+1)
+	for i := range points {
+		points[i] = observe.Point{Metric: "fanout", Label: fmt.Sprint(i), Value: observe.F(1)}
+	}
+	if err := s.InsertPoints(ctx, a.ID, from.Add(time.Second), points); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.QuerySeries(ctx, a.ID, []string{"fanout"}, from, from.Add(time.Minute), time.Minute); err != storage.ErrSeriesLimit {
+		t.Fatalf("unbounded labelled response: %v", err)
+	}
+	// Strict (from,to] bounds, exact-edge samples and cancelled work.
+	series, err = s.QuerySeries(ctx, a.ID, []string{"deadlocks.delta"}, from.Add(10*time.Second), from.Add(30*time.Second), 20*time.Second)
+	if err != nil || len(series[0].Points) != 1 || *series[0].Points[0].V != 30 || series[0].Points[0].T.Before(from.Add(10*time.Second)) {
+		t.Fatalf("range boundary: %+v %v", series, err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := s.QuerySeries(cancelled, a.ID, names, from, from.Add(time.Minute), time.Second); err == nil {
+		t.Fatal("cancelled query succeeded")
 	}
 }

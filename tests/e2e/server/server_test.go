@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -388,10 +389,15 @@ func TestTargetLifecycleBlockingIncidentAndExport(t *testing.T) {
 		}
 		return false
 	})
+	// SQL text is collected by default (it can be switched off per target).
+	withQuery := 0
 	for _, sess := range act.Report.Snapshot.Sessions {
 		if _, ok := sess["query"]; ok {
-			t.Error("query text must not be collected by default")
+			withQuery++
 		}
+	}
+	if withQuery == 0 {
+		t.Error("query text should be collected by default")
 	}
 	var open []incident
 	waitFor(t, 90*time.Second, "blocking incident opened", func() bool {
@@ -555,6 +561,7 @@ func TestPgStatStatementsAvailable(t *testing.T) {
 			QueryID string  `json:"queryid"`
 			User    string  `json:"username"`
 			Calls   int64   `json:"calls"`
+			Command string  `json:"command"`
 			Text    *string `json:"query_text"`
 		} `json:"items"`
 	}
@@ -564,12 +571,16 @@ func TestPgStatStatementsAvailable(t *testing.T) {
 			var v int
 			_ = conn.QueryRow(ctx, "SELECT v FROM srv_pgss WHERE id = $1", i+1).Scan(&v)
 		}
-		inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/queries?range=15m&include_text=true", tv.ID), nil, 200, &list)
+		inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/queries?range=15m", tv.ID), nil, 200, &list)
 		for _, it := range list.Items {
 			if it.User == "demo_app" && it.Calls >= 50 {
 				found = true
-				if it.Text != nil {
-					t.Error("text must not be returned when the target has not opted in")
+				// SQL text is collected and returned by default.
+				if it.Text == nil || !strings.Contains(*it.Text, "srv_pgss") {
+					t.Errorf("normalised SQL text expected by default, got %v", it.Text)
+				}
+				if it.Command != "select" {
+					t.Errorf("command = %q, want select", it.Command)
 				}
 				if _, err := fmt.Sscan(it.QueryID, new(int64)); err != nil {
 					t.Errorf("queryid %q is not a decimal string", it.QueryID)
@@ -581,6 +592,34 @@ func TestPgStatStatementsAvailable(t *testing.T) {
 	if !found {
 		t.Fatalf("demo_app statements never appeared in the workload view: %+v", list.Items)
 	}
+	// include_text=false omits the text.
+	inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/queries?range=15m&include_text=false", tv.ID), nil, 200, &list)
+	for _, it := range list.Items {
+		if it.Text != nil {
+			t.Error("include_text=false must omit SQL text")
+		}
+	}
+	// Workload by command class.
+	var cmds struct {
+		Totals []struct {
+			Command string `json:"command"`
+			Calls   int64  `json:"calls"`
+		} `json:"totals"`
+		Coverage []struct {
+			Covered float64 `json:"covered_seconds"`
+		} `json:"coverage_buckets"`
+	}
+	inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/queries/commands?range=15m", tv.ID), nil, 200, &cmds)
+	var selects int64
+	for _, c := range cmds.Totals {
+		if c.Command == "select" {
+			selects = c.Calls
+		}
+	}
+	if selects < 50 || len(cmds.Coverage) == 0 {
+		t.Errorf("command breakdown: %+v", cmds)
+	}
+	inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/queries?command=bogus", tv.ID), nil, 400, nil)
 }
 
 func TestPrimaryAndStandby(t *testing.T) {
@@ -654,4 +693,65 @@ func TestOutageAndRecovery(t *testing.T) {
 		inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/gaps?range=1h", tv.ID), nil, 200, &gaps)
 		return len(gaps.Gaps) > 0
 	})
+}
+
+func TestMetricsTimeRangeAPI(t *testing.T) {
+	dsn := storeDSN(t)
+	inst := start(t, dsn, freePort(t))
+	target := inst.addTarget(t, "series-api", observerDSN, map[string]any{"enabled": false})
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := from.Add(time.Hour)
+	for _, sample := range []struct {
+		seconds       int
+		value, weight float64
+	}{{10, 10, 10}, {30, 30, 20}, {90, 0, 10}} {
+		_, err = conn.Exec(ctx, `INSERT INTO metric_points(target_id,metric,label,ts,value,interval_seconds) VALUES($1,'xact.commit.per_s','',$2,$3,$4)`, target.ID, from.Add(time.Duration(sample.seconds)*time.Second), sample.value, sample.weight)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = conn.Exec(ctx, `INSERT INTO incidents(target_id,target_name,rule_id,rule_version,severity,title,state,opened_at,last_seen_at,source,trigger_config) VALUES($1,'series-api','test',1,'warning','Time-range annotation','open',$2,$2,'recorder','{}')`, target.ID, from.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := fmt.Sprintf("/api/v1/targets/%d/metrics?names=xact.commit.per_s&from=%s&to=%s&step=1m&max_points=60", target.ID, from.Format(time.RFC3339), to.Format(time.RFC3339))
+	var data struct {
+		From, To time.Time
+		Step     float64 `json:"step_seconds"`
+		Series   []struct {
+			Agg    string `json:"aggregation"`
+			Points []struct {
+				T time.Time `json:"t"`
+				V *float64  `json:"v"`
+			}
+		}
+		Annotations []struct{ Title string }
+	}
+	inst.do(t, "GET", path, nil, 200, &data)
+	if data.Step != 60 || !data.From.Equal(from) || !data.To.Equal(to) || len(data.Series) != 1 || len(data.Series[0].Points) != 2 || data.Series[0].Agg != "time_weighted_mean" {
+		t.Fatalf("wrong bounds/aggregation: %+v", data)
+	}
+	if math.Abs(*data.Series[0].Points[0].V-70.0/3) > 1e-9 || *data.Series[0].Points[1].V != 0 {
+		t.Fatal("rate/zero semantics lost")
+	}
+	if len(data.Annotations) != 1 || data.Annotations[0].Title != "Time-range annotation" {
+		t.Fatal("missing incident annotation")
+	}
+	for _, suffix := range []string{"&max_points=0", "&step=0s", "&from=invalid", "&from=2025-01-01T00:00:00Z"} {
+		// Set replaces existing parameters rather than relying on duplicate-key parsing.
+		u, _ := url.Parse(path)
+		bad, _ := url.ParseQuery(strings.TrimPrefix(suffix, "&"))
+		q := u.Query()
+		for k, v := range bad {
+			q.Set(k, v[0])
+		}
+		u.RawQuery = q.Encode()
+		inst.do(t, "GET", u.String(), nil, 400, nil)
+	}
 }

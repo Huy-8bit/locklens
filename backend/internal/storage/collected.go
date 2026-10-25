@@ -19,13 +19,14 @@ func (s *Store) InsertPoints(ctx context.Context, targetID int64, ts time.Time, 
 	metrics := make([]string, len(points))
 	labels := make([]string, len(points))
 	values := make([]*float64, len(points))
+	intervals := make([]*float64, len(points))
 	for i, p := range points {
-		metrics[i], labels[i], values[i] = p.Metric, p.Label, p.Value
+		metrics[i], labels[i], values[i], intervals[i] = p.Metric, p.Label, p.Value, p.IntervalSeconds
 	}
 	_, err := s.pool.Exec(ctx, `
-INSERT INTO metric_points (target_id, metric, label, ts, value)
-SELECT $1, m, l, $2, v FROM unnest($3::text[], $4::text[], $5::float8[]) AS u(m, l, v)
-ON CONFLICT DO NOTHING`, targetID, ts.UTC(), metrics, labels, values)
+INSERT INTO metric_points (target_id, metric, label, ts, value, interval_seconds)
+SELECT $1, m, l, $2, v, i FROM unnest($3::text[], $4::text[], $5::float8[], $6::float8[]) AS u(m, l, v, i)
+ON CONFLICT DO NOTHING`, targetID, ts.UTC(), metrics, labels, values, intervals)
 	return s.red.Error(err)
 }
 
@@ -50,6 +51,7 @@ func (s *Store) InsertStatements(ctx context.Context, targetID int64, c observe.
 			queryids            []int64
 			datnames, usernames []string
 			texts               []*string
+			commands            []string
 		)
 		for _, d := range c.Deltas {
 			text := d.Text
@@ -64,19 +66,25 @@ func (s *Store) InsertStatements(ctx context.Context, targetID int64, c observe.
 			datnames = append(datnames, d.DatName)
 			usernames = append(usernames, d.UserName)
 			texts = append(texts, text)
+			cmd := d.Command
+			if cmd == "" {
+				cmd = observe.CommandOther
+			}
+			commands = append(commands, cmd)
 		}
 		if len(c.Deltas) > 0 {
 			rows, err := tx.Query(ctx, `
 INSERT INTO query_identities (target_id, server_major, dbid, userid, toplevel, queryid, datname, username,
-    query_text, first_seen, last_seen)
-SELECT $1, m, d::oid, u::oid, t, q, dn, un, qt, $10, $10
-FROM unnest($2::int[], $3::bigint[], $4::bigint[], $5::bool[], $6::bigint[], $7::text[], $8::text[], $9::text[])
-     AS x(m, d, u, t, q, dn, un, qt)
+    query_text, first_seen, last_seen, command)
+SELECT $1, m, d::oid, u::oid, t, q, dn, un, qt, $10, $10, c
+FROM unnest($2::int[], $3::bigint[], $4::bigint[], $5::bool[], $6::bigint[], $7::text[], $8::text[], $9::text[], $12::text[])
+     AS x(m, d, u, t, q, dn, un, qt, c)
 ON CONFLICT (target_id, server_major, dbid, userid, toplevel, queryid) DO UPDATE
 SET last_seen = EXCLUDED.last_seen, datname = EXCLUDED.datname, username = EXCLUDED.username,
+    command = CASE WHEN EXCLUDED.command = 'other' THEN query_identities.command ELSE EXCLUDED.command END,
     query_text = CASE WHEN $11::bool THEN coalesce(EXCLUDED.query_text, query_identities.query_text) ELSE NULL END
 RETURNING id, server_major, dbid, userid, toplevel, queryid`,
-				targetID, majors, dbids, userids, toplevels, queryids, datnames, usernames, texts, c.At.UTC(), includeText)
+				targetID, majors, dbids, userids, toplevels, queryids, datnames, usernames, texts, c.At.UTC(), includeText, commands)
 			if err != nil {
 				return err
 			}

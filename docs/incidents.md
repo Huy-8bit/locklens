@@ -105,7 +105,7 @@ LockLens.
 **Privacy.** Exports never contain DSNs or passwords. Query text (session
 queries in snapshots, statement text) is removed unless explicitly requested
 (`include_query=true`, `--include-query`, or the checkbox), and it only
-exists for targets that opted in to query text collection. All text is HTML
+exists for targets that collect SQL text. All text is HTML
 escaped; control characters are neutralised.
 
 **Import.** **Incidents → Import an exported incident** (or `POST

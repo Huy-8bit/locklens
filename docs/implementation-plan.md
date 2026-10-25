@@ -45,7 +45,7 @@ harness, and the QA round are complete. Evidence: [test-report.md](test-report.m
 - Single admin, bcrypt password hash, server-side sessions in the store
   (HttpOnly SameSite=Strict cookie), CSRF token header plus Origin check.
 - Frontend: React + TypeScript + Vite, React Router, TanStack Query,
-  Recharts, Tailwind CSS; built assets embedded in the Go binary.
+  Apache ECharts, CodeMirror, Tailwind CSS; built assets embedded in the Go binary.
 
 ### Milestones
 
@@ -123,3 +123,69 @@ command; TLS and a real node_exporter were not exercised.
 - Release binaries
 - Code-splitting the UI bundle (about 800 KB minified, 233 KB gzip)
 - Master key rotation command; multiple users and roles
+
+
+## Investigation workspace audit (2026-10-24)
+
+This checklist tracks complete paths through collection, storage, APIs, UI and tests.
+Existing uncommitted chart/lab changes are retained. No commit or push is authorized.
+
+| Area | Audit category | Work and verification |
+| --- | --- | --- |
+| Monorepo, authentication, target management | Existing and previously verified | Preserve existing root commands and encrypted collector credentials |
+| Charts, global timeline, gaps, blocking incidents | Existing and previously verified | Preserve interaction; add available-history bounds |
+| Fleet dashboard | Existing, needs improvement | Summary charts, comparisons, ranked pressure, findings and topology |
+| Logical tuple activity | Missing | Extend cumulative counters and elapsed-time rates through dashboard |
+| Database catalogs / actual table data | Missing | Dedicated policy/credentials, bounded on-demand queries and grid |
+| SQL workspace | Missing | Read-only connection, cursor grammar, limits, owned cancellation, plans |
+| Workspace policy / audit | Missing | Default-deny capabilities, encrypted DSN, safe metadata-only audit |
+| Live activity / application map | Existing samples, needs presentation | Explicit sampled semantics and filters, no invented throughput |
+| Replication topology | Missing | Explicit mapping provenance plus separate streaming evidence |
+| Relational lab | Missing | Customers, products, orders, items, JSONB and investigation role |
+| Physical host metrics | Unavailable without exporter | Never infer CPU or disk from PostgreSQL execution time or buffers |
+| Query calls by statement type / application throughput | Unavailable from current aggregate source | Do not guess classification or per-application execution rates |
+| Browser / integration coverage | Needs extension | Real database flows and restricted / oversized results |
+
+Verification status and remaining limits are recorded in `workspace-verification.md` after execution.
+
+### Completed implementation and evidence
+
+- [x] Fleet comparisons, source coverage, target rankings, findings, topology and shared-range charts.
+- [x] Logical tuple counters → interval-aware storage → metrics API → target panels and real lab evidence.
+- [x] Catalogs, bounded data grid, safe filtering/sorting, keyset/offset pages and page exports.
+- [x] Dedicated encrypted investigation credentials; default-deny capabilities and safe audit metadata.
+- [x] SQL editor, read-only execution, explicit selection, owned cancellation, limits, history policy and EXPLAIN tree.
+- [x] Live activity filters and application/session grouping with sampling limitations.
+- [x] Explicit replication mapping/provenance, corroborated streaming state, node details and viewport controls.
+- [x] Available-history fitting, source/aggregation information and fullscreen historical charts.
+- [x] Relational local lab, CRUD verification, observed tuple/WAL/statement activity and resolved blocking incidents.
+- [x] Backend/frontend/integration/Docker/browser checks and screenshots; see `workspace-verification.md`.
+- [x] Diff/ignore review; unrelated `SECURITY.md` preserved; no commit or push.
+
+Unavailable and deliberately unimplemented areas are enumerated in the verification
+report. These include absent exporters/version-specific sources, per-application
+throughput, multi-user RBAC, automatic cluster discovery and metadata navigation beyond
+the bounded catalog cap. They are not represented as working empty panels.
+
+## UI rebuild (2026-10-25)
+
+Goal: a UI that shows what each database is doing now, its metrics, how many
+queries of each type run and how they behave, and its data.
+
+- [x] Backend: statement command classification at collection time
+  (`observe.ClassifyCommand`, migration `0004`), `GET /queries/commands` with
+  per-bucket coverage, `command` filter on the statement list
+- [x] SQL text collected by default (per-target switch kept); API returns it
+  unless `include_text=false`
+- [x] Lab: separate `locklens_reader` role, demo `shop` schema, bootstrap of
+  data-explorer access, `shop` mixed-workload scenario
+- [x] Frontend rewritten: Overview, Live activity, Queries (by type), Data
+  explorer (structure and rows, no SQL editor), Replication, Alerts, Incident,
+  All instances, Settings (instances, thresholds, incident import, store size)
+- [x] Validated categorical palette, one axis per chart, unknown never zero
+- [x] Unit tests (classifier, command series, pages with axe), make check
+- [x] Screenshot review: 14 pages × light/dark × 1440/390 px, no console
+  errors, failed requests, or overflow
+- [x] Integration harness (14.24, 18.6) and browser E2E for the new UI (see
+  [test-report.md](test-report.md#ui-rebuild-2026-10-25))
+- [x] axe-core with color contrast on every page in both themes

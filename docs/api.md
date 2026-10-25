@@ -30,8 +30,8 @@ The API is designed for the bundled UI on the same origin. It is versioned
 - **Unknown values**: counters that could not be computed (first sample,
   restart, stats reset, gap) are `null`, never `0`.
 - **Credentials and query text**: DSNs and passwords never appear in
-  responses. Query text appears only when the target opted in **and** the
-  request asks for it (`include_text=true`, or the session sees it in live
+  responses. SQL text appears when the target collects it (the default) and
+  the request does not opt out (`include_text=false`), and in live
   activity of an opted-in target).
 
 ## Operational endpoints (no authentication)
@@ -65,7 +65,7 @@ Series: `locklens_collect_duration_seconds{collector}`,
 | --- | --- |
 | `GET /api/v1/fleet` | All targets with status, latest key metrics, and counts of open incidents and current findings. |
 | `GET /api/v1/targets` | Targets with status. |
-| `POST /api/v1/targets` | Create. Body: `name`, `description`, `dsn`, `enabled`, `interval_seconds`, `max_connections`, `query_text_enabled`, `node_exporter_url`. `201` with the target; `422` with `fields`; `409` on a duplicate name. |
+| `POST /api/v1/targets` | Create. Body: `name`, `description`, `dsn`, `enabled`, `interval_seconds`, `max_connections`, `query_text_enabled` (default `true`), `node_exporter_url`. `201` with the target; `422` with `fields`; `409` on a duplicate name. |
 | `POST /api/v1/targets/test` | Test a DSN without saving it. Body `{"dsn"}`. |
 | `GET /api/v1/targets/{id}` | One target. |
 | `PUT /api/v1/targets/{id}` | Update (same body as create; an empty `dsn` keeps the stored one). Switching `query_text_enabled` off deletes the target's stored statement texts. |
@@ -89,6 +89,7 @@ A target's `status` holds `state` (`pending`, `healthy`, `degraded`,
 | `GET /api/v1/targets/{id}/blocking/snapshots` | 24h | Stored activity snapshots (`?blocking=true` for those with blocking; `limit` ≤ 1000). |
 | `GET /api/v1/targets/{id}/blocking/snapshots/{sid}` | | One stored snapshot rendered as a report. |
 | `GET /api/v1/targets/{id}/queries` | 1h | Workload from pg_stat_statements; see below. |
+| `GET /api/v1/targets/{id}/queries/commands` | 1h | Workload by statement command class (select, insert, update, delete, merge, copy, ddl, transaction, maintenance, utility, other): window totals per class (`calls`, `total_exec_ms`, `rows`, `statements`, `mean_exec_ms`), per-bucket sums per class (`buckets`), the statement-collection time per bucket (`coverage_buckets`; a covered bucket without rows had no statements, a missing one is unknown), and overall `coverage`. `include_monitoring=true` includes the monitoring role. |
 | `GET /api/v1/targets/{id}/queries/{identity_id}` | 1h | One query identity: buckets over time, current vs. previous equal window, comparison, coverage. |
 | `GET /api/v1/targets/{id}/tables` | | Table/vacuum health, vacuum progress, long transactions (live or last stored). |
 | `GET /api/v1/targets/{id}/replication` | | Role, replicas with LSN lags and time-lag fields, slots with retained WAL, standby receiver state, archiver. |
@@ -107,7 +108,8 @@ A target's `status` holds `state` (`pending`, `healthy`, `degraded`,
 | `order` | `desc` (default) or `asc`. |
 | `compare=true` | Adds the previous window of equal length and a per-query comparison with flags. |
 | `q` | Filter on database, user, query ID, and (when included) text; ≤ 200 characters. |
-| `include_text=true` | Include text if the target opted in. |
+| `command` | Restrict to one command class (see `/queries/commands`). |
+| `include_text=false` | Omit SQL text (returned by default when the target collects it). |
 | `include_monitoring=true` | Include statements run by the target's monitoring user (hidden by default). |
 
 The response includes `coverage` (seconds of the window actually covered by
@@ -124,7 +126,7 @@ are strings (64-bit values do not fit JavaScript numbers). See
 | `GET /api/v1/incidents/{id}` | Incident and linked findings. |
 | `GET /api/v1/incidents/{id}/events` | Evidence timeline; `after` (event ID) and `limit` for incremental loading. |
 | `POST /api/v1/incidents/{id}/acknowledge` | Body `{"note"}` (optional). Adds metadata only; evidence is never changed. |
-| `GET /api/v1/incidents/{id}/export?format=json\|html` | Download. Query text is removed unless `include_query=true` (and only text that was collected under opt-in exists at all). |
+| `GET /api/v1/incidents/{id}/export?format=json\|html` | Download. Query text is removed unless `include_query=true` (and only text that the target collected exists at all). |
 | `POST /api/v1/incidents/import` | Upload an exported JSON file (≤ 10 MiB, validated); stored as a read-only incident with `source: import`. |
 
 See [incidents.md](incidents.md) for the format.
@@ -150,3 +152,77 @@ curl -s -b jar -H "X-CSRF-Token: $csrf" -H 'Content-Type: application/json' \
   -d '{"name":"orders","dsn":"postgres://observer@db:5432/orders?sslmode=verify-full"}' \
   $base/api/v1/targets
 ```
+
+## Time-series resolution and aggregation
+
+`GET /api/v1/targets/{id}/metrics` accepts `names` (1–20 comma-separated metric
+names), `from` and `to` (RFC 3339), or `range` (a Go duration). Ranges are ordered
+and bounded to 31 days. The interval is **(from, to]**. `step` is an optional minimum
+Go duration from `1s` to `744h`; `max_points` is 2–1000 per series (default 400).
+The server raises the step to satisfy the cap and the slowest requested metric collector interval (falling back
+to the target base cadence while collector status is unavailable).
+It returns the actual `step_seconds`. Buckets are anchored to `from`; samples
+exactly at a bucket boundary belong to the preceding bucket.
+
+Response fields include `series`, `gaps`, `collectors` (interval, enabled state,
+last success and error), `collection_interval_seconds` (target base cadence),
+and incident `annotations` overlapping the range. Each series includes
+`aggregation`, `collector`, `last_sample_at`, and points `{t,v,n,known,gap?}`.
+`last_sample_at` is the most recent source sample inside the requested window,
+not the bucket start. Annotations are capped at 200 with
+`annotations_truncated`; gaps are capped at 200 with a conservative
+`gaps_truncated` flag. Gap suppression in SQL is independent of that display cap.
+
+| Metric kind | Bucket aggregation |
+| --- | --- |
+| Interval counter deltas (`.delta`) | Sum |
+| Rates (`.per_s`) | `sum(rate * elapsed_seconds) / sum(elapsed_seconds)` |
+| Sessions, connections, blocking, transaction ages, lag, utilization | Maximum, preserving pressure peaks |
+| Database/memory sizes and other gauges | Last observation |
+| `cache.hit_ratio` | Mean of measured interval ratios, explicitly not a global hit/request ratio |
+| Statement calls / execution time | Sum; mean execution time is summed time / summed calls |
+
+Collector counter derivation rejects restart/reset, counter decreases, and
+excessive gaps before storage. Migration 0002 stores actual elapsed intervals
+for new rate samples. Older rate samples without these intervals yield unknown
+rate buckets; no guessed weights or migration backfill are applied. Interval
+values are attributed to the bucket containing their sample's end timestamp;
+they are not interpolated or split across bucket boundaries.
+
+If any source value in a bucket is unknown, or its collector has a recorded gap
+intersecting that bucket, `v` is null. `n` and `known` still describe raw samples;
+`gap` identifies a recorded interruption. An absent bucket has no point. A real
+zero has `v: 0` and must remain distinguishable from all three cases.
+
+The metric query has a 15-second database deadline and a total 12,000-point
+response limit across metrics and labels. Excess cardinality returns HTTP 422
+with code `series_limit`; request fewer metrics or a coarser step. Invalid bounds
+return HTTP 400. PostgreSQL work observes request cancellation. No arbitrary
+SQL fragments are accepted for aggregation.
+
+Query-detail buckets also support `step` / `max_points`, retain null rendering
+across statement collector gaps, and use the same anchored interval convention.
+Neither endpoint derives percentiles from aggregate statement counters.
+
+## Opt-in investigation
+
+All endpoints below require the administrator session; mutations require CSRF.
+Responses use `Cache-Control: no-store`. Credentials, SQL and data are request bodies,
+never URL query strings. See [execution and permissions](investigation-workspace.md).
+
+- `GET/PUT /api/v1/targets/{id}/workspace/policy`: capabilities (`metadata_enabled`,
+  `data_enabled`, `sql_enabled`, `history_enabled`) and optional write-only `dsn` on PUT.
+- `POST /api/v1/targets/{id}/workspace/run`: `action` is `metadata`, `data`, `sql` or
+  `explain`; every request needs a unique `request_id` (8–80 characters).
+  Metadata uses `kind` (`databases`, `schemas`, `relations`, `detail`), `schema`, `relation`.
+  SQL uses `sql` and `schema`. Data uses a `data` object with `schema`, `relation`,
+  `columns`, `sort`, `desc`, `filter_column`, `filter_op`, `filter_value`, `limit`,
+  `offset` and optional primary-key `after` cursor.
+- `POST /api/v1/targets/{id}/workspace/cancel`: owned `request_id`; returns `cancelled`.
+- `GET /api/v1/targets/{id}/history-bounds`: first/last stored metric timestamps.
+- `GET/PUT /api/v1/topology`: mappings with `primary_id`, `standby_id`,
+  `application_name`, `provenance`. `DELETE /api/v1/topology/{standby_id}` removes one.
+
+Result grids expose columns (`name`, PostgreSQL `type_oid`), text/null rows, bytes,
+duration, result/cell truncation flags, pagination strategy and optional next cursor.
+Expected errors omit raw PostgreSQL message/detail and include safe code/position.

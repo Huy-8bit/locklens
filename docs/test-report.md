@@ -3,11 +3,55 @@
 What was run, on what, and with which result. Test design:
 [testing.md](testing.md). Nothing below is marked PASS that was not run.
 
-- **Execution date:** 2026-10-24
+- **Execution date:** 2026-10-24 (phase 2), 2026-10-25 (UI rebuild, first section)
 - **Code under test:** working tree on top of commit `db0d42a` (phase 2 not
   yet committed)
 - **Scope:** phase 2 (monitoring server, UI, lab) in the first part; the
   earlier phase 1 CLI QA run is kept as an appendix.
+
+## UI rebuild (2026-10-25)
+
+The web UI was deleted and rebuilt around "what is this database doing now":
+Overview, Live activity, Queries (by statement type), Data explorer,
+Replication, Alerts, All instances, Settings. The backend gained statement
+command classification (migration `0004`), `GET /queries/commands`,
+SQL text collection on by default, and lab bootstrap of the data explorer
+(separate `locklens_reader` role, demo `shop` schema, `shop` scenario).
+
+| Check | Result |
+| --- | --- |
+| `make check` (gofmt, vet incl. integration tags, separation, unit, race) | PASS |
+| Frontend typecheck, ESLint, Vitest (12 tests incl. axe on 4 pages) | PASS |
+| Frontend production build | PASS (pages lazy-loaded; app 333 KB, charts chunk 510 KB before gzip) |
+| Classifier unit tests (30 statements, malformed input) | PASS |
+| Live lab (PostgreSQL 18.6, fresh volumes): migrations 1–4, bootstrap of data access for both lab targets, `shop` traffic classified as select/insert/update/delete/transaction/ddl/maintenance via the API | PASS (observed) |
+| Screenshots of 14 pages, desktop light and dark | PASS: no console errors, no failed requests, no horizontal overflow |
+| Screenshots at 390 px, light and dark | PASS after fixes (14 pages): no console errors, failed requests, or overflow |
+| axe-core with color contrast, 12 pages + login, light and dark, live lab | PASS after fixes |
+| Integration harness, PostgreSQL 14.24 and 18.6 (CLI, postgres, storage, workspace, incidents, server suites; server tests updated for SQL text by default and the command breakdown) | PASS (6 packages per version) |
+| Browser E2E rewritten for the new UI (`make e2e`, no API mocks) | PASS (1 test, 12 steps, 47 s) |
+
+Found and fixed during the rebuild:
+
+- rates by type treated quiet buckets as unknown (the backend now returns
+  per-bucket coverage, so a covered bucket without statements is zero);
+- the explorer issued more concurrent workspace requests than the server
+  allows, producing 429s (client-side queue of two per target, retry on 429);
+- horizontal overflow at 390 px: the breakdown table, and a visually hidden
+  table-header label positioned against the page instead of its table;
+- color contrast below 4.5:1: white on the accent button, the light muted text
+  on the page background, and the dark muted text on a selected row (new
+  `--accent`, `--accent-fill`, and muted values, measured);
+- an invalid `<dl>` structure on All instances;
+- E2E selectors that matched the hidden instance `<option>`, and contrast
+  measured during the 150 ms theme transition.
+
+The local Docker engine (OrbStack) stopped responding for a while during an
+OrbStack self-update; the checks above were run after it recovered.
+
+Not run for the rebuild: the 15.19, 16.15, and 17.11 integration runs (the
+earlier phase 2 matrix passed on all five versions before these changes), the
+performance smoke check, and GitHub Actions (nothing pushed).
 
 ## Phase 2 summary
 

@@ -42,8 +42,12 @@ These credentials, the database passwords, and the master key in
 [deploy/compose.yaml](../deploy/compose.yaml) are fake, local-only lab values.
 Never use them elsewhere.
 
-The **Fleet** page shows `lab-primary` and `lab-standby`. Within about 20
-seconds both should be `healthy`, with charts filling as samples arrive.
+You land on the **Overview** of `lab-primary`; **All instances** lists it and
+`lab-standby`. Within about 20 seconds both should be `healthy`, with current
+values and charts filling as samples arrive. The lab primary also contains a
+small demo shop (`shop` schema: customers, products, orders, order_items) that
+you can browse under **Data explorer**; browsing uses a separate SELECT-only
+role that the lab configures for you.
 
 ### 3. Run scenarios
 
@@ -62,14 +66,15 @@ make lab-stop                          # end every lab session and undo lab chan
 | Scenario | Duration | What happens | Where to look | Expected result (demo thresholds) |
 | --- | --- | --- | --- | --- |
 | `healthy` | 10 min | Light reads and small updates | Overview, Queries | Charts with activity, no findings |
-| `row-blocking` | 3 min | A updates a row and keeps working; B waits (A → B) | Blocking, Sessions | `blocking.long_chain` incident after ~20 s |
-| `chain` | 3 min | A → B → C on two rows | Blocking | Tree with root A blocking 2 in total; incident |
-| `idle-blocker` | 3 min | A stays idle in transaction holding a row lock; B and C wait | Blocking, Sessions | Critical `blocking.idle_in_tx_blocker` incident; `transactions.long` after 60 s |
+| `shop` | 10 min | Mixed shop traffic: product and order reads, new orders, status updates, deletes of cancelled orders (~40 statements/s) | Queries, Overview | SELECT, INSERT, UPDATE, DELETE, and transaction control each visible per type over time |
+| `row-blocking` | 3 min | A updates a row and keeps working; B waits (A → B) | Live activity | `blocking.long_chain` incident after ~20 s |
+| `chain` | 3 min | A → B → C on two rows | Live activity | Tree with root A blocking 2 in total; incident |
+| `idle-blocker` | 3 min | A stays idle in transaction holding a row lock; B and C wait | Live activity | Critical `blocking.idle_in_tx_blocker` incident; `transactions.long` after 60 s |
 | `connection-pressure` | 3 min | Idle connections up to ~92% of available slots | Overview | `connections.pressure` incident |
 | `regression` | 6 min | A query runs with an index, then the index is dropped (restored at the end) | Queries (compare windows) | `queries.mean_regression` incident after the second phase starts |
 | `temp-files` | 5 min | Sorts with `work_mem=64kB` spill to temp files | Overview (temp files) | `temp_files.increase` finding |
 | `replication` | 4 min | Standby replay paused, an inactive slot created, WAL written | Replication (both targets) | `replication.slot_retained_wal` incident, `replication.replica_lag` findings |
-| `outage` | 60 s | `make lab-outage` stops the primary, then starts it again | Fleet, Overview, gaps | `lab-primary` becomes `unreachable`, then recovers; the gap is shown in charts |
+| `outage` | 60 s | `make lab-outage` stops the primary, then starts it again | All instances, Overview | `lab-primary` becomes `unreachable`, then recovers; the gap is shown in charts |
 
 Timings are approximate and assume demo mode (`LOCKLENS_DEMO_MODE=true`),
 which lowers thresholds so findings appear within minutes. Production
@@ -77,12 +82,12 @@ defaults are deliberately slower ([rules.md](rules.md)).
 
 ### 4. Investigate an incident
 
-1. **Incidents** lists recorded incidents; open one.
+1. **Alerts** lists the instance's incidents and current findings; open an incident.
 2. The timeline shows pre-trigger samples, the trigger finding with evidence,
    blocking snapshots ("Show blocking graph"), and how it resolved.
 3. **Export HTML report** downloads a standalone file that opens offline;
    **Export JSON** is the machine-readable form (import it on another
-   LockLens instance under **Incidents**).
+   LockLens instance under **Settings → Import an incident**).
 
 ### 5. Optional: host metrics
 
@@ -90,7 +95,7 @@ defaults are deliberately slower ([rules.md](rules.md)).
 make up-host
 ```
 
-starts node_exporter as well. In **Settings → lab-primary**, set the
+starts node_exporter as well. In **Settings → lab-primary → Edit**, set the
 node_exporter URL to `http://node-exporter:9100/metrics`. On Docker Desktop
 and similar, it reports the Linux VM's CPU and memory, not your computer's.
 
@@ -150,7 +155,7 @@ bin/locklens server
 ```
 
 Open <http://127.0.0.1:8080>, sign in as `admin`, and add targets under
-**Settings → Add target**. **Test connection** shows the version, visibility,
+**Settings → Add instance**. **Test connection** shows the version, visibility,
 and whether `pg_stat_statements` is usable before you save.
 
 Next: [configuration.md](configuration.md) for all settings,

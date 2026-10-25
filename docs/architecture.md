@@ -97,7 +97,7 @@ flowchart LR
 | `backend/internal/obs` | Prometheus-format metrics with bounded labels |
 | `backend/internal/retention` | Periodic cleanup loop |
 | `backend/internal/webui` | Embedded UI assets (`web/dist`, copied by `make web`) |
-| `web/` | React + TypeScript UI (Vite, React Router, TanStack Query, Recharts, Tailwind CSS) |
+| `web/` | React + TypeScript UI (Vite, React Router, TanStack Query, Apache ECharts, CodeMirror, Tailwind CSS) |
 
 ### Frontend
 
@@ -265,3 +265,16 @@ returns DSNs. See [security.md](security.md).
 Everything else in Go (HTTP routing with `net/http`, logging with `log/slog`,
 AES-GCM, templates, embedding) uses the standard library. Frontend
 dependencies are pinned in [web/package.json](../web/package.json).
+
+## On-demand investigation boundary
+
+`backend/internal/workspace` uses target-specific capabilities and an encrypted DSN,
+separate from collector pools. Requests acquire bounded concurrency, connect with a
+restricted role, begin a read-only transaction, execute bounded catalog/data/cursor
+queries, audit safe metadata and discard the connection. There is no background table
+reader or workspace result-history table. Migration 0003 adds policies, audit metadata
+and explicit replication mappings. The React workspace uses CodeMirror with nonce-based
+CSP styles; application SQL/result text is rendered as text, never HTML.
+
+See [investigation workspace](investigation-workspace.md) for execution limits,
+credential isolation, topology evidence and operational limitations.

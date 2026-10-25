@@ -27,7 +27,7 @@ How LockLens is tested. The QA checklist is in
 | Incident recorder | `backend/internal/incidents` (tag `integration`) | yes | Persistence, deduplication, resolution, cooldown regrouping, root changes, restart recovery, size and duration limits |
 | CLI end to end | `tests/e2e/cli` (tag `integration`) | yes | Real contention observed through the built binary |
 | Server end to end | `tests/e2e/server` (tag `integration`) | yes | `locklens server` in process, exercised only over HTTP |
-| Frontend | `web/src/**/*.test.tsx` (Vitest, Testing Library, axe-core) | no | Rendering, unknown vs. zero, error/empty states, login, target form, query text confirmation, blocking tree, accessibility |
+| Frontend | `web/src/**/*.test.{ts,tsx}` (Vitest, Testing Library, axe-core) | no | Unknown vs. zero, statement-type rates and gaps, query mix, login, overview, queries filtering, data-access setup with confirmation, accessibility |
 | Browser E2E | `tests/e2e/browser` (Playwright) | Docker stack | The main user path against the real application, no API mocks |
 
 ## Integration environment
@@ -168,9 +168,9 @@ DSNs of the run.
 | Test | Key assertions |
 | --- | --- |
 | `TestAuthAndSecurityHeaders` | 401 without a session; 403 for a mutation without CSRF token and for a cross-origin request with a valid token; CSP and other headers; oversized bodies and ranges rejected; `/metrics` without DSNs |
-| `TestTargetLifecycleBlockingIncidentAndExport` | DSN validation does not echo the password; healthy and unreachable targets side by side (isolation); `pg_stat_statements` reported unavailable with a reason; connection test; a real A → B → C chain in live activity without query text; a blocking incident opens; restart while it is open keeps history and records `recorder_restarted`; releasing the chain resolves it; acknowledging does not change evidence; JSON export without query text, standalone HTML without scripts or URLs; import round trip; soft delete keeps incidents |
+| `TestTargetLifecycleBlockingIncidentAndExport` | DSN validation does not echo the password; healthy and unreachable targets side by side (isolation); `pg_stat_statements` reported unavailable with a reason; connection test; a real A → B → C chain in live activity, with SQL text (collected by default); a blocking incident opens; restart while it is open keeps history and records `recorder_restarted`; releasing the chain resolves it; acknowledging does not change evidence; JSON export without query text, standalone HTML without scripts or URLs; import round trip; soft delete keeps incidents |
 | `TestRestrictedRoleAndQueryTextOptIn` | a role without `pg_read_all_stats` gives a `degraded` target with a `restricted_visibility` warning; query text appears only for the opted-in target and disappears when the option is turned off |
-| `TestPgStatStatementsAvailable` | extension detected; `demo_app` statements appear with call counts; text withheld without opt-in; query IDs are decimal strings |
+| `TestPgStatStatementsAvailable` | extension detected; `demo_app` statements appear with call counts, normalised SQL text by default and command class `select`; `include_text=false` omits text; `/queries/commands` reports select totals and coverage buckets; unknown command classes are rejected; query IDs are decimal strings |
 | `TestPrimaryAndStandby` | standby detected; primary lists the replica and slot; standby reports a streaming WAL receiver |
 | `TestOutageAndRecovery` | the database container (target and store) paused for 25 s; the target becomes healthy again and a collection gap is recorded |
 
@@ -181,12 +181,18 @@ make web-check            # typecheck, ESLint, Vitest
 cd web && npm run build   # production build
 ```
 
-Component and page tests render with real React Router and TanStack Query and
-a stubbed `fetch`; they check that unknown values are shown as "unknown" and
-never as 0, loading/empty/error states, server-side validation messages, the
-write-only DSN field, the confirmation before enabling query text, blocking
-tree semantics (shared descendants, cycles, PID 0, keyboard selection), and
-run axe-core on rendered pages.
+Tests render with real React Router and TanStack Query and a stubbed `fetch`:
+
+- formatting never turns unknown into 0; statement types keep fixed colors;
+- statement-type rates divide by covered time, quiet covered buckets are zero,
+  uncovered or missing buckets are gaps (`commandSeries`);
+- the query mix table (shares, averages, empty state);
+- sign-in with a rejected and an accepted password;
+- the overview shows "—" for unknown values and the query mix;
+- the queries page offers only the statement types present and filters by type;
+- the data explorer asks for separate credentials and confirms row access
+  before saving;
+- axe-core finds no serious or critical violations on the rendered pages.
 
 ## Browser end-to-end
 
@@ -196,25 +202,27 @@ project name on random loopback ports, runs `tests/e2e/browser` with Playwright
 (`LOCKLENS_E2E_KEEP=1` keeps it). Nothing in the main path mocks or intercepts
 the API. The test:
 
-1. signs in (a wrong password is rejected first) and checks that no token is
-   kept in web storage;
-2. sees the bootstrapped lab targets as healthy;
-3. adds a target in the UI, tests its connection (version and
-   `pg_stat_statements` shown, no password echoed), and saves it;
-4. sees live data and charts on the new target;
-5. starts the `chain` lab scenario through `docker compose run lab` and finds
-   the blocking tree;
-6. finds the incident in the list and opens its evidence (pre-trigger samples,
-   trigger, stored blocking graph);
-7. exports the HTML report and checks it has no scripts or credentials;
-8. exports JSON and imports it again as a new incident;
-9. opens the HTML report in a fresh offline browser context with JavaScript
-   disabled and checks that it renders and loads nothing;
-10. visits the remaining pages, including the Settings store sizes, and
-    switches the theme;
-11. runs axe-core on every page (serious and critical violations fail);
-12. signs out and checks the API returns 401;
-13. fails on any browser console error or failed request (except the expected
+1. signs in (a wrong password is rejected first), lands on the instance
+   overview, and checks that no token is kept in web storage;
+2. sees the instance healthy with its current values and the queries-by-type
+   chart;
+3. starts the `shop` lab scenario and waits until the Queries page shows
+   SELECT, INSERT, UPDATE, and DELETE in the breakdown; filters by UPDATE and
+   opens a statement with its SQL;
+4. browses `shop.orders` in the data explorer: rows, a filter
+   (`status = paid`, every row checked), a cell panel, and the columns tab;
+5. starts the `chain` scenario, finds the blocking tree and a session panel on
+   Live activity, then the incident under Alerts, and its stored blocking graph;
+6. exports the HTML report (no scripts or credentials) and opens it in an
+   offline browser context with JavaScript disabled, checking it loads nothing;
+7. exports JSON and imports it again under Settings;
+8. adds an instance, tests its connection (version and query statistics shown,
+   no password echoed, SQL text collection on by default), and saves it;
+9. checks All instances, standby replication (streaming), Settings store
+   sizes, and the other theme;
+10. runs axe-core on every page (serious and critical violations fail);
+11. signs out and checks the API returns 401;
+12. fails on any browser console error or failed request (except the expected
     401s before signing in).
 
 Reports and traces are written to `test-results/e2e-report` and
@@ -293,3 +301,17 @@ embedded HTML and JavaScript, SPA routing, the CLI and lab runner, and a
 non-root runtime user, then removes only that stack's containers and volumes.
 `make e2e` installs the separate Playwright dependencies in `tests/e2e/` and
 runs its browser flows against another isolated stack.
+
+## Investigation workspace checks
+
+`backend/internal/workspace` adds unit and integration coverage for safe error messages,
+session-owned cancellation, policy isolation/revocation, bounded concurrency, cursor
+query grammar, read-only rejection, keyset pagination, parameterized filtering,
+NULL/empty values, serialized JSON/protocol limits and catalogs. The integration harness
+includes this package on both default PostgreSQL versions.
+
+The browser suite covers catalog and row browsing through the data explorer
+(main path above). The SQL capability is API-only and has no UI; it is covered
+by the backend integration tests. The dated
+[workspace verification report](workspace-verification.md) describes the earlier
+UI and its results.

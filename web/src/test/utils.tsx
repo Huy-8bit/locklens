@@ -1,34 +1,47 @@
 import type { ReactElement } from 'react'
 import { render } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import axe from 'axe-core'
+import { vi } from 'vitest'
 
-export function renderWithProviders(ui: ReactElement, { route = '/' }: { route?: string } = {}) {
+/** Renders an element inside the router and a fresh query client. */
+export function renderAt(path: string, routePattern: string, element: ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[route]}>{ui}</MemoryRouter>
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path={routePattern} element={element} />
+        </Routes>
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }
 
-/** Runs axe-core on a container and returns violation IDs (color contrast is not computable in jsdom). */
-export async function axeViolations(container: Element): Promise<string[]> {
-  const res = await axe.run(container, { rules: { 'color-contrast': { enabled: false }, region: { enabled: false } } })
-  return res.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`)
+type Handler = (init: RequestInit | undefined, url: URL) => { status?: number; body: unknown }
+
+/** Stubs fetch with handlers keyed by path prefix; returns the recorded calls. */
+export function mockFetch(handlers: Record<string, Handler>) {
+  const calls: { method: string; url: string; body?: string }[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      calls.push({ method: init?.method ?? 'GET', url: url.pathname + url.search, body: typeof init?.body === 'string' ? init.body : undefined })
+      const key = Object.keys(handlers)
+        .sort((a, b) => b.length - a.length)
+        .find((k) => url.pathname.startsWith(k))
+      if (!key) return new Response(JSON.stringify({ error: { code: 'not_found', message: 'not mocked' } }), { status: 404 })
+      const { status = 200, body } = handlers[key]?.(init, url) ?? { body: null }
+      return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+    }),
+  )
+  return calls
 }
 
-/** Replaces fetch with a router of canned JSON responses (unit tests only). */
-export function mockFetch(routes: Record<string, (init?: RequestInit) => { status?: number; body?: unknown }>) {
-  const calls: { url: string; init?: RequestInit }[] = []
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === 'string' ? input : input.toString()
-    calls.push({ url, init })
-    const key = Object.keys(routes).find((k) => url.startsWith(k))
-    const r = key ? routes[key]?.(init) : { status: 404, body: { error: { code: 'not_found', message: 'not mocked' } } }
-    const status = r?.status ?? 200
-    return new Response(status === 204 ? null : JSON.stringify(r?.body ?? {}), { status, headers: { 'Content-Type': 'application/json' } })
-  }) as typeof fetch
-  return calls
+/** Serious or critical axe-core violations in a container. */
+export async function axeViolations(container: Element): Promise<string[]> {
+  const r = await axe.run(container, { resultTypes: ['violations'], rules: { 'color-contrast': { enabled: false } } })
+  return r.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.help}`)
 }

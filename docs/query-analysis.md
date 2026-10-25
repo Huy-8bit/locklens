@@ -112,19 +112,44 @@ At most five queries per rule are reported, strongest first. See
   (`include_monitoring=true` shows them). They are real load, but rarely the
   subject of an investigation.
 
-## Query text privacy
+## Statement types
 
-Query text is **off by default** for every target:
+Each identity carries a command class derived from its normalised text at
+collection time: `select`, `insert`, `update`, `delete`, `merge`, `copy`,
+`ddl` (CREATE, ALTER, DROP, TRUNCATE, GRANT, REVOKE, COMMENT, …),
+`transaction` (BEGIN, COMMIT, ROLLBACK, SAVEPOINT, RELEASE, PREPARE
+TRANSACTION), `maintenance` (VACUUM, ANALYZE, REINDEX, CLUSTER, CHECKPOINT),
+`utility` (SET, SHOW, RESET, EXPLAIN, DO, CALL, LOCK, cursor and LISTEN/NOTIFY
+commands, …), and `other`. The leading keyword decides, after comments; a
+`WITH` query is classified by the first data-modifying or SELECT keyword at
+parenthesis depth zero after its common table expressions, and `PREPARE name
+AS …` by the prepared statement. This is a lexical heuristic for grouping,
+not a SQL parser (a `DO` block that deletes rows is `utility`).
 
-- Without opt-in, the collector's query returns `NULL` instead of the `query`
-  column, so the text never leaves the target.
-- With opt-in (**Settings → target → Collect query text**, confirmed in a
-  dialog), the normalised text is stored once per identity, and live
-  session queries are kept in activity snapshots.
-- Text is returned by the API only when the target opted in and the request
-  asks for it; exports include it only with an explicit option.
-- Turning the option off deletes the target's stored statement texts.
-- Query text never appears in Prometheus labels, logs, or error messages.
+The collector always reads the normalised text to classify it; the text is
+then kept only when the target collects SQL text. Identities seen before this
+classification existed are `other` until they are seen again.
+`GET /api/v1/targets/{id}/queries/commands` returns totals and a time series
+per class; `command=` filters the statement list. Rates divide each bucket's
+sum by the statement-collection time it covers, so a covered bucket without
+statements is zero and an uncovered one is unknown.
 
-No automatic redaction can guarantee that literals are removed, so treat
-opted-in text as sensitive data.
+## SQL text privacy
+
+SQL text is **collected by default** for every target, so the Queries and
+Live activity pages can show it:
+
+- The normalised statement text is stored once per identity, and live session
+  queries are kept in activity snapshots.
+- It can be switched off per target (**Settings → instance → Collect SQL
+  text**). Then the text is not stored (it is still read briefly to classify
+  each statement and then dropped), session queries are not collected, and
+  the target's stored statement texts are deleted.
+- The API returns text when the target collects it unless the request passes
+  `include_text=false`; exports include it only with an explicit option.
+- SQL text never appears in Prometheus labels, logs, or error messages.
+
+Normalised statements replace literal values with `$1`, `$2`, …, but running
+session queries and some statements (utility commands, literals in
+identifiers or comments) can contain data. No redaction can guarantee that
+literals are removed, so treat collected text as sensitive data.

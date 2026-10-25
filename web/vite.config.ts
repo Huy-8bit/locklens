@@ -15,6 +15,7 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    rolldownOptions: { output: { codeSplitting: { groups: [{ name: 'charts', test: /node_modules\/(echarts|zrender)/ }] } } },
     sourcemap: false,
     chunkSizeWarningLimit: 900,
   },

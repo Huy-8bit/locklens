@@ -7,6 +7,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -28,6 +29,7 @@ import (
 	"github.com/locklens/locklens/internal/settings"
 	"github.com/locklens/locklens/internal/storage"
 	"github.com/locklens/locklens/internal/targets"
+	"github.com/locklens/locklens/internal/workspace"
 )
 
 // Limits on requests.
@@ -41,15 +43,16 @@ const (
 
 // Deps are the server's collaborators.
 type Deps struct {
-	Store    *storage.Store
-	Auth     *auth.Service
-	Targets  *targets.Service
-	Manager  *collector.Manager
-	Settings *settings.Service
-	Hub      *Hub
-	Metrics  *obs.Metrics
-	Log      *slog.Logger
-	Tool     model.Tool
+	Workspace *workspace.Service
+	Store     *storage.Store
+	Auth      *auth.Service
+	Targets   *targets.Service
+	Manager   *collector.Manager
+	Settings  *settings.Service
+	Hub       *Hub
+	Metrics   *obs.Metrics
+	Log       *slog.Logger
+	Tool      model.Tool
 	// UI is the built web UI (nil when not embedded).
 	UI fs.FS
 	// MetricsEnabled exposes /metrics.
@@ -96,6 +99,14 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/session", s.authed(s.session))
 
 	m.HandleFunc("GET /api/v1/fleet", s.authed(s.fleet))
+	m.HandleFunc("GET /api/v1/topology", s.authed(s.topology))
+	m.HandleFunc("PUT /api/v1/topology", s.authed(s.putTopology))
+	m.HandleFunc("DELETE /api/v1/topology/{id}", s.authed(s.deleteTopology))
+	m.HandleFunc("GET /api/v1/targets/{id}/history-bounds", s.authed(s.historyBounds))
+	m.HandleFunc("GET /api/v1/targets/{id}/workspace/policy", s.authed(s.workspacePolicy))
+	m.HandleFunc("PUT /api/v1/targets/{id}/workspace/policy", s.authed(s.putWorkspacePolicy))
+	m.HandleFunc("POST /api/v1/targets/{id}/workspace/run", s.authed(s.workspaceRun))
+	m.HandleFunc("POST /api/v1/targets/{id}/workspace/cancel", s.authed(s.workspaceCancel))
 	m.HandleFunc("GET /api/v1/targets", s.authed(s.listTargets))
 	m.HandleFunc("POST /api/v1/targets", s.authed(s.createTarget))
 	m.HandleFunc("POST /api/v1/targets/test", s.authed(s.testNewTarget))
@@ -109,6 +120,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/targets/{id}/blocking/snapshots", s.authed(s.listSnapshots))
 	m.HandleFunc("GET /api/v1/targets/{id}/blocking/snapshots/{sid}", s.authed(s.getSnapshot))
 	m.HandleFunc("GET /api/v1/targets/{id}/queries", s.authed(s.listQueries))
+	m.HandleFunc("GET /api/v1/targets/{id}/queries/commands", s.authed(s.queryCommands))
 	m.HandleFunc("GET /api/v1/targets/{id}/queries/{qid}", s.authed(s.getQuery))
 	m.HandleFunc("GET /api/v1/targets/{id}/tables", s.authed(s.targetTables))
 	m.HandleFunc("GET /api/v1/targets/{id}/replication", s.authed(s.targetReplication))
@@ -380,7 +392,7 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/")
-	if path != "" {
+	if path != "" && path != "index.html" {
 		if f, err := s.d.UI.Open(path); err == nil {
 			st, _ := f.Stat()
 			f.Close()
@@ -397,6 +409,41 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	w.Header().Set("Cache-Control", "no-cache")
-	http.ServeFileFS(w, r, s.d.UI, "index.html")
+	html, err := fs.ReadFile(s.d.UI, "index.html")
+	if err != nil {
+		http.Error(w, "UI unavailable", 503)
+		return
+	}
+	nonceBytes := make([]byte, 24)
+	if _, err = rand.Read(nonceBytes); err != nil {
+		http.Error(w, "UI unavailable", 503)
+		return
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+	html = bytes.Replace(html, []byte("<head>"), []byte(`<head><meta name="csp-nonce" content="`+nonce+`">`), 1)
+	w.Header().Set("Content-Security-Policy", strings.Replace(w.Header().Get("Content-Security-Policy"), "style-src 'self'", "style-src 'self' 'nonce-"+nonce+"'", 1))
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(html))
+}
+
+// metricStep accepts an explicit minimum resolution and a per-series point cap.
+func metricStep(r *http.Request, from, to time.Time, interval time.Duration) (time.Duration, error) {
+	points := maxPoints
+	if raw := r.URL.Query().Get("max_points"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 2 || n > 1000 {
+			return 0, errors.New("max_points must be between 2 and 1000")
+		}
+		points = n
+	}
+	step := max(interval, time.Second)
+	if raw := r.URL.Query().Get("step"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < time.Second || d > MaxRange {
+			return 0, errors.New("step must be a duration between 1s and 744h")
+		}
+		step = max(step, d)
+	}
+	required := (to.Sub(from) + time.Duration(points) - 1) / time.Duration(points)
+	return max(step, ((required+time.Second-1)/time.Second)*time.Second), nil
 }

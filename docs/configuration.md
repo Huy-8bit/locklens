@@ -66,7 +66,7 @@ the API ([api.md](api.md)). Per target:
 | DSN | required | | Encrypted at rest; never returned by the API. Leave empty on edit to keep it. |
 | Activity interval | 10 s | 5–3600 s | Other collectors derive their intervals from it; see [collectors.md](collectors.md). |
 | Maximum connections | 2 | 1–5 | Size of the target's connection pool. |
-| Query text | off | | Opt-in. Turning it off deletes the stored statement texts of that target. |
+| SQL text | on | | Collected by default. Turning it off deletes the stored statement texts of that target. |
 | node_exporter URL | unset | `http(s)://` | Optional host metrics. |
 | Enabled | on | | Disabled targets keep their history but are not contacted. |
 
@@ -89,12 +89,19 @@ in `dsn_env`, so the file itself holds no credentials:
     "dsn_env": "ORDERS_PRIMARY_DSN",
     "interval_seconds": 10,
     "max_connections": 2,
-    "query_text_enabled": false
+    "query_text_enabled": true,
+    "workspace": { "metadata": true, "data": false, "dsn_env": "ORDERS_PRIMARY_READER_DSN" }
   }
 ]
 ```
 
-A missing variable stops startup with an error naming it. The Docker lab uses
+A missing variable stops startup with an error naming it. The optional
+`workspace` block enables the data explorer for that target with a separate
+role (`dsn_env` names its DSN; same host, port, and database, a different
+SELECT-only user): `metadata` allows browsing structure, `data` allows
+reading rows. It is applied only while the target has no workspace
+configuration yet; a failure (for example an unreachable server) is logged and
+does not stop startup. The Docker lab uses
 [demo/targets.json](../demo/targets.json).
 
 ## Rule thresholds

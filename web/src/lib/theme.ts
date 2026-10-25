@@ -1,56 +1,46 @@
 import { useEffect, useState } from 'react'
-import { setTimeZoneMode, type TimeZoneMode } from './format'
 
 export type Theme = 'light' | 'dark'
 
-function read(key: string): string | null {
+const KEY = 'locklens-theme'
+
+function initial(): Theme {
   try {
-    return localStorage.getItem(key)
+    const v = localStorage.getItem(KEY)
+    if (v === 'light' || v === 'dark') return v
   } catch {
-    return null
+    // Storage can be unavailable (private mode); fall back to the OS setting.
   }
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
-function write(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value)
-  } catch {
-    // Preferences are optional; private browsing may block storage.
-  }
-}
-
-/** Theme preference: stored choice, else the system preference. */
-export function useTheme(): [Theme, (t: Theme) => void] {
-  const [theme, setTheme] = useState<Theme>(() => {
-    const stored = read('locklens.theme')
-    if (stored === 'light' || stored === 'dark') return stored
-    return typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-  })
+/** Theme preference (a per-viewer convenience; nothing else is stored). */
+export function useTheme(): [Theme, () => void] {
+  const [theme, setTheme] = useState<Theme>(initial)
   useEffect(() => {
     document.documentElement.dataset.theme = theme
+    try {
+      localStorage.setItem(KEY, theme)
+    } catch {
+      // ignore
+    }
+    window.dispatchEvent(new Event('locklens-theme'))
   }, [theme])
-  return [
-    theme,
-    (t) => {
-      write('locklens.theme', t)
-      setTheme(t)
-    },
-  ]
+  return [theme, () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))]
 }
 
-/** Time zone display preference (timestamps are always stored in UTC). */
-export function useTimeZone(): [TimeZoneMode, (m: TimeZoneMode) => void] {
-  const [mode, setMode] = useState<TimeZoneMode>(() => {
-    const m = read('locklens.tz') === 'utc' ? 'utc' : 'local'
-    setTimeZoneMode(m)
-    return m
-  })
-  return [
-    mode,
-    (m) => {
-      write('locklens.tz', m)
-      setTimeZoneMode(m)
-      setMode(m)
-    },
-  ]
+/** Re-renders when the theme changes (charts read resolved CSS colors). */
+export function useThemeVersion(): number {
+  const [v, setV] = useState(0)
+  useEffect(() => {
+    const bump = () => setV((x) => x + 1)
+    window.addEventListener('locklens-theme', bump)
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    mq.addEventListener('change', bump)
+    return () => {
+      window.removeEventListener('locklens-theme', bump)
+      mq.removeEventListener('change', bump)
+    }
+  }, [])
+  return v
 }

@@ -168,3 +168,30 @@ func TestMiddlewareHeadersAndErrors(t *testing.T) {
 		t.Errorf("metrics: %d", w.Code)
 	}
 }
+
+func TestMetricStepBounds(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := from.Add(24*time.Hour + time.Second)
+	for _, q := range []string{"", "?max_points=2", "?max_points=1000&step=1s", "?step=1h"} {
+		r := httptest.NewRequest("GET", "/metrics"+q, nil)
+		step, err := metricStep(r, from, to, 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		limit := maxPoints
+		if r.URL.Query().Get("max_points") == "2" {
+			limit = 2
+		}
+		if r.URL.Query().Get("max_points") == "1000" {
+			limit = 1000
+		}
+		if (to.Sub(from)+step-1)/step > time.Duration(limit) || step < 5*time.Second {
+			t.Fatalf("unbounded resolution: %s %s", q, step)
+		}
+	}
+	for _, q := range []string{"?max_points=1", "?max_points=1001", "?step=-1s", "?step=1ns", "?step=745h", "?step=invalid"} {
+		if _, err := metricStep(httptest.NewRequest("GET", "/metrics"+q, nil), from, to, time.Second); err == nil {
+			t.Errorf("accepted %s", q)
+		}
+	}
+}

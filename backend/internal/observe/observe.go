@@ -53,9 +53,10 @@ type ActivityCounts struct {
 
 // Point is one time-series value. A nil Value means "collected but unknown".
 type Point struct {
-	Metric string   `json:"metric"`
-	Label  string   `json:"label,omitempty"`
-	Value  *float64 `json:"value"`
+	IntervalSeconds *float64 `json:"interval_seconds,omitempty"`
+	Metric          string   `json:"metric"`
+	Label           string   `json:"label,omitempty"`
+	Value           *float64 `json:"value"`
 }
 
 // F returns a pointer to v.
@@ -80,7 +81,10 @@ type QueryDelta struct {
 	DatName  string   `json:"datname"`
 	UserName string   `json:"username"`
 	// Text is the normalised statement, only when the target opted in.
-	Text    *string  `json:"text,omitempty"`
+	Text *string `json:"text,omitempty"`
+	// Command is the statement class (see ClassifyCommand), known even when
+	// the text is not collected.
+	Command string   `json:"command"`
 	Calls   int64    `json:"calls"`
 	TotalMS float64  `json:"total_exec_ms"`
 	Rows    int64    `json:"rows"`

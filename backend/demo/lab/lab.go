@@ -55,6 +55,7 @@ var Scenarios = []Scenario{
 	{"connection-pressure", "opens idle connections up to about 92% of available slots", 3 * time.Minute, runConnectionPressure},
 	{"regression", "a query runs with an index, then the index is dropped so the same query gets slower; the index is restored at the end", 6 * time.Minute, runRegression},
 	{"temp-files", "sorts with a tiny work_mem so data spills to temporary files", 5 * time.Minute, runTempFiles},
+	{"shop", "mixed shop traffic on the shop schema: product and order reads, new orders, status updates, deletes of cancelled orders", 10 * time.Minute, runShop},
 	{"replication", "pauses replay on the standby and creates an inactive slot while writing WAL; restored at the end", 4 * time.Minute, runReplication},
 }
 
@@ -162,6 +163,108 @@ func runHealthy(ctx context.Context, c Config, d time.Duration) error {
 		}
 	}
 	return nil
+}
+
+// runShop drives a mixed workload on the demo shop schema
+// (demo/postgres/03-demo-data.sql) so the workload views show every kind of
+// statement: about 60% reads, 20% inserts, 15% updates, 5% deletes.
+func runShop(ctx context.Context, c Config, d time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+	p, err := pool(ctx, c.DSN, "shop", 4)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+	var exists bool
+	if err := p.QueryRow(ctx, "SELECT to_regclass('shop.orders') IS NOT NULL").Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New("the shop schema does not exist: it is created when the lab primary is first initialised; recreate the lab with `make down && make up`")
+	}
+	logf(c, "shop traffic running for %s (about 40 statements per second)", d)
+	var wg sync.WaitGroup
+	errs := make(chan error, 4)
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- pace(ctx, 10, func(ctx context.Context) error { return shopStep(ctx, p) })
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		if e != nil && !errors.Is(e, context.DeadlineExceeded) && !errors.Is(e, context.Canceled) {
+			return e
+		}
+	}
+	return nil
+}
+
+func shopStep(ctx context.Context, p *pgxpool.Pool) error {
+	switch r := rand.IntN(100); {
+	case r < 25:
+		var name string
+		var price int
+		return p.QueryRow(ctx, "SELECT name, price_cents FROM shop.products WHERE id = $1", rand.IntN(200)+1).Scan(&name, &price)
+	case r < 45:
+		rows, err := p.Query(ctx, "SELECT id, status, total_cents FROM shop.orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT 20", rand.IntN(500)+1)
+		if err != nil {
+			return err
+		}
+		rows.Close()
+		return rows.Err()
+	case r < 55:
+		var n int64
+		return p.QueryRow(ctx, "SELECT count(*) FROM shop.orders WHERE status = $1 AND created_at > now() - interval '1 day'",
+			[]string{"pending", "paid", "shipped"}[rand.IntN(3)]).Scan(&n)
+	case r < 60:
+		rows, err := p.Query(ctx, `SELECT p.category, sum(i.quantity * i.price_cents) AS revenue
+FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id
+JOIN shop.orders o ON o.id = i.order_id WHERE o.created_at > now() - interval '6 hours'
+GROUP BY p.category ORDER BY revenue DESC`)
+		if err != nil {
+			return err
+		}
+		rows.Close()
+		return rows.Err()
+	case r < 80:
+		return pgx.BeginFunc(ctx, p, func(tx pgx.Tx) error {
+			var id int64
+			if err := tx.QueryRow(ctx, "INSERT INTO shop.orders (customer_id, status, total_cents) VALUES ($1, 'pending', 0) RETURNING id",
+				rand.IntN(500)+1).Scan(&id); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, "INSERT INTO shop.order_items (order_id, product_id, quantity, price_cents) SELECT $1, id, $2, price_cents FROM shop.products WHERE id = $3",
+				id, rand.IntN(3)+1, rand.IntN(200)+1); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, "UPDATE shop.orders SET total_cents = (SELECT sum(quantity * price_cents) FROM shop.order_items WHERE order_id = $1) WHERE id = $1", id)
+			return err
+		})
+	case r < 95:
+		_, err := p.Exec(ctx, "UPDATE shop.orders SET status = $1 WHERE id = (SELECT id FROM shop.orders WHERE status = $2 ORDER BY id DESC LIMIT 1)",
+			[]string{"paid", "shipped", "cancelled"}[rand.IntN(3)], []string{"pending", "paid"}[rand.IntN(2)])
+		return err
+	default:
+		return pgx.BeginFunc(ctx, p, func(tx pgx.Tx) error {
+			var id int64
+			err := tx.QueryRow(ctx, "SELECT id FROM shop.orders WHERE status = 'cancelled' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED").Scan(&id)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, "DELETE FROM shop.order_items WHERE order_id = $1", id); err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, "DELETE FROM shop.orders WHERE id = $1", id)
+			return err
+		})
+	}
 }
 
 func hold(ctx context.Context, c Config, d time.Duration, what string) {

@@ -1,0 +1,141 @@
+@import "tailwindcss";
+
+/* Design tokens. Light and dark are each selected values (not an automatic
+   flip). Text and fill colors meet WCAG AA (4.5:1) on their surfaces. The chart palette is the validated categorical order; status colors
+   are reserved for state and never reused for series. */
+:root {
+  color-scheme: light;
+  --bg: #f4f4f2;
+  --surface: #fcfcfb;
+  --surface-2: #f3f3f0;
+  --surface-3: #ebebe7;
+  --border: rgba(11, 11, 11, 0.1);
+  --border-strong: rgba(11, 11, 11, 0.18);
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #666560;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --accent: #256abf;
+  --accent-fill: #256abf;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(37, 106, 191, 0.1);
+  --good: #0a7a0a;
+  --good-mark: #0ca30c;
+  --warn: #9a6400;
+  --warn-mark: #fab219;
+  --crit: #c03030;
+  --crit-mark: #d03b3b;
+  --nav-bg: #111214;
+  --nav-ink: #e6e6e3;
+  --nav-muted: #9b9a95;
+  --nav-active: rgba(255, 255, 255, 0.08);
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+  --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s-other: #a3a29c;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --bg: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-2: #222220;
+    --surface-3: #2a2a28;
+    --border: rgba(255, 255, 255, 0.1);
+    --border-strong: rgba(255, 255, 255, 0.18);
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --muted: #a09e98;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --accent: #6da7ec;
+    --accent-fill: #256abf;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(109, 167, 236, 0.14);
+    --good: #3cc23c;
+    --good-mark: #0ca30c;
+    --warn: #fab219;
+    --warn-mark: #fab219;
+    --crit: #ef6b6b;
+    --crit-mark: #d03b3b;
+    --nav-bg: #0a0a0a;
+    --nav-ink: #e6e6e3;
+    --nav-muted: #8f8d87;
+    --nav-active: rgba(255, 255, 255, 0.08);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s6: #008300; --s7: #9085e9; --s-other: #6f6e69;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-2: #222220;
+  --surface-3: #2a2a28;
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --ink: #f0efec;
+  --ink-2: #c3c2b7;
+  --muted: #a09e98;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --accent: #6da7ec;
+  --accent-fill: #256abf;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(109, 167, 236, 0.14);
+  --good: #3cc23c;
+  --good-mark: #0ca30c;
+  --warn: #fab219;
+  --warn-mark: #fab219;
+  --crit: #ef6b6b;
+  --crit-mark: #d03b3b;
+  --nav-bg: #0a0a0a;
+  --nav-ink: #e6e6e3;
+  --nav-muted: #8f8d87;
+  --nav-active: rgba(255, 255, 255, 0.08);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --s5: #d55181; --s6: #008300; --s7: #9085e9; --s-other: #6f6e69;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-fill: var(--accent-fill);
+  --color-accent-soft: var(--accent-soft);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-crit: var(--crit);
+  --color-nav: var(--nav-bg);
+  --color-nav-ink: var(--nav-ink);
+  --color-nav-muted: var(--nav-muted);
+  --color-nav-active: var(--nav-active);
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+html, body, #root { height: 100%; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-sans); font-size: 14px; -webkit-font-smoothing: antialiased; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* Grid items may shrink below their content width (long SQL, charts). */
+.grid > * { min-width: 0; }
+
+/* SQL highlighting (text tokens only; no series colors). */
+.sql-kw { color: var(--accent); font-weight: 600; }
+.sql-str { color: var(--good); }
+.sql-num { color: var(--warn); }
+.sql-param { color: var(--crit); }
+.sql-com { color: var(--muted); font-style: italic; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}

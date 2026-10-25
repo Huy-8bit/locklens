@@ -1,44 +1,34 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
-export type StreamState = 'connecting' | 'connected' | 'disconnected'
+export type StreamState = 'connecting' | 'live' | 'offline'
 
 /**
- * Subscribes to server-sent events and invalidates affected queries. When the
- * stream drops, the browser reconnects automatically and the UI reports the
- * disconnected state; queries keep polling as a fallback.
+ * Subscribes to the server's event stream. Events carry no data: they tell
+ * the UI which cached queries are stale, so pages refresh as soon as a target
+ * finishes a collection instead of polling everything.
  */
-export function useServerEvents(enabled: boolean): StreamState {
+export function useEventStream(enabled: boolean): StreamState {
   const qc = useQueryClient()
   const [state, setState] = useState<StreamState>('connecting')
   useEffect(() => {
     if (!enabled || typeof EventSource === 'undefined') return
     const es = new EventSource('/api/v1/events')
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const pending = new Set<string>()
-    const flush = () => {
-      timer = undefined
-      for (const key of pending) {
-        void qc.invalidateQueries({ queryKey: [key] })
+    es.onopen = () => setState('live')
+    es.onerror = () => setState('offline')
+    const onTarget = (e: MessageEvent) => {
+      try {
+        const { target_id } = JSON.parse(e.data) as { target_id?: number }
+        void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === 'fleet' || q.queryKey[0] === 'targets' || (q.queryKey[1] === target_id && q.queryKey[2] === 'live') })
+      } catch {
+        // ignore malformed events
       }
-      pending.clear()
     }
-    const schedule = (...keys: string[]) => {
-      keys.forEach((k) => pending.add(k))
-      // Coalesce bursts of events into one refetch per second.
-      timer ??= setTimeout(flush, 1000)
-    }
-    es.onopen = () => setState('connected')
-    es.onerror = () => setState(es.readyState === EventSource.CLOSED ? 'disconnected' : 'connecting')
-    es.addEventListener('target.collected', () => schedule('fleet', 'overview', 'activity', 'findings', 'target', 'replication', 'host'))
-    es.addEventListener('target.status', () => schedule('fleet', 'target', 'overview'))
-    for (const k of ['incident.opened', 'incident.updated', 'incident.resolved']) {
-      es.addEventListener(k, () => schedule('incidents', 'incident', 'incident-events', 'fleet', 'overview'))
-    }
-    return () => {
-      if (timer) clearTimeout(timer)
-      es.close()
-    }
+    const onIncident = () => void qc.invalidateQueries({ predicate: (q) => q.queryKey[0] === 'incidents' || q.queryKey[0] === 'fleet' || q.queryKey[2] === 'live' })
+    es.addEventListener('target.collected', onTarget)
+    es.addEventListener('target.status', onTarget)
+    es.addEventListener('incident.updated', onIncident)
+    return () => es.close()
   }, [enabled, qc])
-  return enabled ? state : 'disconnected'
+  return state
 }

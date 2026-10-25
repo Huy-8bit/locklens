@@ -25,21 +25,33 @@ var overviewMetrics = []string{
 	"blocking.blocked_sessions", "blocking.root_blockers", "blocking.max_lock_wait_seconds", "transactions.open",
 	"transactions.long", "transactions.oldest_age_seconds", "transactions.idle_in_transaction_oldest_age_seconds",
 	"xact.commit.per_s", "xact.rollback.per_s", "cache.hit_ratio", "temp.files.per_s", "temp.bytes.per_s",
-	"deadlocks.delta", "wal.bytes.per_s", "wal.received_bytes.per_s", "db.total_size_bytes",
+	"tuples.inserted.per_s", "tuples.updated.per_s", "tuples.deleted.per_s", "tuples.returned.per_s", "tuples.fetched.per_s", "deadlocks.delta", "wal.bytes.per_s", "wal.received_bytes.per_s", "db.total_size_bytes",
 	"statements.calls.per_s", "statements.exec_ms.per_s", "replication.max_replay_lag_bytes", "slots.max_retained_bytes",
-	"standby.replay_delay_bytes", "host.cpu_utilization_ratio", "host.memory_available_bytes", "host.memory_total_bytes",
+	"standby.replay_delay_bytes", "host.cpu_utilization_ratio", "host.memory_available_bytes", "host.memory_total_bytes", "host.disk_read_bytes.per_s", "host.disk_write_bytes.per_s",
 }
 
 type latestValue struct {
-	At    time.Time `json:"at"`
-	Value *float64  `json:"value"`
+	Previous   *float64   `json:"previous,omitempty"`
+	PreviousAt *time.Time `json:"previous_at,omitempty"`
+	At         time.Time  `json:"at"`
+	Value      *float64   `json:"value"`
 }
 
 func latestValues(v collector.View) map[string]latestValue {
 	out := map[string]latestValue{}
 	for _, m := range overviewMetrics {
 		if tv, ok := v.Latest(m); ok {
-			out[m] = latestValue{At: tv.At, Value: tv.Value}
+			lv := latestValue{At: tv.At, Value: tv.Value}
+			history := v.Points[m]
+			if len(history) > 1 {
+				prev := history[len(history)-2]
+				interval := v.Collectors[storage.MetricCollector(m)].IntervalSeconds
+				if interval > 0 && tv.At.Sub(prev.At).Seconds() <= 3*interval && prev.Value != nil && tv.Value != nil {
+					lv.Previous = prev.Value
+					lv.PreviousAt = &prev.At
+				}
+			}
+			out[m] = lv
 		}
 	}
 	return out
@@ -160,8 +172,26 @@ func (s *Server) targetMetrics(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "names must list 1 to 20 metrics")
 		return
 	}
-	step := stepFor(from, to, time.Duration(t.IntervalSeconds)*time.Second)
+	collectors := t.Status.Collectors
+	if v, ok := s.view(t.ID); ok {
+		collectors = v.Collectors
+	}
+	minStep := time.Duration(t.IntervalSeconds) * time.Second
+	for _, m := range metrics {
+		if status, ok := collectors[storage.MetricCollector(m)]; ok {
+			minStep = max(minStep, time.Duration(status.IntervalSeconds*float64(time.Second)))
+		}
+	}
+	step, err := metricStep(r, from, to, minStep)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 	series, err := s.d.Store.QuerySeries(r.Context(), t.ID, metrics, from, to, step)
+	if errors.Is(err, storage.ErrSeriesLimit) {
+		writeError(w, r, http.StatusUnprocessableEntity, "series_limit", err.Error())
+		return
+	}
 	if err != nil {
 		s.internal(w, r, err)
 		return
@@ -171,7 +201,17 @@ func (s *Server) targetMetrics(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"from": from, "to": to, "step_seconds": step.Seconds(), "series": series, "gaps": gaps})
+	incs, total, err := s.d.Store.ListIncidents(r.Context(), storage.IncidentFilter{TargetID: t.ID, From: &from, To: &to, Limit: 200})
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	annotations := make([]map[string]any, 0, len(incs))
+	for _, i := range incs {
+		annotations = append(annotations, map[string]any{"id": i.ID, "title": i.Title, "severity": i.Severity, "opened_at": i.OpenedAt, "resolved_at": i.ResolvedAt})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"from": from, "to": to, "step_seconds": step.Seconds(), "series": series, "gaps": gaps,
+		"collection_interval_seconds": t.IntervalSeconds, "collectors": collectors, "annotations": annotations, "annotations_truncated": total > len(incs), "gaps_truncated": len(gaps) == 200})
 }
 
 func (s *Server) targetActivity(w http.ResponseWriter, r *http.Request) {

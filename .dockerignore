@@ -12,3 +12,6 @@ snapshots
 *.out
 coverage.*
 .DS_Store
+
+# Never send the unversioned workload sandbox to the application build.
+local-lab
