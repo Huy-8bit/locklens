@@ -61,7 +61,7 @@ Full list: [configuration](https://github.com/Huy-8bit/locklens/blob/main/docs/c
 - Port `8080`. Health: `GET /healthz` (liveness), `GET /readyz` (store
   reachable). Prometheus metrics at `/metrics`.
 - Runs as the non-root user `10001`. Platforms: `linux/amd64`, `linux/arm64`.
-- Tags: `latest` (main branch), `X.Y.Z` and `X.Y` (releases), `sha-<commit>`.
+- Tags: `latest` (main branch), `X.Y.Z` and `X.Y` (releases).
 - The image also contains `locklens` CLI commands (`inspect`, `watch`,
   `snapshot`, `doctor`) and the `locklens-lab` scenario runner used by the
   demo stack; the server never runs lab code.

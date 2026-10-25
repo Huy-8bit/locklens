@@ -92,7 +92,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
-          # main -> latest and sha-<short>; v1.2.3 -> 1.2.3, 1.2, and sha-<short>.
+          # main -> latest; v1.2.3 -> 1.2.3 and 1.2. No per-commit tags.
           # latest comes only from main (the action would otherwise add it to
           # every semver tag push as well).
           flavor: |
@@ -101,7 +101,6 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
       - name: Build and push (linux/amd64, linux/arm64)
         uses: docker/build-push-action@v6
         with:
