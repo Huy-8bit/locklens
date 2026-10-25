@@ -23,8 +23,12 @@ environment on one screen; every card leads to a page with the detail.
 - **Environment**: every instance has an environment label (`production`,
   `staging`, `lab`, … default `default`). Fleet pages show the instances of the
   selected environment, or all of them.
-- **Time range** (history charts): 15 minutes, 1 hour (default), 6 hours, 24
-  hours, 7 days.
+- **Time range**: every history chart and table follows one range, chosen in
+  the top bar like in Grafana: quick ranges (15 minutes, 1 hour (default), 6
+  hours, 24 hours, 7 days) or an absolute window (from–to, at most 31 days),
+  buttons to move the window back or forward by half its length and to zoom
+  out (twice as long), and **Back** to return to the range before the last
+  zoom or move. An absolute window is not remembered across reloads.
 - **Live**: when on, current-state views refresh after every collection (event
   stream) and on a short interval; when off, nothing refreshes until it is
   switched back on. Environment, range, and Live are remembered per browser.
@@ -97,8 +101,18 @@ collection time; the text itself is stored only when SQL text collection is on.
   warning; without a time lag (an idle primary reports none), under 16 MiB of
   WAL not yet replayed is healthy and under 256 MiB a warning; a standby that is
   not streaming is critical. These are display thresholds, not alert rules.
-- Charts with two or more series have a legend with each series' latest value;
-  hovering shows a crosshair tooltip with exact values.
+- Charts with two or more series have a legend with each series' latest value.
+  Click an entry to show only that series (click again to show all);
+  Ctrl/⌘/Shift-click toggles one series.
+- Hovering shows a crosshair and a tooltip with exact values, sorted from the
+  largest, with a total for stacked charts. The crosshair is synchronised: all
+  charts of the page show the same moment.
+- **Zoom**: drag across a chart to zoom every chart and table of the page into
+  that window (at least one minute); the data is fetched again at the finer
+  resolution the window allows (never finer than the collection interval).
+  Double-click a chart, or use the top bar's zoom-out button, to zoom out.
+- **View larger** (the icon at a chart's top right) opens the chart in a large
+  dialog with the same interactions.
 - Collection gaps recorded by the server are shaded.
 
 ## Accessibility and states

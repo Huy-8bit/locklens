@@ -28,7 +28,7 @@ import type {
   Thresholds,
   WorkspacePolicy,
 } from './types'
-import { liveState, type Range } from '../lib/scope'
+import { liveState, rangeQuery, type Range } from '../lib/scope'
 
 // Query keys: ['t', targetId, 'live' | 'hist', ...]. The event stream
 // invalidates a target's 'live' keys after each collection; history keys
@@ -79,7 +79,7 @@ export function useFindings(id: number, status: 'current' | 'resolved' = 'curren
 export function useMetrics(id: number, names: string[], range: Range) {
   return useQuery({
     queryKey: ['t', id, 'hist', 'metrics', names.join(','), range],
-    queryFn: () => api<MetricsResponse>(`/api/v1/targets/${id}/metrics${qs({ names: names.join(','), range })}`),
+    queryFn: () => api<MetricsResponse>(`/api/v1/targets/${id}/metrics${qs({ names: names.join(','), ...rangeQuery(range) })}`),
     placeholderData: keepPreviousData,
     refetchInterval: every(HIST),
   })
@@ -88,7 +88,7 @@ export function useMetrics(id: number, names: string[], range: Range) {
 export function useCommands(id: number, range: Range, includeMonitoring = false) {
   return useQuery({
     queryKey: ['t', id, 'hist', 'commands', range, includeMonitoring],
-    queryFn: () => api<CommandsResponse>(`/api/v1/targets/${id}/queries/commands${qs({ range, include_monitoring: includeMonitoring || undefined })}`),
+    queryFn: () => api<CommandsResponse>(`/api/v1/targets/${id}/queries/commands${qs({ ...rangeQuery(range), include_monitoring: includeMonitoring || undefined })}`),
     placeholderData: keepPreviousData,
     refetchInterval: every(HIST),
   })
@@ -111,7 +111,7 @@ export function useQueries(id: number, p: QueryParams) {
     queryKey: ['t', id, 'hist', 'queries', p],
     queryFn: () =>
       api<QueriesResponse>(
-        `/api/v1/targets/${id}/queries${qs({ range: p.range, sort: p.sort, order: p.order, page: p.page, page_size: p.pageSize ?? 25, q: p.q, command: p.command, compare: p.compare || undefined, include_monitoring: p.includeMonitoring || undefined })}`,
+        `/api/v1/targets/${id}/queries${qs({ ...rangeQuery(p.range), sort: p.sort, order: p.order, page: p.page, page_size: p.pageSize ?? 25, q: p.q, command: p.command, compare: p.compare || undefined, include_monitoring: p.includeMonitoring || undefined })}`,
       ),
     placeholderData: keepPreviousData,
     refetchInterval: every(HIST),
@@ -121,7 +121,7 @@ export function useQueries(id: number, p: QueryParams) {
 export function useQueryDetail(id: number, qid: number, range: Range) {
   return useQuery({
     queryKey: ['t', id, 'hist', 'query', qid, range],
-    queryFn: () => api<QueryDetailResponse>(`/api/v1/targets/${id}/queries/${qid}${qs({ range })}`),
+    queryFn: () => api<QueryDetailResponse>(`/api/v1/targets/${id}/queries/${qid}${qs({ ...rangeQuery(range) })}`),
     placeholderData: keepPreviousData,
     refetchInterval: every(HIST),
   })
@@ -294,7 +294,7 @@ export function useTableData(id: number, enabled: boolean, req: DataRequest) {
 export function useFleetMetrics(env: string, names: string[], range: Range) {
   return useQuery({
     queryKey: ['fleet', 'metrics', env, names.join(','), range],
-    queryFn: () => api<FleetMetricsResponse>(`/api/v1/fleet/metrics${qs({ names: names.join(','), range, environment: env })}`),
+    queryFn: () => api<FleetMetricsResponse>(`/api/v1/fleet/metrics${qs({ names: names.join(','), ...rangeQuery(range), environment: env })}`),
     placeholderData: keepPreviousData,
     refetchInterval: every(HIST),
   })
@@ -303,7 +303,7 @@ export function useFleetMetrics(env: string, names: string[], range: Range) {
 export function useFleetQueries(env: string, range: Range, sort: string, limit = 10, q = '', command = '') {
   return useQuery({
     queryKey: ['fleet', 'queries', env, range, sort, limit, q, command],
-    queryFn: () => api<FleetQueriesResponse>(`/api/v1/fleet/queries${qs({ range, sort, limit, environment: env, q, command })}`),
+    queryFn: () => api<FleetQueriesResponse>(`/api/v1/fleet/queries${qs({ ...rangeQuery(range), sort, limit, environment: env, q, command })}`),
     placeholderData: keepPreviousData,
     refetchInterval: every(HIST),
   })

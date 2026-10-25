@@ -3,7 +3,6 @@ import { Link, NavLink, Outlet, useLocation, useParams } from 'react-router'
 import {
   Bell,
   Cable,
-  CalendarDays,
   ChevronDown,
   CircleUser,
   CircleCheck,
@@ -29,9 +28,10 @@ import { useFleet, useIncidents, useSystem } from '../api/hooks'
 import type { SystemResponse } from '../api/types'
 import { ROLE_LABEL, useAuth, useCan } from '../auth'
 import { useEventStream } from '../lib/events'
-import { RANGES, useScope, type Range } from '../lib/scope'
+import { useScope } from '../lib/scope'
 import { useTheme } from '../lib/theme'
 import { CommandPalette } from './CommandPalette'
+import { TimeRangePicker } from './TimeRangePicker'
 import { cx, SeverityBadge } from './ui'
 
 /** Numeric route parameter, or 0. */
@@ -217,7 +217,7 @@ function LiveSwitch() {
 }
 
 export function Shell() {
-  const { env, setEnv, range, setRange } = useScope()
+  const { env, setEnv } = useScope()
   const can = useCan()
   useEventStream(true)
   const fleet = useFleet()
@@ -311,17 +311,12 @@ export function Shell() {
                 ))}
               </select>
             </label>
-            <label className="hidden items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-sm font-medium md:flex">
-              <CalendarDays aria-hidden className="h-4 w-4 text-ink-2" />
-              <span className="sr-only">Time range</span>
-              <select value={range} onChange={(e) => setRange(e.target.value as Range)} className="bg-transparent pr-1 text-sm font-medium text-ink">
-                {RANGES.map((r) => (
-                  <option key={r.value} value={r.value}>
-                    {r.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="hidden xl:flex">
+              <TimeRangePicker />
+            </div>
+            <div className="hidden md:flex xl:hidden">
+              <TimeRangePicker compact />
+            </div>
             <LiveSwitch />
             <Notifications />
             <UserMenu />
@@ -336,13 +331,7 @@ export function Shell() {
               </option>
             ))}
           </select>
-          <select aria-label="Time range" value={range} onChange={(e) => setRange(e.target.value as Range)} className="min-w-0 flex-1 rounded-lg border border-line-strong bg-surface px-2 py-1.5 text-sm text-ink">
-            {RANGES.map((r) => (
-              <option key={r.value} value={r.value}>
-                {r.label}
-              </option>
-            ))}
-          </select>
+          <TimeRangePicker compact />
         </div>
         <main id="main" className="min-w-0 flex-1 overflow-y-auto px-3 py-5 lg:px-7">
           <Outlet />
