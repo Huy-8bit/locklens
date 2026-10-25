@@ -9,7 +9,38 @@ What was run, on what, and with which result. Test design:
 - **Scope:** phase 2 (monitoring server, UI, lab) in the first part; the
   earlier phase 1 CLI QA run is kept as an appendix.
 
-## Roles and one-connection-string setup (2026-10-25)
+## Separate backend and frontend images (2026-10-25)
+
+The single image (Go server with the UI embedded) was split into
+`locklens-backend` (`backend/Dockerfile`: API, collectors, CLI, lab runner; no
+UI) and `locklens-frontend` (`web/Dockerfile`: the built UI on unprivileged
+nginx, proxying `/api/` to the backend). The backend gained
+`LOCKLENS_TRUSTED_PROXIES` (IPs, CIDRs, or host names) so login rate limits
+use the real client address behind the frontend. Compose runs store, backend,
+and frontend; only the frontend is published.
+
+| Check | Result |
+| --- | --- |
+| `make check` and `make web-check` (new: client address behind trusted proxies, incl. host names and spoofing attempts; trusted proxy configuration) | PASS |
+| `make docker-smoke` (rewritten for both images: backend readiness and no UI, frontend UI/assets/SPA routing/headers, `/api/` proxy with cookie and CSRF origin check, CLI, lab runner, non-root users) | PASS |
+| Browser E2E through the frontend's nginx (`make e2e`, no API mocks) | PASS (1 test, 1.0 min) |
+| Integration server suite, PostgreSQL 18.6 | PASS |
+| Server-sent events through nginx | PASS (observed: 13 events in 12 s, unbuffered) |
+| Login log behind the frontend shows the client address (Docker gateway), not the frontend container | PASS (observed) |
+| The documented `docker run` commands (store, backend, frontend) | PASS (observed: UI 200, login 200) |
+| Both images built for `linux/amd64` on an arm64 machine; run as non-root | PASS (backend 32.5 MB, frontend 50.8 MB) |
+
+Found and fixed: security headers set at the nginx server level would have
+been added on top of the backend's own headers on `/api/` responses (now set
+per static location); a default that trusted all private networks as proxies
+would have let clients on those networks choose their rate-limit key (the
+default is now the frontend's host name); `make down` left the container of
+the former `locklens` service running and holding the port (now
+`--remove-orphans`).
+
+Not run for this change: the 14.24 integration run and the other packages of
+the integration suite (they do not involve the HTTP layer), GitHub Actions.
+
 
 Users with roles (administrator, operator, viewer) and adding an instance from
 a single connection string, including automatic least-privilege roles for a

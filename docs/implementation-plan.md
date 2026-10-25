@@ -241,3 +241,17 @@ data only.
 - [x] Live check against the external Try_Hard lab (PostgreSQL 16 primary and
   replica, e-commerce dataset, read-only pgbench load, a row-lock chain)
 
+## Separate backend and frontend images (2026-10-25)
+
+- [x] Backend image from `backend/` (no embedded UI; non-API paths answer 404
+  with a hint), frontend image from `web/` (nginx unprivileged, static UI,
+  `/api/` proxy with unbuffered events, same security headers)
+- [x] `LOCKLENS_TRUSTED_PROXIES` with IPs, CIDRs, and host names; right-most
+  untrusted `X-Forwarded-For` address for login rate limits and logs
+- [x] Compose: store, backend, frontend (only the frontend published); lab
+  overlay, scripts, smoke test, and E2E updated
+- [x] CI builds and pushes `locklens-backend` and `locklens-frontend` with their
+  own Docker Hub descriptions (`deploy/dockerhub/`)
+- [x] Documentation: new [deployment.md](deployment.md); README, architecture,
+  configuration, security, development, quickstart, testing, API
+
