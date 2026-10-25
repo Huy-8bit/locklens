@@ -89,5 +89,6 @@ versions and numbers.
 - [x] README, CLI reference, permissions, troubleshooting, testing docs updated
 - [x] `docs/test-report.md` written
 - [x] CI configured to run the same harness with bounded timeouts and a version matrix
+  (later reduced to unit tests and the image build; the harness runs locally)
 - [!] CI executed on GitHub: blocked, nothing has been pushed (out of scope)
 - [x] Test containers and volumes removed by exact project name

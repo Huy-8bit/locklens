@@ -285,11 +285,14 @@ make down        # remove the lab containers and volumes
 ## PostgreSQL versions
 
 The suite has been run against the pinned images listed in
-[test-report.md](test-report.md#environment). CI
-([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) is configured to run
-the same harness for 14.24, 15.19, 16.15, 17.11, and 18.6, plus the frontend
-checks and the E2E suite. It has not run on GitHub yet because nothing has
-been pushed.
+[test-report.md](test-report.md#environment); run it locally with
+`make test-integration` (or `make test-compat` for 14 through 18). CI
+([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) runs only the fast
+checks (Go formatting, vet, separation, build, unit tests with and without the
+race detector; frontend typecheck, lint, unit tests, build) and then builds and
+pushes the Docker image on pushes to `main` and `v*` tags. The integration
+suite, the browser E2E suite, and the demo scenarios are not part of CI; run
+`make test-integration`, `make e2e`, and `make demo` before a release.
 
 PostgreSQL 14 reaches end of life on 2026-11-12 according to the
 [PostgreSQL versioning policy](https://www.postgresql.org/support/versioning/).

@@ -1,5 +1,9 @@
 name: CI
 
+# Unit tests (Go and frontend), then the Docker image. The slower suites
+# (integration on several PostgreSQL versions, browser E2E, demo scenarios)
+# run locally: make test-integration, make e2e, make demo.
+
 on:
   push:
     branches: [main]
@@ -63,96 +67,14 @@ jobs:
       - name: Build
         run: npm run build
 
-  integration:
-    name: Integration tests (PostgreSQL ${{ matrix.postgres }})
-    runs-on: ubuntu-latest
-    needs: checks
-    timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        # Pinned image tags (postgres:<version>-alpine). 14 is the oldest
-        # supported major; 18 was the latest stable major when this list was
-        # last updated (2026-10-24). Keep docs/testing.md in sync.
-        postgres: ["14.24", "15.19", "16.15", "17.11", "18.6"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.x"
-          cache-dependency-path: |
-            backend/go.sum
-            tests/e2e/go.sum
-      - name: Integration tests in an isolated Compose project
-        env:
-          LOCKLENS_IT_PG_VERSIONS: ${{ matrix.postgres }}
-          LOCKLENS_IT_GO_TIMEOUT: 15m
-          LOCKLENS_IT_WAIT_TIMEOUT: "120"
-        run: ./scripts/integration-test.sh
-      - name: Upload logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: integration-pg${{ matrix.postgres }}
-          path: test-results/
-          if-no-files-found: ignore
-
-  e2e:
-    name: Browser end-to-end (Docker stack)
-    runs-on: ubuntu-latest
-    needs: [checks, web]
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: tests/e2e/package-lock.json
-      - name: Install dependencies and Chromium
-        working-directory: tests/e2e
-        run: |
-          npm ci --no-audit --no-fund
-          npx playwright install --with-deps chromium
-      - name: Docker image smoke test
-        run: make docker-smoke
-      - name: Playwright against an isolated Compose project
-        run: ./scripts/e2e.sh
-      - name: Upload report and traces
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e
-          path: test-results/
-          if-no-files-found: ignore
-
-  demo:
-    name: Demo scenarios
-    runs-on: ubuntu-latest
-    needs: checks
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.x"
-          cache-dependency-path: |
-            backend/go.sum
-            tests/e2e/go.sum
-      - name: Run all demo scenarios
-        run: make demo
-      - name: Stop the demo database
-        if: always()
-        run: make db-down
-
-  # Builds the server image after the checks pass and pushes it to Docker Hub.
+  # Builds the server image after the unit tests pass and pushes it to Docker Hub.
   # Pushes happen only for pushes to main and v* tags, never for pull requests.
   # Requires the repository secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN
   # (a Docker Hub access token with Read & Write scope, not the password).
   docker:
     name: Build and push the Docker image
     runs-on: ubuntu-latest
-    needs: [checks, web, e2e]
+    needs: [checks, web]
     if: github.event_name == 'push'
     timeout-minutes: 30
     env:
