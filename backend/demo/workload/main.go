@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -94,10 +95,14 @@ func run() error {
 
 	addr := env("LISTEN_ADDR", "0.0.0.0:8091")
 	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", addr, err)
+	}
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Printf("backend simulator listening on %s", addr)
-		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 	}()
