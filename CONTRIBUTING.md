@@ -53,7 +53,7 @@ welcome.
 
 - `gofmt`, `go vet`, idiomatic Go names.
 - Doc comments on exported identifiers; comments explain *why*, not *what*.
-- SQL in `backend/internal/postgres/sql/` or next to its collector or store code,
+- SQL in `backend/internal/lib/postgres/sql/` or next to its collector or store code,
   with a comment explaining assumptions and version requirements. Schema
   changes are new files in `backend/migrations/`; applied migrations are never edited.
 - Frontend: TypeScript strict mode, ESLint clean, accessible labels and

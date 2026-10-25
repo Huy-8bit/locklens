@@ -11,12 +11,13 @@ import type {
   SystemResponse,
   GridResult,
   Incident,
-  IncidentEvent,
+  IncidentEventsResponse,
   MetricsResponse,
   OverviewResponse,
   QueriesResponse,
   QueryDetailResponse,
   Replication,
+  Report,
   Role,
   Session,
   SetupPlan,
@@ -140,7 +141,17 @@ export function useIncident(id: number) {
 }
 
 export function useIncidentEvents(id: number) {
-  return useQuery({ queryKey: ['incidents', 'events', id], queryFn: () => api<{ events: IncidentEvent[]; has_more: boolean }>(`/api/v1/incidents/${id}/events?limit=1000`) })
+  return useQuery({ queryKey: ['incidents', 'events', id], queryFn: () => api<IncidentEventsResponse>(`/api/v1/incidents/${id}/events?limit=2000`) })
+}
+
+/** The blocking analysis of a snapshot stored in an incident event (evidence never changes, so it is cached). */
+export function useEventSnapshotReport(eventId: number | undefined, snapshot: unknown) {
+  return useQuery({
+    queryKey: ['incidents', 'snapshot-report', eventId],
+    queryFn: () => api<{ report: Report }>('/api/v1/snapshots/analyze', { method: 'POST', json: snapshot }).then((r) => r.report),
+    enabled: eventId !== undefined && !!snapshot,
+    staleTime: Infinity,
+  })
 }
 
 export function useAcknowledge(id: number) {

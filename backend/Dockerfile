@@ -15,7 +15,7 @@ ARG TARGETOS=linux
 ARG TARGETARCH
 RUN export GOOS=$TARGETOS GOARCH=$TARGETARCH CGO_ENABLED=0; \
     go build -trimpath \
-      -ldflags "-s -w -X github.com/locklens/locklens/internal/buildinfo.Version=${VERSION} -X github.com/locklens/locklens/internal/buildinfo.Commit=${COMMIT}" \
+      -ldflags "-s -w -X github.com/locklens/locklens/internal/lib/buildinfo.Version=${VERSION} -X github.com/locklens/locklens/internal/lib/buildinfo.Commit=${COMMIT}" \
       -o /out/locklens ./cmd/locklens \
  && go build -trimpath -ldflags "-s -w" -o /out/locklens-lab ./cmd/locklens-lab
 

@@ -5,7 +5,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/locklens/locklens/internal/cli"
+	"github.com/locklens/locklens/internal/transport/cli"
 )
 
 func main() {

@@ -68,11 +68,11 @@ Backend and storage
 - [x] Versioned migrations with advisory lock; idempotent startup (`TestMigrationsConcurrentAndIdempotent`)
 - [x] Retention cleanup in batches; incident retention separate from raw history (`TestRetentionInBatches`)
 - [x] Bounded write buffering on store outage with drop accounting and recorded gaps (writer unit tests, `TestOutageAndRecovery`)
-- [x] Liveness, readiness, request IDs, body/range/page limits, structured logs (`backend/internal/api` tests, `TestAuthAndSecurityHeaders`)
+- [x] Liveness, readiness, request IDs, body/range/page limits, structured logs (`backend/internal/transport/httpapi` tests, `TestAuthAndSecurityHeaders`)
 
 Security
 - [x] Localhost bind by default; admin bootstrap from environment
-- [x] bcrypt hashes; server-side sessions; CSRF protection; same-origin by default (`backend/internal/auth` tests, server and E2E tests)
+- [x] bcrypt hashes; server-side sessions; CSRF protection; same-origin by default (`backend/internal/domain/auth` tests, server and E2E tests)
 - [x] DSNs encrypted at rest; responses, logs, exports never contain DSNs or passwords (credential checks in every server-test response and E2E export)
 - [x] Query text off by default; per-target opt-in; never in metric labels (`TestRestrictedRoleAndQueryTextOptIn`, `TestPgStatStatementsAvailable`, obs tests)
 - [x] Import size limits and validation; HTML escaping; terminal sanitising (export tests, E2E import)
@@ -93,7 +93,7 @@ Collectors and views
 
 Incidents and rules
 - [x] Thirteen rules with IDs, versions, evidence, limitations; missing data never passes
-- [x] Five incident triggers; pre/during/post capture; cooldown and grouping; limits; acknowledge as metadata only (`backend/internal/incidents` integration tests)
+- [x] Five incident triggers; pre/during/post capture; cooldown and grouping; limits; acknowledge as metadata only (`backend/internal/domain/incidents` integration tests)
 - [x] Restart recovery of incident metadata (`TestRestartRecovery`, server restart test)
 
 CLI, exports, metrics

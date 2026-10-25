@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { commandColor, commandGroup } from './commands'
 import { bytes, compact, ms, num, pct, rate, seconds, UNKNOWN } from './format'
 import { absolute, isAbsolute, rangeQuery, rangeWindow, shifted, zoomedOut } from './scope'
+import { findingQueryKey, groupTimeline, queryKey } from './incident'
+import type { Finding, IncidentEvent } from '../api/types'
 
 describe('format', () => {
   it('renders unknown values as unknown, never as zero', () => {
@@ -68,3 +70,23 @@ describe('time ranges', () => {
   })
 })
 
+
+describe('incident timeline', () => {
+  const ev = (id: number, kind: string, summary = 's'): IncidentEvent => ({ id, at: `2026-10-25T13:00:${String(id).padStart(2, '0')}Z`, kind, summary, payload: {} })
+
+  it('collapses runs of identical routine samples', () => {
+    const rows = groupTimeline([ev(1, 'pre_trigger'), ev(2, 'pre_trigger'), ev(3, 'pre_trigger'), ev(4, 'trigger'), ev(5, 'sample'), ev(6, 'sample', 'changed')])
+    expect(rows.map((r) => (r.type === 'group' ? `${r.kind}x${r.events.length}` : r.event.kind))).toEqual(['pre_triggerx3', 'trigger', 'sample', 'sample'])
+  })
+
+  it('never collapses lifecycle events', () => {
+    const rows = groupTimeline([ev(1, 'trigger'), ev(2, 'trigger'), ev(3, 'resolved'), ev(4, 'resolved')])
+    expect(rows.every((r) => r.type === 'event')).toBe(true)
+  })
+
+  it('matches statement findings to statement keys', () => {
+    const key = { server_major: 18, dbid: 16384, userid: 10, toplevel: true, queryid: '6328518588233945134' }
+    expect(findingQueryKey({ key: `q:${queryKey(key)}` } as Finding)).toBe(queryKey(key))
+    expect(findingQueryKey({ key: 'root:42' } as Finding)).toBeNull()
+  })
+})

@@ -20,7 +20,7 @@ applies to PostgreSQL 14 and later unless noted.
 | [`pg_stat_activity`](https://www.postgresql.org/docs/current/monitoring-stats.html#MONITORING-PG-STAT-ACTIVITY-VIEW) | Session metadata: user, database, application, state, wait event, timestamps, optional query text | every role, but other roles' details need `pg_read_all_stats` |
 | [`pg_prepared_xacts`](https://www.postgresql.org/docs/current/view-pg-prepared-xacts.html) | Context for blockers reported as PID 0 | every role |
 
-The SQL lives in [`backend/internal/postgres/sql/`](../backend/internal/postgres/sql/), one
+The SQL lives in [`backend/internal/lib/postgres/sql/`](../backend/internal/lib/postgres/sql/), one
 commented file per query.
 
 ## How a collection works

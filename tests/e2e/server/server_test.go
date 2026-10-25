@@ -29,7 +29,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/locklens/locklens/demo/scenario"
-	"github.com/locklens/locklens/internal/server"
+	"github.com/locklens/locklens/internal/app"
+	"github.com/locklens/locklens/internal/config"
 )
 
 var (
@@ -64,7 +65,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// instance is one running server.
+// instance is one running app.
 type instance struct {
 	base   string
 	cancel context.CancelFunc
@@ -113,7 +114,7 @@ func start(t *testing.T, store, listen string) *instance {
 		"LOCKLENS_LISTEN": listen, "LOCKLENS_STORE_DSN": store, "LOCKLENS_MASTER_KEY": "dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktdGVzdDA=",
 		"LOCKLENS_ADMIN_PASSWORD": adminPassword, "LOCKLENS_DEMO_MODE": "true", "LOCKLENS_LOG_LEVEL": "warn",
 	}
-	cfg, err := server.LoadConfig(func(k string) string { return vars[k] })
+	cfg, err := config.LoadConfig(func(k string) string { return vars[k] })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ func start(t *testing.T, store, listen string) *instance {
 	inst := &instance{base: "http://" + listen, cancel: cancel, done: make(chan error, 1)}
 	logw := &bytes.Buffer{}
 	log := slog.New(slog.NewTextHandler(logw, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	go func() { inst.done <- server.Run(ctx, cfg, "it", log) }()
+	go func() { inst.done <- app.Run(ctx, cfg, "it", log) }()
 	t.Cleanup(func() {
 		if t.Failed() {
 			inst.stop(t)

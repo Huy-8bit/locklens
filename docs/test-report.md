@@ -50,7 +50,7 @@ superuser connection string.
 | --- | --- |
 | `make check` (gofmt, vet incl. integration tags, separation, unit, race), incl. the role × route matrix (20 routes × 3 roles), auth, and DSN rewriting tests | PASS |
 | Frontend typecheck, ESLint, Vitest (17 tests; new: viewer has no SQL editor, users management, superuser quick add with confirmation) | PASS |
-| Integration harness, PostgreSQL 14.24 and 18.6, now including `internal/onboard` (create roles on the primary, reuse on the standby, reader cannot `pg_terminate_backend` or `pg_read_file`, direct mode, wrong password not echoed) | PASS (7 packages per version) |
+| Integration harness, PostgreSQL 14.24 and 18.6, now including `internal/domain/onboard` (create roles on the primary, reuse on the standby, reader cannot `pg_terminate_backend` or `pg_read_file`, direct mode, wrong password not echoed) | PASS (7 packages per version) |
 | Browser E2E (`make e2e`, no API mocks), new steps: superuser onboarding in the UI, viewer signs in and is refused SQL and users | PASS (1 test, 15 steps, 1.1 min) |
 | axe-core with color contrast on Account, Settings (users), Add instance, advanced form, Explorer, SQL editor, light and dark | PASS after fixes |
 | Live check against the external Try_Hard lab (PostgreSQL 16.15 primary and streaming replica, 3.2 M rows): superuser DSN → roles created after confirmation (attributes verified in `pg_roles`), replica added by reusing them, topology, read-only pgbench load, a row-lock chain on `orders`, Explorer and SQL editor as operator, viewer refused | PASS (observed) |
@@ -198,9 +198,9 @@ performance smoke check, and GitHub Actions (nothing pushed).
 | Package | Tests | 14.24 | 15.19 | 16.15 | 17.11 | 18.6 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `tests/e2e/cli` (CLI end to end) | 34 | PASS | PASS | PASS | PASS | PASS |
-| `backend/internal/postgres` (tag `integration`) | 1 | PASS | PASS | PASS | PASS | PASS |
-| `backend/internal/storage` (tag `integration`) | 6 | PASS | PASS | PASS | PASS | PASS |
-| `backend/internal/incidents` (tag `integration`) | 5 | PASS | PASS | PASS | PASS | PASS |
+| `backend/internal/lib/postgres` (tag `integration`) | 1 | PASS | PASS | PASS | PASS | PASS |
+| `backend/internal/repository` (tag `integration`) | 6 | PASS | PASS | PASS | PASS | PASS |
+| `backend/internal/domain/incidents` (tag `integration`) | 5 | PASS | PASS | PASS | PASS | PASS |
 | `tests/e2e/server` (server over HTTP) | 6 | PASS | PASS | PASS | PASS | PASS |
 
 In the first matrix run, `tests/e2e/server` failed to *build* on 14.24 and 15.19
@@ -292,10 +292,10 @@ capacity guarantees.
 | 10 | Count charts showed fractional or repeated axis ticks | Integer ticks for count series | Screenshot review |
 | 11 | Tiles showed a truncated "unknown / unknown" | A single "unknown" when both values are unknown | Screenshot review |
 
-New unit tests written during verification: `backend/internal/api` (time ranges,
+New unit tests written during verification: `backend/internal/transport/httpapi` (time ranges,
 paging, downsampling bounds, body limits, path IDs, middleware),
-`backend/internal/hostmetrics` (parsing, rates, resets, size limit, URL rules),
-`backend/internal/targets` (validation without echoing DSNs).
+`backend/internal/lib/hostmetrics` (parsing, rates, resets, size limit, URL rules),
+`backend/internal/domain/targets` (validation without echoing DSNs).
 
 ## Not run or not verified
 
@@ -391,7 +391,7 @@ docker compose ls -a --filter name=locklens-it                       # leftover 
 #### Integration matrix
 
 35 tests per version (34 in `tests/e2e/cli`, plus
-`TestSessionEndingMidCollection` in `backend/internal/postgres`; the unit test in that
+`TestSessionEndingMidCollection` in `backend/internal/lib/postgres`; the unit test in that
 package also runs). All run with `-race`, against a binary built with `-race`.
 
 | Version | Tests | Result | Duration |
@@ -453,8 +453,8 @@ Manual checks (PostgreSQL 17.11 demo database, executed once):
 | Documented cleanup command for a leftover `locklens-it-*` project removes it and its volumes; port bound to `127.0.0.1` | PASS |
 
 Graph shapes not reproduced on a live server (shared descendants, duplicate
-edges, cycles, self loops) are covered by unit tests in `backend/internal/graph`,
-`backend/internal/report`, and `backend/internal/render` (PASS). No scenario was BLOCKED.
+edges, cycles, self loops) are covered by unit tests in `backend/internal/domain/graph`,
+`backend/internal/domain/report`, and `backend/internal/lib/render` (PASS). No scenario was BLOCKED.
 
 #### Selected observations
 

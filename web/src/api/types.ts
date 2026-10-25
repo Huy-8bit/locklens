@@ -1,4 +1,4 @@
-// Types of the LockLens REST API (internal/api). Nullable fields mean
+// Types of the LockLens REST API (internal/transport/httpapi). Nullable fields mean
 // "unknown or unavailable" and must never be rendered as zero.
 
 export type TargetState = 'pending' | 'healthy' | 'degraded' | 'unreachable' | 'disabled'
@@ -196,12 +196,41 @@ export interface Incident {
 
 export interface IncidentEvent { id: number; at: string; kind: string; summary: string; payload: Record<string, unknown> }
 
+/** pg_stat_statements identity key; queryid is a string to keep every digit. */
+export interface QueryKey { server_major: number; dbid: number; userid: number; toplevel: boolean; queryid: string }
+
+/** A statement named by an incident, resolved to its stored identity. */
+export interface QueryRef { key: QueryKey; identity_id: number; datname: string; username: string; command: string; query_text: string | null }
+
+export interface IncidentEventsResponse { events: IncidentEvent[]; has_more: boolean; statements: QueryRef[] }
+
+/** One statement of a workload summary event (top statements by total time). */
+export interface WorkloadEntry { key: QueryKey; datname: string; username: string; text?: string; calls: number; total_exec_ms: number; rows: number; mean_exec_ms: number | null; share_of_total_time: number | null }
+
+/** One client session in a "sessions" event (recorded when an incident opens). */
+export interface SessionBrief {
+  pid: number
+  database: string | null
+  user: string | null
+  application_name: string | null
+  client_addr: string | null
+  state: string | null
+  wait_event_type: string | null
+  wait_event: string | null
+  query_age_seconds: number | null
+  transaction_age_seconds: number | null
+  blocked_by?: number[]
+  blocks?: number
+  query?: string
+  query_truncated?: boolean
+}
+
 export interface SeriesPoint { gap?: boolean; t: string; v: number | null; n: number; known: number }
 export interface Series { last_sample_at?: string; collector?: string; metric: string; label?: string; aggregation: string; points: SeriesPoint[] }
 export interface Gap { collector: string; from: string; to: string; reason: string }
 export interface MetricsResponse { collectors?: Record<string, CollectorStatus>; annotations?: { id: number; title: string; opened_at: string; resolved_at?: string | null; severity: string }[]; annotations_truncated?: boolean; gaps_truncated?: boolean; collection_interval_seconds?: number; from: string; to: string; step_seconds: number; series: Series[]; gaps: Gap[] }
 
-// Blocking report (internal/report).
+// Blocking report (internal/domain/report).
 export interface WaitingLock {
   pid: number
   locktype: string

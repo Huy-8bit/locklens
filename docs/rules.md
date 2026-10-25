@@ -2,7 +2,7 @@
 
 LockLens evaluates a fixed set of deterministic rules after every activity
 collection of a target. Rules are plain Go functions in
-[backend/internal/rules](../backend/internal/rules); there is no machine learning and no
+[backend/internal/domain/rules](../backend/internal/domain/rules); there is no machine learning and no
 external service.
 
 ## What a finding contains
@@ -148,12 +148,12 @@ time as evidence.
 ## Adding a rule
 
 1. Add an ID constant and version in
-   [backend/internal/rules/types.go](../backend/internal/rules/types.go), and thresholds with
+   [backend/internal/domain/rules/types.go](../backend/internal/domain/rules/types.go), and thresholds with
    defaults and validation if needed.
 2. Implement it as a function `func(Input, Thresholds) []Finding` that returns
    `insufficient(...)` when its inputs are missing.
-3. Register it in [backend/internal/rules/engine.go](../backend/internal/rules/engine.go).
+3. Register it in [backend/internal/domain/rules/engine.go](../backend/internal/domain/rules/engine.go).
 4. Add table-driven tests in
-   [backend/internal/rules/rules_test.go](../backend/internal/rules/rules_test.go), including
+   [backend/internal/domain/rules/rules_test.go](../backend/internal/domain/rules/rules_test.go), including
    the missing-data case.
 5. Document it here.

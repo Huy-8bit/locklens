@@ -252,9 +252,12 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     await link.click()
     await expect(page).toHaveURL(/\/incidents\/\d+/)
     incidentURL = new URL(page.url()).pathname
-    await expect(page.getByText('trigger', { exact: true }).first()).toBeVisible()
-    await page.getByRole('button', { name: 'Show blocking graph' }).first().click()
+    await expect(page.getByRole('heading', { name: 'What happened' })).toBeVisible()
+    await expect(page.getByText('opened', { exact: true }).first()).toBeVisible()
+    // The stored blocking graph and the sessions at the trigger render without a click.
+    await expect(page.getByRole('heading', { name: 'Who blocks whom' })).toBeVisible()
     await expect(page.getByRole('list', { name: /Blocking tree/ }).first()).toBeVisible()
+    await expect(page.getByRole('table', { name: 'Client sessions at the trigger' })).toBeVisible()
     await expectAccessible(page, 'incident')
   })
 

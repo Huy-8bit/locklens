@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/demo/scenario"
-	"github.com/locklens/locklens/internal/model"
+	"github.com/locklens/locklens/internal/domain/model"
 )
 
 // assertFileHasNoSecrets checks a file for every known password and DSN.

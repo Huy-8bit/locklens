@@ -167,7 +167,11 @@ body { background: var(--bg); color: var(--ink); font-family: var(--font-sans); 
 
 /* Chart tooltips (TimeChart): classes instead of inline styles, which the
    Content Security Policy refuses inside generated HTML. */
-.ll-tooltip { padding: 8px 10px !important; min-width: 180px; font-size: 12px; color: var(--ink-2); box-shadow: 0 8px 24px rgb(0 0 0 / 0.12); border-radius: 10px !important; }
+/* Until echarts styles the tooltip (its first style attribute is refused by
+   the CSP), keep the empty box out of the layout instead of a strip below
+   the chart. */
+.ll-tooltip:not([style]), .ll-tooltip[style=""] { display: none; }
+.ll-tooltip { position: absolute; z-index: 10; pointer-events: none; padding: 8px 10px !important; min-width: 180px; font-size: 12px; color: var(--ink-2); box-shadow: 0 8px 24px rgb(0 0 0 / 0.12); border-radius: 10px !important; }
 .ll-tt-time { margin-bottom: 6px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ll-tt-row { display: flex; align-items: center; gap: 8px; line-height: 1.7; }
 .ll-tt-dot { width: 10px; height: 10px; flex: none; }

@@ -31,6 +31,7 @@ The timeline is a list of events, written once and never edited:
 | `pre_trigger` | Up to 30 samples from before the trigger, taken from an in-memory buffer: session/blocking summary, key metrics, active findings |
 | `blocking_snapshot` | The full activity snapshot whenever the blocking graph changes shape (sessions, edges, waiting locks). Before the trigger, each distinct graph in the buffer is kept |
 | `trigger` | The finding(s) that opened the incident, with evidence, explanation, next checks, and limitations |
+| `sessions` | The client sessions that were running a query, holding a transaction, or waiting when the incident opened (at most 25: blockers first, then the longest running), with user, database, application, state, wait event, durations, blocking relations, and the statement text where SQL text is collected. Counts come from `pg_stat_activity` |
 | `visibility` | A warning that the monitoring role could not see all sessions |
 | `workload` | Top queries by execution time around a workload trigger |
 | `sample` | A summary at most every 60 s while the condition lasts, and on every graph change |
@@ -44,6 +45,32 @@ The timeline is a list of events, written once and never edited:
 
 Pre-trigger data exists only if LockLens was collecting before the problem
 started; the UI says so.
+
+## Reading an incident in the UI
+
+The incident page answers, in order:
+
+1. **What happened**: the rule in plain words, the observations, and the key
+   numbers (for a slower statement: time per call before → after, calls, total
+   time, and its share of all execution time; for blocking: sessions waiting,
+   the root blocker, lock wait and transaction age).
+2. **Which statement or session**: for statement rules, the statement's SQL
+   (when SQL text is collected) with its time per call and calls per second
+   around the incident and a link to its page; for blocking rules, the stored
+   blocking graph. In both cases, the sessions that were active when the
+   incident opened, with their SQL.
+3. **What the server was busy with**: the top statements by execution time in
+   the window before the trigger, compared with the window before that.
+4. **Context**: sessions, execution time, blocked sessions, and connections from
+   30 minutes before until 10 minutes after the incident, with the incident
+   shaded.
+5. **Timeline**: every recorded event; runs of identical routine samples are
+   collapsed into one row.
+
+Statements are linked through their `pg_stat_statements` key (server major,
+database, user, top-level flag, queryid); the events API returns the stored
+identities they resolve to (`statements`). SQL text follows the instance's
+setting, and exports leave it out unless asked.
 
 ## Lifecycle and limits
 

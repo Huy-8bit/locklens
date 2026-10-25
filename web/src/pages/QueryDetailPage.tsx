@@ -2,7 +2,6 @@ import { useMemo } from 'react'
 import { Link, useParams } from 'react-router'
 import { ArrowLeft } from 'lucide-react'
 import { useQueryDetail } from '../api/hooks'
-import type { QueryDetailResponse } from '../api/types'
 import { slot } from '../components/MetricCard'
 import { PageHeader, useNumParam } from '../components/Shell'
 import { CopyButton, formatSql, SqlText } from '../components/SqlText'
@@ -11,25 +10,7 @@ import { Badge, Card, KeyValue, Load, Notice, Stat } from '../components/ui'
 import { commandColor, COMMAND_LABEL } from '../lib/commands'
 import { compact, ms, num, rate, time } from '../lib/format'
 import { useRange } from '../lib/scope'
-
-function bucketSeries(d: QueryDetailResponse) {
-  const step = d.step_seconds * 1000
-  const calls: [number, number | null][] = []
-  const mean: [number, number | null][] = []
-  let prev: number | null = null
-  for (const b of d.buckets) {
-    const t = Date.parse(b.t)
-    if (prev !== null && t - prev > 1.5 * step) {
-      calls.push([prev + step, null])
-      mean.push([prev + step, null])
-    }
-    const known = !b.gap && b.covered_seconds > 0
-    calls.push([t, known ? b.calls / b.covered_seconds : null])
-    mean.push([t, known && b.calls > 0 ? b.total_exec_ms / b.calls : null])
-    prev = t
-  }
-  return { calls, mean }
-}
+import { bucketSeries } from '../lib/statements'
 
 export default function QueryDetailPage() {
   const id = useNumParam('targetId')

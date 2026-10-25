@@ -55,7 +55,7 @@ flowchart LR
 ### Request and data flow
 
 1. **Targets** are stored in the monitoring store with the DSN encrypted
-   (`backend/internal/secret`, AES-256-GCM). `backend/internal/targets` validates input,
+   (`backend/internal/lib/secret`, AES-256-GCM). `backend/internal/domain/targets` validates input,
    encrypts DSNs, tests connections, and notifies the manager.
 2. **`collector.Manager`** keeps one worker goroutine per enabled target and
    re-reads targets when they change. Each worker owns a small pgx pool,
@@ -71,37 +71,39 @@ flowchart LR
    is bounded; when full, the oldest batch is dropped and later recorded as a
    collection gap.
 5. After each activity collection, the **incident recorder** evaluates the
-   rules (`backend/internal/rules`) on the in-memory history, synchronises findings to
+   rules (`backend/internal/domain/rules`) on the in-memory history, synchronises findings to
    the store, and opens, extends, or resolves incidents with evidence events.
    See [rules.md](rules.md) and [incidents.md](incidents.md).
-6. The **API** (`backend/internal/api`) serves live values from memory and history from
-   the store, authenticates every request (`backend/internal/auth`), and publishes
+6. The **API** (`backend/internal/transport/httpapi`) serves live values from memory and history from
+   the store, authenticates every request (`backend/internal/domain/auth`), and publishes
    server-sent events (`target.collected`, `target.status`,
    `incident.updated`) that tell the UI which queries to refresh. See
    [api.md](api.md).
-7. **Retention** (`backend/internal/retention`) deletes expired rows hourly in small
+7. **Retention** (`backend/internal/domain/retention`) deletes expired rows hourly in small
    batches. See [storage-and-retention.md](storage-and-retention.md).
 
 ### Packages
 
 | Package | Responsibility |
 | --- | --- |
-| `backend/internal/server` | Configuration from the environment, wiring, startup (migrations, admin bootstrap, bootstrap targets, restart recovery), graceful shutdown |
-| `backend/internal/storage` | Monitoring store: embedded migrations with an advisory lock, all SQL for targets, metrics, statements, snapshots, findings, incidents, sessions, retention |
-| `backend/internal/secret` | AES-256-GCM sealing of DSNs with the master key |
-| `backend/internal/auth` | bcrypt passwords, server-side sessions, CSRF and Origin checks, login rate limiting |
-| `backend/internal/targets` | Target validation, encryption, connection tests, bootstrap file |
-| `backend/internal/collector` | Manager, per-target workers, collectors, counters and deltas, capability detection, writer, target state |
-| `backend/internal/observe` | Shared types for collected data (capabilities, points, statement deltas, replication, table health) |
-| `backend/internal/hostmetrics` | node_exporter scraping and parsing (size-limited) |
-| `backend/internal/rules`, `backend/internal/finding` | Deterministic rules, thresholds, findings with evidence |
-| `backend/internal/incidents` | Incident recorder: pre-trigger buffer, lifecycle, limits, recovery |
-| `backend/internal/settings` | Rule thresholds persisted in the store (demo defaults in demo mode) |
-| `backend/internal/export` | Incident JSON (versioned) and standalone HTML reports; import validation |
-| `backend/internal/api` | HTTP handlers, middleware (request IDs, security headers, limits), SSE hub |
-| `backend/internal/obs` | Prometheus-format metrics with bounded labels |
-| `backend/internal/retention` | Periodic cleanup loop |
-| `backend/internal/onboard` | Adding an instance from one connection string, including LockLens's own least-privilege roles |
+| `backend/internal/app` | Wiring and startup of `locklens server` (store and migrations, admin bootstrap, bootstrap targets, restart recovery), graceful shutdown |
+| `backend/internal/config` | Server settings from the environment; PostgreSQL connection settings and credential redaction |
+| `backend/internal/lib/logger` | Structured loggers (text or JSON) on stderr |
+| `backend/internal/repository` | Monitoring store: embedded migrations with an advisory lock, all SQL for targets, metrics, statements, snapshots, findings, incidents, sessions, retention |
+| `backend/internal/lib/secret` | AES-256-GCM sealing of DSNs with the master key |
+| `backend/internal/domain/auth` | bcrypt passwords, server-side sessions, CSRF and Origin checks, login rate limiting |
+| `backend/internal/domain/targets` | Target validation, encryption, connection tests, bootstrap file |
+| `backend/internal/domain/collector` | Manager, per-target workers, collectors, counters and deltas, capability detection, writer, target state |
+| `backend/internal/domain/observe` | Shared types for collected data (capabilities, points, statement deltas, replication, table health) |
+| `backend/internal/lib/hostmetrics` | node_exporter scraping and parsing (size-limited) |
+| `backend/internal/domain/rules`, `backend/internal/domain/finding` | Deterministic rules, thresholds, findings with evidence |
+| `backend/internal/domain/incidents` | Incident recorder: pre-trigger buffer, lifecycle, limits, recovery |
+| `backend/internal/domain/settings` | Rule thresholds persisted in the store (demo defaults in demo mode) |
+| `backend/internal/domain/export` | Incident JSON (versioned) and standalone HTML reports; import validation |
+| `backend/internal/transport/httpapi` | HTTP handlers, middleware (request IDs, security headers, limits), SSE hub |
+| `backend/internal/lib/obs` | Prometheus-format metrics with bounded labels |
+| `backend/internal/domain/retention` | Periodic cleanup loop |
+| `backend/internal/domain/onboard` | Adding an instance from one connection string, including LockLens's own least-privilege roles |
 | `web/` | React + TypeScript UI (Vite, React Router, TanStack Query, Apache ECharts, Tailwind CSS), its Dockerfile, and the nginx configuration of the frontend image |
 
 ### Frontend
@@ -173,16 +175,16 @@ flowchart LR
 
 | Package | Responsibility | Depends on the database? |
 | --- | --- | --- |
-| `backend/internal/cli` | Cobra commands, flag validation, exit codes, signal handling, `watch` loop and backoff; `server`, `migrate`, `admin`, `incident` commands | via `postgres` / `server` |
+| `backend/internal/transport/cli` | Cobra commands, flag validation, exit codes, signal handling, `watch` loop and backoff; `server`, `migrate`, `admin`, `incident` commands | via `postgres` / `server` |
 | `backend/internal/config` | `--dsn` / `LOCKLENS_DSN` precedence, pgx pool configuration with observer session settings, credential redaction | no |
-| `backend/internal/postgres` | Connection pool, exclusion of LockLens' own PIDs, the activity collection queries (`sql/*.sql`, embedded), read-only transactions, doctor checks, error hints | yes |
-| `backend/internal/model` | Snapshot types: raw observations only | no |
-| `backend/internal/snapshot` | Crash-safe, no-clobber file writes; decoding with schema version checks | no |
-| `backend/internal/graph` | Graph algorithms: deduplication, counts, roots, cycles, components | no |
-| `backend/internal/report` | Builds the analysis (node kinds, ages, long transactions, warnings) from a snapshot | no |
-| `backend/internal/render` | Table and JSON/NDJSON output | no |
-| `backend/internal/textsafe` | UTF-8-safe truncation and neutralisation of control characters | no |
-| `backend/internal/buildinfo` | Version metadata injected with `-ldflags` | no |
+| `backend/internal/lib/postgres` | Connection pool, exclusion of LockLens' own PIDs, the activity collection queries (`sql/*.sql`, embedded), read-only transactions, doctor checks, error hints | yes |
+| `backend/internal/domain/model` | Snapshot types: raw observations only | no |
+| `backend/internal/lib/snapshot` | Crash-safe, no-clobber file writes; decoding with schema version checks | no |
+| `backend/internal/domain/graph` | Graph algorithms: deduplication, counts, roots, cycles, components | no |
+| `backend/internal/domain/report` | Builds the analysis (node kinds, ages, long transactions, warnings) from a snapshot | no |
+| `backend/internal/lib/render` | Table and JSON/NDJSON output | no |
+| `backend/internal/lib/textsafe` | UTF-8-safe truncation and neutralisation of control characters | no |
+| `backend/internal/lib/buildinfo` | Version metadata injected with `-ldflags` | no |
 | `backend/demo/scenario`, `backend/cmd/locklens-demo`, `backend/demo/lab`, `backend/cmd/locklens-lab` | Create real contention for the demo, the lab, and integration tests | yes (writes) |
 
 ### Activity collection
@@ -273,7 +275,7 @@ dependencies are pinned in [web/package.json](../web/package.json).
 
 ## On-demand investigation boundary
 
-`backend/internal/workspace` uses target-specific capabilities and an encrypted DSN,
+`backend/internal/domain/workspace` uses target-specific capabilities and an encrypted DSN,
 separate from collector pools. Requests acquire bounded concurrency, connect with a
 restricted role, begin a read-only transaction, execute bounded catalog/data/cursor
 queries, audit safe metadata and discard the connection. There is no background table

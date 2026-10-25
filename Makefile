@@ -9,7 +9,7 @@ BIN_DIR   ?= bin
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null)
 DATE      ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-PKG       := github.com/locklens/locklens/internal/buildinfo
+PKG       := github.com/locklens/locklens/internal/lib/buildinfo
 LDFLAGS   := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
 
 # Lab databases published by deploy/compose.lab.yaml. Fake, local-only credentials.

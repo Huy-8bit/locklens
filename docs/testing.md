@@ -8,23 +8,23 @@ How LockLens is tested. The QA checklist is in
 
 | Layer | Where | Needs a database | What it proves |
 | --- | --- | --- | --- |
-| Graph algorithms | `backend/internal/graph` | no | Counts, roots, cycles, duplicates, shared descendants, determinism |
-| Analysis | `backend/internal/report` | no | Node kinds, the three ages, thresholds, NULL handling, warnings |
-| Rendering | `backend/internal/render` | no | Sanitising, shared nodes, cycles terminate, query opt-in, NDJSON lines |
-| Text safety | `backend/internal/textsafe` | no | Rune truncation, control and bidi characters |
+| Graph algorithms | `backend/internal/domain/graph` | no | Counts, roots, cycles, duplicates, shared descendants, determinism |
+| Analysis | `backend/internal/domain/report` | no | Node kinds, the three ages, thresholds, NULL handling, warnings |
+| Rendering | `backend/internal/lib/render` | no | Sanitising, shared nodes, cycles terminate, query opt-in, NDJSON lines |
+| Text safety | `backend/internal/lib/textsafe` | no | Rune truncation, control and bidi characters |
 | Configuration | `backend/internal/config` | no | DSN precedence, observer settings, redaction, unparsable DSNs never echoed |
-| Snapshot files | `backend/internal/snapshot` | no | Round trip, no-clobber, atomic writes, versions, corrupt files, docs example |
-| CLI behaviour | `backend/internal/cli` | no | Exit codes, offline `snapshot show`, `watch` retries and clean cancel |
-| Error hints | `backend/internal/postgres` | no | SQLSTATE classification for hints and fatal errors |
-| Counters and writer | `backend/internal/collector` | no | Deltas and rates, unknown on first sample/restart/reset/decrease/gap, created and dropped scopes, bounded queue drops the oldest, retries |
-| Rules | `backend/internal/rules` | no | Persistence, streaks broken by gaps and PID reuse, insufficient data never passes, every rule's thresholds |
-| Auth and secrets | `backend/internal/auth`, `backend/internal/secret` | no | Sessions, rate limiting, CSRF and Origin, password policy; AES-GCM round trip, tampering, wrong key and context |
-| API helpers and middleware | `backend/internal/api` | no | Time ranges, paging, downsampling bounds, body limits and unknown fields, path IDs, security headers, request IDs, 401/404/405 |
-| Targets, host metrics | `backend/internal/targets`, `backend/internal/hostmetrics` | no | Validation without echoing DSNs; exporter parsing, rates, resets, size limit, URL rules |
-| Exports, metrics | `backend/internal/export`, `backend/internal/obs` | no | Query text scrubbed by default, standalone escaped HTML, import validation; exposition format, label cardinality guard |
-| Collector edge case | `backend/internal/postgres` (tag `integration`) | yes | A session terminated in the middle of a collection |
-| Monitoring store | `backend/internal/storage` (tag `integration`) | yes | Concurrent idempotent migrations, sessions, soft delete and purge, query aggregation and coverage, batched retention, findings sync |
-| Incident recorder | `backend/internal/incidents` (tag `integration`) | yes | Persistence, deduplication, resolution, cooldown regrouping, root changes, restart recovery, size and duration limits |
+| Snapshot files | `backend/internal/lib/snapshot` | no | Round trip, no-clobber, atomic writes, versions, corrupt files, docs example |
+| CLI behaviour | `backend/internal/transport/cli` | no | Exit codes, offline `snapshot show`, `watch` retries and clean cancel |
+| Error hints | `backend/internal/lib/postgres` | no | SQLSTATE classification for hints and fatal errors |
+| Counters and writer | `backend/internal/domain/collector` | no | Deltas and rates, unknown on first sample/restart/reset/decrease/gap, created and dropped scopes, bounded queue drops the oldest, retries |
+| Rules | `backend/internal/domain/rules` | no | Persistence, streaks broken by gaps and PID reuse, insufficient data never passes, every rule's thresholds |
+| Auth and secrets | `backend/internal/domain/auth`, `backend/internal/lib/secret` | no | Sessions, rate limiting, CSRF and Origin, password policy; AES-GCM round trip, tampering, wrong key and context |
+| API helpers and middleware | `backend/internal/transport/httpapi` | no | Time ranges, paging, downsampling bounds, body limits and unknown fields, path IDs, security headers, request IDs, 401/404/405 |
+| Targets, host metrics | `backend/internal/domain/targets`, `backend/internal/lib/hostmetrics` | no | Validation without echoing DSNs; exporter parsing, rates, resets, size limit, URL rules |
+| Exports, metrics | `backend/internal/domain/export`, `backend/internal/lib/obs` | no | Query text scrubbed by default, standalone escaped HTML, import validation; exposition format, label cardinality guard |
+| Collector edge case | `backend/internal/lib/postgres` (tag `integration`) | yes | A session terminated in the middle of a collection |
+| Monitoring store | `backend/internal/repository` (tag `integration`) | yes | Concurrent idempotent migrations, sessions, soft delete and purge, query aggregation and coverage, batched retention, findings sync |
+| Incident recorder | `backend/internal/domain/incidents` (tag `integration`) | yes | Persistence, deduplication, resolution, cooldown regrouping, root changes, restart recovery, size and duration limits |
 | CLI end to end | `tests/e2e/cli` (tag `integration`) | yes | Real contention observed through the built binary |
 | Server end to end | `tests/e2e/server` (tag `integration`) | yes | `locklens server` in process, exercised only over HTTP |
 | Frontend | `web/src/**/*.test.{ts,tsx}` (Vitest, Testing Library, axe-core) | no | Unknown vs. zero, statement-type rates and gaps, query mix, login, overview, queries filtering, data-access setup with confirmation, accessibility |
@@ -53,8 +53,8 @@ database-backed tests. For each PostgreSQL version it:
    both the available and the unavailable case are covered);
 5. creates a temporary Go workspace containing `backend/` and `tests/e2e/`,
    then runs `go test -tags integration -race -p 1` from the repository root for `./tests/e2e/cli/...`,
-   `./backend/internal/postgres/...`, `./backend/internal/storage/...`,
-   `./backend/internal/incidents/...`, and `./tests/e2e/server/...` with explicit DSNs in
+   `./backend/internal/lib/postgres/...`, `./backend/internal/repository/...`,
+   `./backend/internal/domain/incidents/...`, and `./tests/e2e/server/...` with explicit DSNs in
    the environment. Packages run one at a time because they share the
    database server;
 6. removes the project with `docker compose -p <project> down -v`, also when
@@ -254,7 +254,7 @@ capacity guarantee.
 
 Graph shapes that are hard to create deterministically on a live server
 (shared descendants, duplicate edges, cycles, self loops) are covered by unit
-tests in `backend/internal/graph`, `backend/internal/report`, and `backend/internal/render`. A cycle is
+tests in `backend/internal/domain/graph`, `backend/internal/domain/report`, and `backend/internal/lib/render`. A cycle is
 always reported as a cycle and never as a confirmed deadlock.
 
 ## Unit test scenarios
@@ -323,7 +323,7 @@ runs its browser flows against another isolated stack.
 
 ## Investigation workspace checks
 
-`backend/internal/workspace` adds unit and integration coverage for safe error messages,
+`backend/internal/domain/workspace` adds unit and integration coverage for safe error messages,
 session-owned cancellation, policy isolation/revocation, bounded concurrency, cursor
 query grammar, read-only rejection, keyset pagination, parameterized filtering,
 NULL/empty values, serialized JSON/protocol limits and catalogs. The integration harness

@@ -1,5 +1,6 @@
-// Package config resolves connection settings and keeps credentials out of
-// user-visible output.
+// Package config holds LockLens' configuration: the server's settings from the
+// environment (server.go) and PostgreSQL connection settings that keep
+// credentials out of user-visible output (config.go, redact.go).
 package config
 
 import (

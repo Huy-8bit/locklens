@@ -18,9 +18,9 @@ import (
 
 	"github.com/locklens/locklens/demo/scenario"
 	"github.com/locklens/locklens/internal/config"
-	"github.com/locklens/locklens/internal/model"
-	"github.com/locklens/locklens/internal/postgres"
-	"github.com/locklens/locklens/internal/report"
+	"github.com/locklens/locklens/internal/domain/model"
+	"github.com/locklens/locklens/internal/domain/report"
+	"github.com/locklens/locklens/internal/lib/postgres"
 )
 
 // A. Healthy database.

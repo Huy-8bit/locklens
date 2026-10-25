@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/internal/config"
-	"github.com/locklens/locklens/internal/model"
-	"github.com/locklens/locklens/internal/postgres"
+	"github.com/locklens/locklens/internal/domain/model"
+	"github.com/locklens/locklens/internal/lib/postgres"
 )
 
 // TestObserverOverheadSmoke repeatedly collects snapshots from a quiet

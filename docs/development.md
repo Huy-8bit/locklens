@@ -35,6 +35,19 @@ backend/
   cmd/locklens-demo/     CLI demo runner
   cmd/locklens-lab/      lab scenario runner
   internal/             application packages and colocated unit/integration tests
+    app/                wiring and startup of `locklens server`
+    config/             server settings from the environment, connection settings, redaction
+    domain/             business logic: rules, incidents, collector, targets, onboarding,
+                        workspace, auth, settings, retention, export, and the shared
+                        data types (model, observe, finding, graph, report)
+    repository/         monitoring store access: every SQL statement against the store,
+                        one file per area (targets, queries, series, snapshots, incidents, ...)
+    transport/httpapi/  REST API, server-sent events, middleware, request parsing
+    transport/cli/      the locklens command line
+    lib/                technical building blocks without business rules: postgres
+                        (target connections and embedded collection SQL), hostmetrics
+                        (node_exporter client), logger, obs (metrics), secret, render,
+                        snapshot files, textsafe, buildinfo
   migrations/           embedded monitoring store SQL migrations
   demo/scenario/        contention helpers used only by demos and tests
   demo/lab/             lab scenario implementation
@@ -134,11 +147,16 @@ production UI into `web/dist`.
   the CLI and escaped by React or `html/template` elsewhere.
 - Collectors run only read-only SQL. Demo code that writes belongs in `backend/demo/`; fixtures stay in `demo/`.
 - Unknown values are `NULL`/`null`, never `0`.
-- New SQL goes into `backend/internal/postgres/sql/` or next to its collector with a
+- New SQL goes into `backend/internal/lib/postgres/sql/` or next to its collector with a
   comment explaining assumptions and version requirements.
 - Frontend: no mock data in production code; every page has loading, empty,
   partial, and error states; time ranges and filters live in the URL.
 - Comments explain *why*; do not restate the code.
+- Backend layers depend downwards only: `transport` → `domain` → `repository`
+  and `lib`. `lib` packages hold no business rules; they may use the shared
+  data types in `domain/model` and `domain/report`, never a domain service.
+  SQL against the monitoring store lives in `repository`, SQL against monitored
+  servers in `lib/postgres`.
 
 ## Adding a feature
 
@@ -151,7 +169,7 @@ production UI into `web/dist`.
      if it is a counter, and [collectors.md](collectors.md#metrics);
    - a new rule: see [rules.md](rules.md#adding-a-rule);
    - a schema change: a new numbered file in `backend/migrations/` (never edit an
-     applied migration), plus storage code and retention if it holds history;
+     applied migration), plus repository code and retention if it holds history;
    - an API field: handler, `web/src/api/types.ts`, and [api.md](api.md).
 4. **Snapshot compatibility:** a new optional field keeps `schema_version`; a
    removed, renamed, or re-typed field requires a version bump. The same
@@ -174,4 +192,4 @@ kill -INT %1
 
 Then paste the file into the example block of
 [snapshot-format.md](snapshot-format.md) and update the PIDs quoted in
-`backend/internal/cli/cli_test.go` (`TestSnapshotShowDocumentedExample`).
+`backend/internal/transport/cli/cli_test.go` (`TestSnapshotShowDocumentedExample`).

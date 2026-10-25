@@ -33,8 +33,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/locklens/locklens/demo/scenario"
-	"github.com/locklens/locklens/internal/model"
-	"github.com/locklens/locklens/internal/report"
+	"github.com/locklens/locklens/internal/domain/model"
+	"github.com/locklens/locklens/internal/domain/report"
 )
 
 // Connection strings and harness metadata, all required.

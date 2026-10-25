@@ -59,6 +59,10 @@ interface TimeChartProps {
   integer?: boolean
   /** Offer the "view larger" button. */
   expandable?: boolean
+  /** Drag to zoom the page's time range (off for charts with a fixed window). */
+  zoomable?: boolean
+  /** A shaded window, for example an incident from opening to resolution. */
+  highlight?: GapRange
 }
 
 /**
@@ -69,7 +73,7 @@ interface TimeChartProps {
  * open a larger view. Hovering shows a crosshair synchronised across charts.
  */
 export function TimeChart(props: TimeChartProps) {
-  const { series, format, height = 220, stacked = false, area = false, from, to, gaps = [], label, emptyText = 'No samples in this time range', legend = true, compactAxis = false, axisWidth, integer = false, expandable = true } = props
+  const { series, format, height = 220, stacked = false, area = false, from, to, gaps = [], label, emptyText = 'No samples in this time range', legend = true, compactAxis = false, axisWidth, integer = false, expandable = true, zoomable = true, highlight } = props
   const el = useRef<HTMLDivElement>(null)
   const chart = useRef<echarts.ECharts | null>(null)
   const themeVersion = useThemeVersion()
@@ -87,6 +91,7 @@ export function TimeChart(props: TimeChartProps) {
     const axis = cssVar('var(--axis)')
     const surface = cssVar('var(--surface)')
     const crit = cssVar('var(--warn-mark)')
+    const mark = cssVar('var(--crit-mark)')
     const span = to - from
     const colors = new Map(series.map((s) => [s.label, cssVar(s.color)]))
     return {
@@ -156,11 +161,21 @@ export function TimeChart(props: TimeChartProps) {
           itemStyle: { color },
           areaStyle: stacked ? { color, opacity: 0.9 } : area ? { color, opacity: 0.18 } : undefined,
           emphasis: { focus: 'series' },
-          markArea: i === 0 && gaps.length ? { silent: true, itemStyle: { color: crit, opacity: 0.1 }, data: gaps.map((g) => [{ xAxis: g.from }, { xAxis: g.to }]) } : undefined,
+          markArea:
+            i === 0 && (gaps.length || highlight)
+              ? {
+                  silent: true,
+                  itemStyle: { color: crit, opacity: 0.1 },
+                  data: [
+                    ...gaps.map((g) => [{ xAxis: g.from }, { xAxis: g.to }]),
+                    ...(highlight ? [[{ xAxis: Math.max(from, highlight.from), itemStyle: { color: mark, opacity: 0.08 } }, { xAxis: Math.min(to, highlight.to) }]] : []),
+                  ],
+                }
+              : undefined,
         }
       }),
     }
-  }, [series, visible, format, stacked, area, compactAxis, axisWidth, integer, from, to, gaps, themeVersion])
+  }, [series, visible, format, stacked, area, compactAxis, axisWidth, integer, from, to, gaps, highlight, themeVersion])
 
   useEffect(() => {
     if (!el.current || !hasData) return
@@ -187,7 +202,7 @@ export function TimeChart(props: TimeChartProps) {
   // Drag to zoom, double-click to zoom out.
   useEffect(() => {
     const c = chart.current
-    if (!c || !hasData) return
+    if (!c || !hasData || !zoomable) return
     const zr = c.getZr()
     let start: number | null = null
     const inPlot = (x: number, y: number) => c.containPixel({ gridIndex: 0 }, [x, y])
@@ -232,7 +247,7 @@ export function TimeChart(props: TimeChartProps) {
       zr.off('globalout', cancel)
       zr.off('dblclick', dbl)
     }
-  }, [hasData, from, to, range, setRange])
+  }, [hasData, zoomable, from, to, range, setRange])
 
   const latest = (s: ChartSeries) => {
     for (let i = s.points.length - 1; i >= 0; i--) {
@@ -287,8 +302,8 @@ export function TimeChart(props: TimeChartProps) {
         </ul>
       )}
       {hasData ? (
-        <div className="relative" title="Drag to zoom · double-click to zoom out">
-          <div ref={el} style={{ height }} className="cursor-crosshair select-none" />
+        <div className="relative" title={zoomable ? 'Drag to zoom · double-click to zoom out' : undefined}>
+          <div ref={el} style={{ height }} className={cx(zoomable && 'cursor-crosshair', 'select-none')} />
           {selection && Math.abs(selection.b - selection.a) > 2 && (
             <div aria-hidden className="pointer-events-none absolute top-0 bottom-0 border-x border-accent bg-accent/15" style={{ left: Math.min(selection.a, selection.b), width: Math.abs(selection.b - selection.a) }} />
           )}
@@ -333,7 +348,7 @@ function ChartModal({ label, chart, onClose }: { label: string; chart: TimeChart
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-base font-semibold text-ink">{label}</h2>
           <div className="flex items-center gap-3">
-            <span className="hidden text-xs text-muted sm:inline">Drag to zoom · double-click to zoom out</span>
+            {chart.zoomable !== false && <span className="hidden text-xs text-muted sm:inline">Drag to zoom · double-click to zoom out</span>}
             <button type="button" onClick={onClose} aria-label="Close" className="rounded-md p-1.5 text-ink-2 hover:bg-surface-2">
               <X aria-hidden className="h-4 w-4" />
             </button>

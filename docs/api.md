@@ -161,7 +161,7 @@ are strings (64-bit values do not fit JavaScript numbers). See
 | --- | --- |
 | `GET /api/v1/incidents` | List, newest first. Filters: `target`, `state` (`open`/`resolved`), `rule`, `range`/`from`/`to`; paging. |
 | `GET /api/v1/incidents/{id}` | Incident and linked findings. |
-| `GET /api/v1/incidents/{id}/events` | Evidence timeline; `after` (event ID) and `limit` for incremental loading. |
+| `GET /api/v1/incidents/{id}/events` | Evidence timeline; `after` (event ID) and `limit` (at most 2,000) for incremental loading. `statements` resolves the statements named by statement findings and workload events to stored identities (`identity_id` for `/queries/{qid}`, command, database, user, and `query_text` when the instance collects SQL text). |
 | `POST /api/v1/incidents/{id}/acknowledge` | Body `{"note"}` (optional). Adds metadata only; evidence is never changed. |
 | `GET /api/v1/incidents/{id}/export?format=json\|html` | Download. Query text is removed unless `include_query=true` (and only text that the target collected exists at all). |
 | `POST /api/v1/incidents/import` | Upload an exported JSON file (≤ 10 MiB, validated); stored as a read-only incident with `source: import`. |

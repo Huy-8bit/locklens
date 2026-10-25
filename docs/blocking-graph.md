@@ -1,8 +1,8 @@
 # Blocking graph
 
-The graph logic lives in [`backend/internal/graph`](../backend/internal/graph/graph.go). It is
+The graph logic lives in [`backend/internal/domain/graph`](../backend/internal/domain/graph/graph.go). It is
 pure Go with no database dependency, so every case below is covered by unit
-tests in [`graph_test.go`](../backend/internal/graph/graph_test.go).
+tests in [`graph_test.go`](../backend/internal/domain/graph/graph_test.go).
 
 ## Model
 
@@ -13,7 +13,7 @@ tests in [`graph_test.go`](../backend/internal/graph/graph_test.go).
 - Edges come only from `pg_blocking_pids()`; see
   [postgresql-observation.md](postgresql-observation.md).
 
-Node kinds are assigned by [`backend/internal/report`](../backend/internal/report/report.go),
+Node kinds are assigned by [`backend/internal/domain/report`](../backend/internal/domain/report/report.go),
 not by the graph:
 
 | Kind | Meaning |
