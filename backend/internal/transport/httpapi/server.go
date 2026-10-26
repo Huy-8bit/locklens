@@ -17,6 +17,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/auth"
 	"github.com/locklens/locklens/internal/domain/collector"
 	"github.com/locklens/locklens/internal/domain/model"
+	"github.com/locklens/locklens/internal/domain/notify"
 	"github.com/locklens/locklens/internal/domain/onboard"
 	"github.com/locklens/locklens/internal/domain/settings"
 	"github.com/locklens/locklens/internal/domain/targets"
@@ -43,6 +44,7 @@ type Deps struct {
 	Targets   *targets.Service
 	Manager   *collector.Manager
 	Settings  *settings.Service
+	Notify    *notify.Service
 	Hub       *Hub
 	Metrics   *obs.Metrics
 	Log       *slog.Logger
@@ -129,6 +131,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/targets/{id}/activity", s.authed(s.targetActivity))
 	m.HandleFunc("GET /api/v1/targets/{id}/blocking/snapshots", s.authed(s.listSnapshots))
 	m.HandleFunc("GET /api/v1/targets/{id}/blocking/snapshots/{sid}", s.authed(s.getSnapshot))
+	m.HandleFunc("GET /api/v1/targets/{id}/load", s.authed(s.targetLoad))
 	m.HandleFunc("GET /api/v1/targets/{id}/queries", s.authed(s.listQueries))
 	m.HandleFunc("GET /api/v1/targets/{id}/queries/commands", s.authed(s.queryCommands))
 	m.HandleFunc("GET /api/v1/targets/{id}/queries/{qid}", s.authed(s.getQuery))
@@ -146,6 +149,15 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/incidents/{id}/export", s.authed(s.exportIncident))
 
 	m.HandleFunc("POST /api/v1/snapshots/analyze", s.authed(s.analyzeSnapshot))
+	m.HandleFunc("GET /api/v1/notifications/channels", s.allow(auth.PermManageSettings, s.listChannels))
+	m.HandleFunc("POST /api/v1/notifications/channels", s.allow(auth.PermManageSettings, s.saveChannel))
+	m.HandleFunc("PUT /api/v1/notifications/channels/{id}", s.allow(auth.PermManageSettings, s.saveChannel))
+	m.HandleFunc("DELETE /api/v1/notifications/channels/{id}", s.allow(auth.PermManageSettings, s.deleteChannel))
+	m.HandleFunc("POST /api/v1/notifications/channels/{id}/test", s.allow(auth.PermManageSettings, s.testChannel))
+	m.HandleFunc("GET /api/v1/notifications/deliveries", s.authed(s.listDeliveries))
+	m.HandleFunc("GET /api/v1/notifications/silences", s.authed(s.listSilences))
+	m.HandleFunc("POST /api/v1/notifications/silences", s.allow(auth.PermAcknowledge, s.createSilence))
+	m.HandleFunc("DELETE /api/v1/notifications/silences/{id}", s.allow(auth.PermAcknowledge, s.endSilence))
 	m.HandleFunc("GET /api/v1/settings/rules", s.authed(s.getRuleSettings))
 	m.HandleFunc("PUT /api/v1/settings/rules", s.allow(auth.PermManageSettings, s.putRuleSettings))
 	m.HandleFunc("GET /api/v1/storage", s.authed(s.storageStats))

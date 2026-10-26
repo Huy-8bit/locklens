@@ -83,6 +83,9 @@ func (w *worker) connect(ctx context.Context) bool {
 }
 
 func (w *worker) close() {
+	// The current load bucket is stored with the ticks it has; its average
+	// stays correct because it is divided by those ticks.
+	w.flushLoad()
 	if w.obs != nil {
 		w.obs.Close()
 		w.obs = nil

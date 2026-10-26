@@ -648,3 +648,105 @@ export interface SystemResponse {
   collectors: { enabled: number; failing: number }
   incidents: { open: number; critical: number }
 }
+
+/** Database load (active session sampling) of one target, grouped by one dimension. */
+export type LoadDimension = 'class' | 'event' | 'query' | 'user' | 'database' | 'application' | 'backend'
+
+export interface LoadGroup {
+  key: string
+  /** Dimension values; for statements: dbid, userid, queryid, database, user. */
+  values: string[]
+  label: string
+  /** Average active sessions over the window. */
+  aas: number
+  share: number | null
+  /** AAS by wait class. */
+  classes: Record<string, number>
+}
+
+export interface LoadResponse {
+  from: string
+  to: string
+  step_seconds: number
+  load: {
+    dimension: LoadDimension
+    ticks: number
+    active_aas: number | null
+    idle_in_transaction_aas: number | null
+    series: { key: string; label: string; points: { t: string; v: number | null }[] }[]
+    top: LoadGroup[]
+  }
+  statements: QueryRef[]
+  query_text_enabled: boolean
+  collector: CollectorStatus | null
+}
+
+/** Incident notifications. Destinations are write-only: the API returns only `display`. */
+export type ChannelKind = 'webhook' | 'slack' | 'email'
+
+export interface NotificationChannel {
+  id: number
+  name: string
+  kind: ChannelKind
+  enabled: boolean
+  min_severity: Severity
+  environments: string[]
+  on_open: boolean
+  on_escalate: boolean
+  on_resolve: boolean
+  reminder_seconds: number
+  display: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ChannelDestination {
+  url?: string
+  secret?: string
+  smtp_host?: string
+  smtp_port?: number
+  tls?: 'tls' | 'starttls' | 'none'
+  username?: string
+  password?: string
+  from?: string
+  to?: string[]
+}
+
+export interface ChannelInput {
+  name: string
+  kind: ChannelKind
+  enabled: boolean
+  min_severity: Severity
+  environments: string[]
+  on_open: boolean
+  on_escalate: boolean
+  on_resolve: boolean
+  reminder_minutes: number
+  /** Omit on update to keep the stored destination. */
+  destination?: ChannelDestination
+}
+
+export interface Delivery {
+  id: number
+  channel_id: number
+  channel_name: string
+  incident_id: number | null
+  event: 'opened' | 'escalated' | 'resolved' | 'reminder' | 'test'
+  severity: string | null
+  status: 'sent' | 'failed' | 'silenced'
+  attempts: number
+  error: string | null
+  at: string
+}
+
+export interface Silence {
+  id: number
+  target_id: number | null
+  target_name: string | null
+  rule_id: string | null
+  starts_at: string
+  ends_at: string
+  reason: string
+  created_by: string
+  created_at: string
+}

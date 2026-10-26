@@ -6,6 +6,7 @@ import type { Finding, Incident, IncidentEvent, QueryRef, SessionBrief, Workload
 import { COMMAND_LABEL, commandColor } from '../lib/commands'
 import { bytes, compact, ms, num, pct, seconds, time } from '../lib/format'
 import { evidence, evidenceNumber, groupTimeline, incidentWindow, queryKey, ruleInfo } from '../lib/incident'
+import { classInfo } from '../lib/load'
 import { absolute } from '../lib/scope'
 import { bucketSeries } from '../lib/statements'
 import { BlockingTree } from './BlockingTree'
@@ -575,3 +576,91 @@ export function Timeline({ events }: { events: IncidentEvent[] }) {
   )
 }
 
+
+interface LoadSummary {
+  window_seconds: number
+  ticks: number
+  active_aas: number
+  classes: Record<string, number>
+  waits: { wait_class: string; wait_event: string; aas: number }[]
+  statements: { dbid: number; userid: number; queryid: string; datname: string; username: string; aas: number; classes: Record<string, number> }[]
+}
+
+/**
+ * Database load in the minutes before the trigger, stored with the incident:
+ * how busy the server was, on what it waited, and which statements were
+ * active most. It stays when the sampled history expires.
+ */
+export function LoadSummaryCard({ event, refs, targetId }: { event: IncidentEvent; refs: Map<string, QueryRef>; targetId: number | null }) {
+  const p = event.payload as unknown as LoadSummary
+  const classes = Object.entries(p.classes ?? {}).sort((a, b) => b[1] - a[1])
+  const total = classes.reduce((n, [, v]) => n + v, 0)
+  const byActivity = new Map([...refs.values()].map((r) => [`${r.key.dbid}/${r.key.userid}/${r.key.queryid}`, r]))
+  return (
+    <Card title="Load before it started" subtitle={`Active session sampling in the ${seconds(p.window_seconds)} before ${time(event.at)}: ${num(p.active_aas, 1)} sessions were active on average (${num(p.ticks)} samples).`}>
+      <div className="space-y-4">
+        <div>
+          <div className="flex h-3 w-full overflow-hidden rounded-full bg-surface-3" role="img" aria-label={classes.map(([k, v]) => `${classInfo(k).label} ${num(v, 2)}`).join(', ')}>
+            {classes.map(([k, v]) => (
+              <span key={k} className="h-full" style={{ width: `${(v / (total || 1)) * 100}%`, background: classInfo(k).color }} />
+            ))}
+          </div>
+          <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-2">
+            {classes.map(([k, v]) => (
+              <li key={k} className="flex items-center gap-1.5" title={classInfo(k).hint}>
+                <span aria-hidden className="h-2.5 w-2.5 rounded-sm" style={{ background: classInfo(k).color }} />
+                {classInfo(k).label} <span className="num font-medium text-ink">{num(v, 2)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        {(p.statements ?? []).length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
+              <caption className="sr-only">Statements by database load before the trigger</caption>
+              <thead>
+                <tr className="border-b border-line text-left text-xs text-muted">
+                  <th className="py-2 pr-3 font-medium">Statement</th>
+                  <th className="whitespace-nowrap py-2 pr-3 text-right font-medium">Avg active</th>
+                  <th className="py-2 font-medium">Mostly</th>
+                </tr>
+              </thead>
+              <tbody>
+                {p.statements.map((st) => {
+                  const ref = byActivity.get(`${st.dbid}/${st.userid}/${st.queryid}`)
+                  const main = Object.entries(st.classes ?? {}).sort((a, b) => b[1] - a[1])[0]
+                  const body = ref?.query_text ? <SqlText sql={ref.query_text} clamp /> : <span className="font-mono text-xs text-ink-2">{st.queryid === '0' ? 'Statements without a query ID' : `queryid ${st.queryid}`}</span>
+                  return (
+                    <tr key={`${st.dbid}/${st.userid}/${st.queryid}`} className="border-b border-line align-top last:border-0">
+                      <td className="max-w-[30rem] py-2 pr-3">
+                        {ref && targetId ? (
+                          <Link to={`/queries/${targetId}/${ref.identity_id}`} className="block hover:underline">
+                            {body}
+                          </Link>
+                        ) : (
+                          body
+                        )}
+                        <span className="mt-0.5 block text-xs text-muted">
+                          {st.datname || '?'} · {st.username || '?'}
+                        </span>
+                      </td>
+                      <td className="num whitespace-nowrap py-2 pr-3 text-right font-medium">{num(st.aas, 2)}</td>
+                      <td className="py-2">
+                        {main && (
+                          <span className="inline-flex items-center gap-1.5 text-xs text-ink-2">
+                            <span aria-hidden className="h-2.5 w-2.5 rounded-sm" style={{ background: classInfo(main[0]).color }} />
+                            {classInfo(main[0]).label} {pct(main[1] / (st.aas || 1), 0)}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}

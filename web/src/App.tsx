@@ -13,6 +13,7 @@ const DatabaseOverview = lazy(() => import('./pages/DatabasePage').then((m) => (
 const ActivityPage = lazy(() => import('./pages/ActivityPage'))
 const QueriesPage = lazy(() => import('./pages/QueriesPage'))
 const ReplicationPage = lazy(() => import('./pages/ReplicationPage'))
+const LoadPage = lazy(() => import('./pages/LoadPage'))
 const AlertsPage = lazy(() => import('./pages/AlertsPage'))
 const TopologyPage = lazy(() => import('./pages/TopologyPage'))
 const FleetQueriesPage = lazy(() => import('./pages/FleetQueriesPage'))
@@ -69,6 +70,7 @@ export function App() {
           <Route path="databases" element={<InstancesPage />} />
           <Route path="databases/:id" element={<DatabasePage />}>
             <Route index element={<DatabaseOverview />} />
+            <Route path="load" element={<LoadPage />} />
             <Route path="queries" element={<QueriesPage />} />
             <Route path="activity" element={<ActivityPage />} />
             <Route path="replication" element={<ReplicationPage />} />

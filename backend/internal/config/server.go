@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -30,6 +31,13 @@ type Config struct {
 	MetricsEnabled    bool
 	BootstrapTargets  string
 	DemoMode          bool
+	// LoadSampling turns active session sampling on; LoadSampleInterval is
+	// the time between two samples of pg_stat_activity per target.
+	LoadSampling       bool
+	LoadSampleInterval time.Duration
+	// PublicURL is LockLens' address as users reach it, for links in
+	// notifications (for example https://locklens.example.com).
+	PublicURL string
 	// TrustedProxies are the networks of reverse proxies (the frontend) whose
 	// X-Forwarded-For header names the real client; TrustedProxyHosts are
 	// host names of such proxies, resolved periodically (for example the
@@ -100,6 +108,19 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	c.WriteQueue = num("LOCKLENS_WRITE_QUEUE", 2048, 16, 100000)
 	c.MetricsEnabled = boolean("LOCKLENS_METRICS_ENABLED", true)
 	c.DemoMode = boolean("LOCKLENS_DEMO_MODE", false)
+	c.LoadSampling = boolean("LOCKLENS_LOAD_SAMPLING", true)
+	c.LoadSampleInterval = dur("LOCKLENS_LOAD_SAMPLE_INTERVAL", 2*time.Second, time.Second)
+	if v := strings.TrimRight(strings.TrimSpace(getenv("LOCKLENS_PUBLIC_URL")), "/"); v != "" {
+		u, err := url.Parse(v)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" {
+			errs = append(errs, errors.New("LOCKLENS_PUBLIC_URL must be an http or https URL such as https://locklens.example.com"))
+		} else {
+			c.PublicURL = v
+		}
+	}
+	if c.LoadSampleInterval > time.Minute {
+		errs = append(errs, errors.New("LOCKLENS_LOAD_SAMPLE_INTERVAL must be at most 1m"))
+	}
 	for _, part := range strings.Split(getenv("LOCKLENS_TRUSTED_PROXIES"), ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {

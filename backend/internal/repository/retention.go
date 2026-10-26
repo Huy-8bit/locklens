@@ -21,7 +21,7 @@ type RetentionResult map[string]int64
 
 // historyTables are pruned by their ts column.
 var historyTables = []string{"metric_points", "query_samples", "statement_collections", "activity_snapshots",
-	"table_stats", "index_stats", "state_snapshots"}
+	"table_stats", "index_stats", "state_snapshots", "load_samples", "load_buckets"}
 
 // ApplyRetention deletes expired rows in batches of 5,000 with a short pause
 // between batches, so it never holds long locks or starves collectors.
@@ -55,6 +55,12 @@ func (s *Store) ApplyRetention(ctx context.Context, p RetentionPolicy, now time.
 		return res, err
 	}
 	if err := run("collection_gaps", "ended_at < $1", fcut); err != nil {
+		return res, err
+	}
+	if err := run("notification_deliveries", "at < $1", fcut); err != nil {
+		return res, err
+	}
+	if err := run("notification_silences", "ends_at < $1", fcut); err != nil {
 		return res, err
 	}
 	if err := run("auth_sessions", "expires_at < $1", now.UTC()); err != nil {

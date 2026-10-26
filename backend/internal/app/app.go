@@ -17,6 +17,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/collector"
 	"github.com/locklens/locklens/internal/domain/incidents"
 	"github.com/locklens/locklens/internal/domain/model"
+	"github.com/locklens/locklens/internal/domain/notify"
 	"github.com/locklens/locklens/internal/domain/onboard"
 	"github.com/locklens/locklens/internal/domain/retention"
 	"github.com/locklens/locklens/internal/domain/settings"
@@ -57,8 +58,10 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	}
 	writer := collector.NewWriter(store, cfg.WriteQueue, metrics, log)
 	manager := collector.NewManager(store, box, writer, nil, hub, st, metrics, log,
-		collector.Config{MaxConcurrent: cfg.MaxConcurrent, Version: version, StatementsInterval: statementsInterval(cfg)})
-	recorder := incidents.NewRecorder(store, incidents.DefaultConfig(), st, metrics, hub, log)
+		collector.Config{MaxConcurrent: cfg.MaxConcurrent, Version: version, StatementsInterval: statementsInterval(cfg), LoadInterval: loadInterval(cfg)})
+	notifier := notify.New(store, box, log, cfg.PublicURL, version)
+	// Incident events go to the browsers (SSE) and to notifications.
+	recorder := incidents.NewRecorder(store, incidents.DefaultConfig(), st, metrics, fanout{hub, notifier}, log)
 	if err := recorder.Recover(ctx); err != nil {
 		return fmt.Errorf("recover open incidents: %w", err)
 	}
@@ -75,7 +78,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	tool := model.Tool{Name: "locklens", Version: version}
 	handler := httpapi.New(httpapi.Deps{Workspace: ws, Store: store, Auth: auth.NewService(store, cfg.SessionIdle, cfg.CookieSecure), Targets: tsvc,
 		Onboard: onboard.New(store, box, tsvc, ws),
-		Manager: manager, Settings: st, Hub: hub, Metrics: metrics, Log: log, Tool: tool, TrustedProxies: cfg.TrustedProxies, TrustedProxyHosts: cfg.TrustedProxyHosts,
+		Manager: manager, Settings: st, Notify: notifier, Hub: hub, Metrics: metrics, Log: log, Tool: tool, TrustedProxies: cfg.TrustedProxies, TrustedProxyHosts: cfg.TrustedProxyHosts,
 		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode})
 
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second,
@@ -86,8 +89,9 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	}
 
 	bg, cancelBG := context.WithCancel(context.WithoutCancel(ctx))
-	done := make(chan struct{}, 3)
+	done := make(chan struct{}, 4)
 	go func() { writer.Run(bg); done <- struct{}{} }()
+	go func() { notifier.Run(bg); done <- struct{}{} }()
 	go func() { manager.Run(bg); done <- struct{}{} }()
 	go func() {
 		retention.Run(bg, store, repository.RetentionPolicy{History: cfg.HistoryRetention, Incidents: cfg.IncidentRetention,
@@ -113,7 +117,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	defer cancel()
 	_ = srv.Shutdown(sctx)
 	cancelBG()
-	for range 3 {
+	for range 4 {
 		select {
 		case <-done:
 		case <-sctx.Done():
@@ -134,4 +138,22 @@ func statementsInterval(cfg config.Config) time.Duration {
 		return 15 * time.Second
 	}
 	return 60 * time.Second
+}
+
+// loadInterval is the active session sampling interval, or 0 when sampling
+// is turned off.
+func loadInterval(cfg config.Config) time.Duration {
+	if !cfg.LoadSampling {
+		return 0
+	}
+	return cfg.LoadSampleInterval
+}
+
+// fanout publishes each event to several sinks.
+type fanout []collector.EventSink
+
+func (f fanout) Publish(kind string, payload any) {
+	for _, s := range f {
+		s.Publish(kind, payload)
+	}
 }

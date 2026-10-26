@@ -28,6 +28,9 @@ All problems are reported at once.
 | `LOCKLENS_INCIDENT_RETENTION` | `2160h` (90 days) | Incidents and their events are kept this long after they resolve (minimum `24h`). Open incidents are never deleted. |
 | `LOCKLENS_FINDING_RETENTION` | `720h` (30 days) | Resolved findings and collection-gap records (minimum `1h`). Incidents keep their own copy of the evidence, so this never changes an incident. |
 | `LOCKLENS_MAX_CONCURRENT_COLLECTIONS` | `4` | Global cap on collector runs executing at the same time across all targets (1–64). Each target also runs its own collectors one at a time. |
+| `LOCKLENS_LOAD_SAMPLING` | `true` | Active session sampling (database load): read `pg_stat_activity` every `LOCKLENS_LOAD_SAMPLE_INTERVAL` on each target (PostgreSQL 14+). |
+| `LOCKLENS_LOAD_SAMPLE_INTERVAL` | `2s` | Time between two samples (`1s`–`1m`). Shorter catches shorter bursts and costs one more small query per target per interval. |
+| `LOCKLENS_PUBLIC_URL` | (none) | The address users open LockLens at (`http` or `https`, without a query string). Notifications link to incidents with it; without it they carry no link. |
 | `LOCKLENS_WRITE_QUEUE` | `2048` | Capacity of the in-memory queue of batches waiting to be written to the store (16–100000). When the store is unavailable and the queue is full, the oldest batch is dropped and a collection gap is recorded. |
 | `LOCKLENS_METRICS_ENABLED` | `true` | Serve Prometheus metrics at `/metrics` (unauthenticated, bounded labels, no query text). |
 | `LOCKLENS_BOOTSTRAP_TARGETS_FILE` | unset | JSON file of targets to create at startup. See [Bootstrap targets](#bootstrap-targets). |

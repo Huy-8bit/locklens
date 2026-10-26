@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AuthProvider } from '../auth'
-import type { CommandsResponse, FleetLiveResponse, OverviewResponse, SetupPlan, Target } from '../api/types'
+import type { CommandsResponse, FleetLiveResponse, LoadResponse, OverviewResponse, SetupPlan, Target } from '../api/types'
 import { axeViolations, mockFetch, renderAt, sessionFor } from '../test/utils'
 import { LoginPage } from './LoginPage'
 import OverviewPage from './OverviewPage'
@@ -12,6 +12,8 @@ import QuickAddPage from './QuickAddPage'
 import SettingsPage from './SettingsPage'
 import ExplorerPage from './ExplorerPage'
 import QueriesPage from './QueriesPage'
+import LoadPage from './LoadPage'
+import { NotificationsCard } from '../components/NotificationsCard'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -291,3 +293,78 @@ describe('QuickAddPage', () => {
   })
 })
 
+
+describe('LoadPage', () => {
+  it('shows load by wait class and leads to the statements waiting on it', async () => {
+    const byClass: LoadResponse = {
+      from: '2026-10-24T12:00:00Z',
+      to: '2026-10-24T12:15:00Z',
+      step_seconds: 30,
+      load: {
+        dimension: 'class',
+        ticks: 450,
+        active_aas: 3.5,
+        idle_in_transaction_aas: 1,
+        series: [{ key: 'Lock', label: 'Lock', points: [{ t: '2026-10-24T12:00:00Z', v: 3 }, { t: '2026-10-24T12:00:30Z', v: null }] }],
+        top: [
+          { key: 'Lock', values: [], label: 'Lock', aas: 3, share: 0.67, classes: { Lock: 3 } },
+          { key: 'IdleTx', values: [], label: 'Idle in transaction', aas: 1, share: 0.22, classes: { IdleTx: 1 } },
+        ],
+      },
+      statements: [],
+      query_text_enabled: true,
+      collector: { name: 'load', interval_seconds: 2, enabled: true, last_attempt: null, last_success: null, last_error: null, last_duration_ms: null, consecutive_failures: 0 },
+    }
+    const byQuery: LoadResponse = {
+      ...byClass,
+      load: { ...byClass.load, dimension: 'query', series: [], top: [{ key: '5/10/-42', values: ['5', '10', '-42', 'shop', 'web'], label: 'queryid -42', aas: 3, share: 1, classes: { Lock: 3 } }] },
+      statements: [{ key: { server_major: 18, dbid: 5, userid: 10, toplevel: true, queryid: '-42' }, identity_id: 9, datname: 'shop', username: 'web', command: 'update', query_text: 'UPDATE stock SET qty = qty - 1 WHERE id = $1' }],
+    }
+    const calls = mockFetch({ '/api/v1/targets/1/load': (_init, url) => ({ body: url.searchParams.get('by') === 'query' ? byQuery : byClass }) })
+    const { container } = renderAt('/databases/1/load', '/databases/:id/load', <LoadPage />)
+    expect(await screen.findByText(/^3\.50?$/)).toBeInTheDocument()
+    const table = screen.getByRole('table', { name: /wait class groups/ })
+    expect(within(table).getByText('Lock')).toBeInTheDocument()
+    expect(await axeViolations(container)).toEqual([])
+    const drill = within(table).getAllByRole('button', { name: /Statements/ })[0]
+    if (!drill) throw new Error('no drill-down button')
+    await userEvent.setup().click(drill)
+    await waitFor(() => expect(calls.some((c) => c.url.includes('by=query') && c.url.includes('class=Lock'))).toBe(true))
+    expect(await screen.findByTitle('UPDATE stock SET qty = qty - 1 WHERE id = $1')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /UPDATE stock/ })).toHaveAttribute('href', '/queries/1/9')
+    expect(screen.getByRole('button', { name: 'Remove the Lock filter' })).toBeInTheDocument()
+  })
+})
+
+describe('NotificationsCard', () => {
+  it('adds a channel with its destination and edits it without resending the destination', async () => {
+    const channel = { id: 4, name: '#db-oncall', kind: 'slack', enabled: true, min_severity: 'warning', environments: [], on_open: true, on_escalate: true, on_resolve: true, reminder_seconds: 0, display: 'https://hooks.slack.com', created_at: '', updated_at: '' }
+    const calls = mockFetch({
+      '/api/v1/notifications/channels': (init) => ({ status: init?.method === 'POST' ? 201 : 200, body: init?.method && init.method !== 'GET' ? channel : { channels: [channel] } }),
+      '/api/v1/notifications/deliveries': () => ({ body: { deliveries: [] } }),
+    })
+    const user = userEvent.setup()
+    const { container } = renderAt('/settings', '/settings', <NotificationsCard />)
+    expect(await screen.findByText('https://hooks.slack.com')).toBeInTheDocument()
+    expect(await axeViolations(container)).toEqual([])
+
+    await user.click(screen.getByRole('button', { name: /Add channel/ }))
+    const add = screen.getByRole('dialog', { name: 'Add a notification channel' })
+    await user.type(within(add).getByLabelText('Name'), '#alerts')
+    await user.type(within(add).getByLabelText(/Incoming webhook URL/), 'https://hooks.slack.com/services/T/B/token')
+    await user.click(within(add).getByRole('button', { name: 'Add channel' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true))
+    const created = JSON.parse(calls.find((c) => c.method === 'POST')?.body ?? '{}')
+    expect(created).toMatchObject({ name: '#alerts', kind: 'slack', destination: { url: 'https://hooks.slack.com/services/T/B/token' } })
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    const edit = screen.getByRole('dialog', { name: 'Edit notification channel' })
+    expect(within(edit).queryByLabelText(/Incoming webhook URL/)).not.toBeInTheDocument()
+    await user.click(within(edit).getByRole('button', { name: 'Save channel' }))
+    await waitFor(() => expect(calls.some((c) => c.method === 'PUT')).toBe(true))
+    const updated = JSON.parse(calls.find((c) => c.method === 'PUT')?.body ?? '{}')
+    expect(updated.destination).toBeUndefined()
+    expect(calls.find((c) => c.method === 'PUT')?.url).toBe('/api/v1/notifications/channels/4')
+  })
+})

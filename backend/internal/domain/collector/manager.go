@@ -40,6 +40,9 @@ type Config struct {
 	Version       string
 	// StatementsInterval is the minimum pg_stat_statements interval (default 60 s).
 	StatementsInterval time.Duration
+	// LoadInterval is the active session sampling interval; 0 turns
+	// sampling off.
+	LoadInterval time.Duration
 }
 
 // Manager owns all target workers.
@@ -55,6 +58,7 @@ type Manager struct {
 	version   string
 	syncEvery time.Duration
 	stmtEvery time.Duration
+	loadEvery time.Duration
 
 	sem       chan struct{}
 	slotsBusy atomic.Int64
@@ -84,7 +88,7 @@ func NewManager(store *repository.Store, box *secret.Box, writer *Writer, analyz
 		cfg.StatementsInterval = 60 * time.Second
 	}
 	return &Manager{store: store, box: box, writer: writer, analyzer: analyzer, events: events, settings: settings,
-		metrics: metrics, log: log, version: cfg.Version, syncEvery: cfg.SyncInterval, stmtEvery: cfg.StatementsInterval,
+		metrics: metrics, log: log, version: cfg.Version, syncEvery: cfg.SyncInterval, stmtEvery: cfg.StatementsInterval, loadEvery: cfg.LoadInterval,
 		sem: make(chan struct{}, cfg.MaxConcurrent), reload: make(chan struct{}, 1),
 		workers: map[int64]*running{}, states: map[int64]*State{}}
 }

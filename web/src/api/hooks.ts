@@ -12,6 +12,12 @@ import type {
   GridResult,
   Incident,
   IncidentEventsResponse,
+  ChannelInput,
+  Delivery,
+  NotificationChannel,
+  Silence,
+  LoadDimension,
+  LoadResponse,
   MetricsResponse,
   OverviewResponse,
   QueriesResponse,
@@ -116,6 +122,16 @@ export function useQueries(id: number, p: QueryParams) {
       ),
     placeholderData: keepPreviousData,
     refetchInterval: every(HIST),
+  })
+}
+
+export function useLoad(id: number, range: Range, by: LoadDimension, filter: { class?: string; queryid?: string } = {}, enabled = true) {
+  return useQuery({
+    queryKey: ['t', id, 'hist', 'load', range, by, filter.class ?? '', filter.queryid ?? ''],
+    queryFn: () => api<LoadResponse>(`/api/v1/targets/${id}/load${qs({ ...rangeQuery(range), by, class: filter.class, queryid: filter.queryid })}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: every(HIST),
+    enabled: enabled && id > 0,
   })
 }
 
@@ -409,3 +425,63 @@ export function useQuickAdd() {
   })
 }
 
+
+export function useChannels(enabled = true) {
+  return useQuery({ queryKey: ['notify', 'channels'], queryFn: () => api<{ channels: NotificationChannel[] }>('/api/v1/notifications/channels'), enabled })
+}
+
+export function useSaveChannel() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id?: number; input: ChannelInput }) =>
+      api<NotificationChannel>(id ? `/api/v1/notifications/channels/${id}` : '/api/v1/notifications/channels', { method: id ? 'PUT' : 'POST', json: input }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['notify'] }),
+  })
+}
+
+export function useDeleteChannel() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api<undefined>(`/api/v1/notifications/channels/${id}`, { method: 'DELETE' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['notify'] }),
+  })
+}
+
+export function useTestChannel() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api<Delivery>(`/api/v1/notifications/channels/${id}/test`, { method: 'POST' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['notify', 'deliveries'] }),
+  })
+}
+
+/** Recent deliveries: of one incident, or (administrators) of every channel. */
+export function useDeliveries(incident?: number, enabled = true) {
+  return useQuery({
+    queryKey: ['notify', 'deliveries', incident ?? 'all'],
+    queryFn: () => api<{ deliveries: Delivery[] }>(`/api/v1/notifications/deliveries${qs({ incident })}`),
+    refetchInterval: every(LIVE),
+    enabled,
+  })
+}
+
+export function useSilences() {
+  return useQuery({ queryKey: ['notify', 'silences'], queryFn: () => api<{ silences: Silence[] }>('/api/v1/notifications/silences'), refetchInterval: every(LIVE) })
+}
+
+export function useCreateSilence() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (x: { target_id: number | null; rule_id: string | null; minutes: number; reason: string }) =>
+      api<Silence>('/api/v1/notifications/silences', { method: 'POST', json: x }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['notify'] }),
+  })
+}
+
+export function useEndSilence() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api<undefined>(`/api/v1/notifications/silences/${id}`, { method: 'DELETE' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['notify'] }),
+  })
+}

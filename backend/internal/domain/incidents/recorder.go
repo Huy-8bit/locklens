@@ -67,6 +67,7 @@ const (
 	KindTruncated        = "truncated"
 	KindVisibility       = "visibility"
 	KindSessions         = "sessions"
+	KindLoad             = "load"
 )
 
 // Resolutions.

@@ -21,10 +21,11 @@ const (
 	CollectorReplication = "replication"
 	CollectorTables      = "tables"
 	CollectorHost        = "host"
+	CollectorLoad        = "load"
 )
 
 // AllCollectors lists collectors in display order.
-var AllCollectors = []string{CollectorActivity, CollectorDatabase, CollectorStatements, CollectorReplication, CollectorTables, CollectorHost}
+var AllCollectors = []string{CollectorActivity, CollectorLoad, CollectorDatabase, CollectorStatements, CollectorReplication, CollectorTables, CollectorHost}
 
 const (
 	capabilitiesMaxAge     = 10 * time.Minute
@@ -56,6 +57,8 @@ type worker struct {
 	prevStmt *statementsState
 	prevHost *hostmetrics.Scrape
 
+	load *loadAgg
+
 	lastSnapshotStored time.Time
 	lastVacuumStored   time.Time
 
@@ -85,6 +88,18 @@ func newWorker(m *Manager, t repository.Target, st *State) *worker {
 			}},
 		{name: CollectorReplication, every: max(iv, 30*time.Second), timeout: 15 * time.Second, run: w.collectReplication},
 		{name: CollectorTables, every: 5 * time.Minute, timeout: 60 * time.Second, run: w.collectTables},
+		{name: CollectorLoad, every: max(m.loadEvery, time.Second), timeout: 5 * time.Second, run: w.collectLoad,
+			enabled: func() (bool, string) {
+				switch {
+				case m.loadEvery <= 0:
+					return false, "active session sampling is turned off (LOCKLENS_LOAD_SAMPLING)"
+				case w.caps == nil:
+					return false, "waiting for capability detection"
+				case w.caps.VersionNum < 140000:
+					return false, "needs PostgreSQL 14 or later (pg_stat_activity.query_id)"
+				}
+				return true, ""
+			}},
 		{name: CollectorHost, every: max(iv, 15*time.Second), timeout: 10 * time.Second, run: w.collectHost,
 			enabled: func() (bool, string) {
 				if w.target.NodeExporterURL == nil || *w.target.NodeExporterURL == "" {
@@ -188,7 +203,8 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 	ms := dur.Milliseconds()
 
 	// A late or failed collector leaves a hole in the history: record it.
-	if j.status.LastSuccess != nil {
+	// Load sampling records its own coverage (ticks per bucket) instead.
+	if j.status.LastSuccess != nil && j.name != CollectorLoad {
 		late := start.Sub(*j.status.LastSuccess)
 		if late > 2*j.every+j.timeout {
 			reason := "collector did not run"
@@ -203,6 +219,7 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 		}
 	}
 
+	wasFailing := j.status.LastError != nil
 	j.status.LastAttempt = &now
 	j.status.LastDurationMS = &ms
 	w.m.metrics.CollectDuration.Observe(dur.Seconds(), j.name)
@@ -228,6 +245,13 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 		next = time.Now().Add(j.every / 2)
 	}
 	j.next = next
+
+	// Load sampling runs every few seconds: its status is stored and
+	// announced only when it starts or stops failing, so it neither writes
+	// the status row nor refreshes every open page at that rate.
+	if j.name == CollectorLoad && wasFailing == (err != nil) {
+		return
+	}
 
 	if j.name == CollectorActivity && err == nil {
 		w.m.metrics.CollectFreshness.Set(float64(now.Unix()), strconv.FormatInt(w.target.ID, 10))

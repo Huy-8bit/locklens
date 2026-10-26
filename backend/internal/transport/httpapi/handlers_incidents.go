@@ -104,7 +104,8 @@ func (s *Server) incidentEvents(w http.ResponseWriter, r *http.Request) {
 	// stored identities so the UI can show the SQL and link to the query.
 	statements := []repository.QueryRef{}
 	if in.TargetID != nil {
-		if keys := statementKeys(evs); len(keys) > 0 {
+		keys, refs := statementKeys(evs), activityRefs(evs)
+		if len(keys) > 0 || len(refs) > 0 {
 			includeText := false
 			if t, err := s.d.Store.GetTarget(r.Context(), *in.TargetID); err == nil {
 				includeText = t.QueryTextEnabled
@@ -112,6 +113,20 @@ func (s *Server) incidentEvents(w http.ResponseWriter, r *http.Request) {
 			if statements, err = s.d.Store.QueryRefs(r.Context(), *in.TargetID, keys, includeText); err != nil {
 				s.internal(w, r, err)
 				return
+			}
+			byActivity, err := s.d.Store.QueryRefsByActivity(r.Context(), *in.TargetID, refs, includeText)
+			if err != nil {
+				s.internal(w, r, err)
+				return
+			}
+			seen := map[int64]bool{}
+			for _, q := range statements {
+				seen[q.IdentityID] = true
+			}
+			for _, q := range byActivity {
+				if !seen[q.IdentityID] {
+					statements = append(statements, q)
+				}
 			}
 		}
 	}
@@ -269,4 +284,31 @@ func (s *Server) putRuleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	s.d.Log.Info("rule thresholds updated", "user", sessionOf(r).Username)
 	writeJSON(w, http.StatusOK, map[string]any{"thresholds": th})
+}
+
+// activityRefs collects the statements of load summaries (identified by
+// pg_stat_activity.query_id with database and user).
+func activityRefs(evs []repository.IncidentEvent) []repository.StatementRef {
+	var out []repository.StatementRef
+	for _, e := range evs {
+		if e.Kind != incidents.KindLoad {
+			continue
+		}
+		var p struct {
+			Statements []struct {
+				DBID    uint32 `json:"dbid"`
+				UserID  uint32 `json:"userid"`
+				QueryID int64  `json:"queryid,string"`
+			} `json:"statements"`
+		}
+		if json.Unmarshal(e.Payload, &p) != nil {
+			continue
+		}
+		for _, st := range p.Statements {
+			if st.QueryID != 0 && len(out) < 200 {
+				out = append(out, repository.StatementRef{DBID: st.DBID, UserID: st.UserID, QueryID: st.QueryID})
+			}
+		}
+	}
+	return out
 }

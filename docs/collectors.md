@@ -21,6 +21,7 @@ activity data. Collectors never run DDL or DML on targets, never call
 | Collector | Interval | Timeout | Sources | Produces |
 | --- | --- | --- | --- | --- |
 | `activity` | `interval` | min(interval, 15 s) | `pg_stat_activity`, `pg_blocking_pids()`, `pg_locks` (waiting locks only), `pg_prepared_xacts`, `pg_stat_progress_vacuum`, `max_connections`, reserved connections | Session counts by state, connection usage, blocking graph, long transactions, vacuum progress; the full activity snapshot is stored for every collection with blocking or long transactions, and every 5 minutes otherwise |
+| `load` | 2 s (`LOCKLENS_LOAD_SAMPLE_INTERVAL`) | 5 s | `pg_stat_activity` (labels, state, wait event, `query_id`; never the query text) | Active session sampling: sessions that are not idle, aggregated into 15-second buckets; see [Database load](#database-load-active-session-sampling) |
 | `database` | max(interval, 15 s) | 15 s | `pg_stat_database`, `pg_stat_bgwriter`, `pg_stat_checkpointer` (17+), `pg_stat_io` (16+), WAL LSN, `pg_stat_archiver`, `pg_postmaster_start_time()` | Commit/rollback rates, cache hit ratio, temp files/bytes, deadlocks, checkpoints, background writer, I/O, WAL rate, archiver deltas |
 | `statements` | max(interval, 60 s); 15 s in demo mode | 30 s | `pg_stat_statements`, `pg_stat_statements_info` | Per-query deltas per collection; see [query-analysis.md](query-analysis.md) |
 | `replication` | max(interval, 30 s) | 15 s | `pg_stat_replication`, `pg_replication_slots`, `pg_stat_wal_receiver`, recovery functions | Role, replicas and lags, slots and retained WAL, standby receive/replay state |
@@ -34,6 +35,38 @@ locked exclusively, so a long-running DDL statement on a target never blocks
 LockLens (and LockLens never queues behind it for long).
 
 The first run of each collector is staggered by 300 ms per collector.
+
+## Database load (active session sampling)
+
+The `load` collector samples `pg_stat_activity` every few seconds (default 2 s,
+PostgreSQL 14+) and answers "what was the database busy with at 14:32?":
+
+- **Which sessions.** Client backends, parallel workers, and autovacuum workers
+  that are not idle. LockLens' own connections are excluded.
+- **Wait class.** `wait_event_type`, or `CPU` for an active session without a
+  wait event (it is running, or waiting on something PostgreSQL does not
+  instrument: this is not a measurement of CPU usage), `IdleTx` for a session
+  idle in a transaction, and `Unknown` when the observer cannot see the
+  session's state.
+- **Statement.** `pg_stat_activity.query_id`, which is the top-level
+  statement's `pg_stat_statements` queryid. PostgreSQL computes it only when
+  `compute_query_id` is `on`, or `auto` with pg_stat_statements loaded;
+  otherwise statements are grouped as "without a query ID". The text is never
+  read here: statements are linked to the identities the `statements`
+  collector stores, with text only where the instance collects it.
+- **Aggregation.** Samples are counted per 15-second bucket and group (wait
+  class and event, backend type, database, user, application, query ID); at
+  most 300 groups per bucket, the rest merged into an "(other)" application.
+  Each bucket records how many samples (ticks) it holds.
+- **AAS.** Average active sessions of a group = sessions seen ÷ samples taken.
+  A bucket without samples is a gap, never zero load. Sessions idle in a
+  transaction are reported separately and are not counted as load.
+
+Sampling is cheap (one `pg_stat_activity` read) but runs often: it goes
+through the same per-target sequence and global concurrency limit as other
+collectors, so a slow collector delays a few samples instead of overlapping
+with them. Turn it off with `LOCKLENS_LOAD_SAMPLING=false`. Its status is
+saved, and announced to the UI, only when it starts or stops failing.
 
 ## Capabilities
 

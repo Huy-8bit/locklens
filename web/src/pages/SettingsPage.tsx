@@ -5,6 +5,7 @@ import { useDeleteTarget, useImportIncident, useRuleSettings, useSaveRules, useS
 import type { Target, Thresholds } from '../api/types'
 import { PageHeader } from '../components/Shell'
 import { UsersCard } from '../components/UsersCard'
+import { NotificationsCard, SilencesCard } from '../components/NotificationsCard'
 import { useCan } from '../auth'
 import { tableCls, tdCls, tdNum, Th, trCls } from '../components/Table'
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, inputCls, Load, StateBadge } from '../components/ui'
@@ -225,6 +226,8 @@ export default function SettingsPage() {
       <div className="space-y-3">
         <Targets />
         {can('users.manage') && <UsersCard />}
+        <NotificationsCard />
+        <SilencesCard />
         <Rules />
         <ImportIncident />
         <Storage />

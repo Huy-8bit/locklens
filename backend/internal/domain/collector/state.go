@@ -46,6 +46,7 @@ type State struct {
 	host         *observe.HostMetrics
 	hostError    *string
 	statements   []observe.StatementsCollection
+	load         []observe.LoadBucket
 	points       map[string][]TimedValue
 	collectors   map[string]CollectorStatus
 	connected    bool
@@ -68,6 +69,8 @@ type View struct {
 	Host         *observe.HostMetrics
 	HostError    *string
 	Statements   []observe.StatementsCollection
+	// Load holds the last finished active session sampling buckets.
+	Load         []observe.LoadBucket
 	Points       map[string][]TimedValue
 	Collectors   map[string]CollectorStatus
 	Connected    bool
@@ -89,7 +92,7 @@ func (s *State) Snapshot() View {
 	}
 	return View{
 		Capabilities: s.caps, Activity: s.activity, Report: s.report, Replication: s.replication,
-		Tables: s.tables, Host: s.host, HostError: s.hostError, Statements: s.statements,
+		Tables: s.tables, Host: s.host, HostError: s.hostError, Statements: s.statements, Load: s.load,
 		Points: pts, Collectors: colls, Connected: s.connected, ConnectError: s.connectError, ConnectAt: s.connectAt,
 	}
 }
@@ -172,4 +175,15 @@ func ComputeState(enabled bool, v View, interval time.Duration, now time.Time) s
 		return StateDegraded
 	}
 	return StateHealthy
+}
+
+func (s *State) addLoad(b observe.LoadBucket) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	h := append(s.load, b)
+	if len(h) > maxLoadHistory {
+		h = h[len(h)-maxLoadHistory:]
+	}
+	// Copy-on-write so views taken earlier stay unchanged.
+	s.load = append([]observe.LoadBucket(nil), h...)
 }

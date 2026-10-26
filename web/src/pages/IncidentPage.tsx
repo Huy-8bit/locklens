@@ -5,11 +5,14 @@ import { useAcknowledge, useIncident, useIncidentEvents } from '../api/hooks'
 import { useCan } from '../auth'
 import type { Finding, IncidentEvent, QueryRef, WorkloadEntry } from '../api/types'
 import { FindingCard } from '../components/FindingCard'
-import { BlockingCard, ContextCharts, IncidentBrief, SessionsCard, StatementCard, Timeline, WorkloadCard } from '../components/IncidentParts'
+import { BlockingCard, ContextCharts, IncidentBrief, LoadSummaryCard, SessionsCard, StatementCard, Timeline, WorkloadCard } from '../components/IncidentParts'
+import { LoadPanel } from '../components/LoadPanel'
+import { IncidentNotifications } from '../components/NotificationsCard'
 import { PageHeader } from '../components/Shell'
 import { Badge, Button, Card, ErrorBox, inputCls, KeyValue, Load, Notice, SeverityBadge, Spinner } from '../components/ui'
 import { bytes, seconds, time } from '../lib/format'
 import { evidenceNumber, findingQueryKey, incidentWindow, queryKey, ruleInfo } from '../lib/incident'
+import { absolute } from '../lib/scope'
 
 export default function IncidentPage() {
   const id = Number(useParams().incidentId)
@@ -28,7 +31,7 @@ export default function IncidentPage() {
       .map((e) => e.payload.finding as Finding | undefined)
       .filter((f): f is Finding => !!f)
     const refs = new Map<string, QueryRef>((events.data?.statements ?? []).map((r) => [queryKey(r.key), r]))
-    return { all: evs, triggers, refs, workload: of('workload'), sessions: of('sessions')[0] as IncidentEvent | undefined, blocking: of('blocking_snapshot') }
+    return { all: evs, triggers, refs, workload: of('workload'), sessions: of('sessions')[0] as IncidentEvent | undefined, load: of('load')[0] as IncidentEvent | undefined, blocking: of('blocking_snapshot') }
   }, [events.data])
 
   return (
@@ -86,6 +89,19 @@ export default function IncidentPage() {
                     {lead && leadKey && <StatementCard incident={i} trigger={lead} statement={parts.refs.get(leadKey)} />}
                     {parts.blocking.length > 0 && <BlockingCard events={parts.blocking} />}
                     {parts.sessions && <SessionsCard event={parts.sessions} rootPid={rootPid} />}
+                    {parts.load && <LoadSummaryCard event={parts.load} refs={parts.refs} targetId={i.target_id} />}
+                    {i.target_id && (
+                      <LoadPanel
+                        targetId={i.target_id}
+                        range={absolute(from - 30 * 60_000, to + 10 * 60_000)}
+                        title="Database load around the incident"
+                        subtitle="Average active sessions from 30 minutes before the incident until 10 minutes after it, by statement; the incident is shaded. Group by wait class to see what the sessions waited on."
+                        zoomable={false}
+                        highlight={{ from, to }}
+                        initial="query"
+                        rows={8}
+                      />
+                    )}
                     {parts.workload.length > 0 && <WorkloadCard events={parts.workload} refs={parts.refs} targetId={i.target_id} triggerKey={leadKey} />}
                     {i.target_id && <ContextCharts incident={i} />}
                     <Card title="Timeline" subtitle={`${parts.all.length} recorded events${events.data.has_more ? ' (the first 2,000)' : ''}. Identical routine samples are collapsed; click to expand them.`}>
@@ -135,6 +151,7 @@ export default function IncidentPage() {
                     </form>
                   )}
                 </Card>
+                {i.source === 'recorder' && <IncidentNotifications incidentId={i.id} targetId={i.target_id} ruleId={i.rule_id} />}
                 {lead && (
                   <Card title="Rule evidence" subtitle="Every value the rule used, its source, possible explanations (not confirmed causes), and what to check next.">
                     <FindingCard finding={lead} open />

@@ -74,6 +74,9 @@ func (r *Recorder) startIncident(ctx context.Context, t repository.Target, v col
 	if ev := sessionsEvent(v, now); ev != nil {
 		evs = append(evs, *ev)
 	}
+	if ev := loadEvent(v, now); ev != nil {
+		evs = append(evs, *ev)
+	}
 	if v.Capabilities != nil && (!v.Capabilities.ReadAllStats || !v.Capabilities.TrackActivities) {
 		payload, _ := json.Marshal(map[string]any{"read_all_stats": v.Capabilities.ReadAllStats, "track_activities": v.Capabilities.TrackActivities})
 		evs = append(evs, repository.IncidentEvent{At: now, Kind: KindVisibility, Payload: payload,

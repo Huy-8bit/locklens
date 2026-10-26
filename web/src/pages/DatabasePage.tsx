@@ -243,6 +243,7 @@ export function DatabaseOverview() {
 
 const TABS: [string, string][] = [
   ['', 'Overview'],
+  ['load', 'Load'],
   ['queries', 'Queries'],
   ['activity', 'Activity'],
   ['replication', 'Replication'],

@@ -51,6 +51,11 @@ services:
       # name), so login rate limits apply per real client and nobody else can
       # choose their address.
       LOCKLENS_TRUSTED_PROXIES: ${LOCKLENS_TRUSTED_PROXIES:-frontend}
+      # The address users open, for links in notifications.
+      LOCKLENS_PUBLIC_URL: ${LOCKLENS_PUBLIC_URL:-http://127.0.0.1:${LOCKLENS_HTTP_PORT:-8080}}
+      # Active session sampling (database load).
+      LOCKLENS_LOAD_SAMPLING: ${LOCKLENS_LOAD_SAMPLING:-true}
+      LOCKLENS_LOAD_SAMPLE_INTERVAL: ${LOCKLENS_LOAD_SAMPLE_INTERVAL:-2s}
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/readyz"]
       interval: 2s

@@ -415,3 +415,65 @@ func TestSeriesAggregationAndGaps(t *testing.T) {
 		t.Fatal("cancelled query succeeded")
 	}
 }
+
+func TestLoadBucketsAndStatementResolution(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+	tg := target(t, s, "load")
+	key := observe.QueryKey{ServerMajor: 17, DBID: 5, UserID: 10, TopLevel: true, QueryID: -42}
+	text := "SELECT slow FROM t WHERE id = $1"
+	iv := 60.0
+	if err := s.InsertStatements(ctx, tg.ID, observe.StatementsCollection{At: time.Now().UTC(), Interval: &iv, Entries: 1,
+		Deltas: []observe.QueryDelta{{Key: key, DatName: "app", UserName: "u", Text: &text, Calls: 1, TotalMS: 1}}}, true, repository.IdentityCache{}); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Truncate(time.Minute).Add(-10 * time.Minute)
+	for i := 0; i < 4; i++ {
+		b := observe.LoadBucket{At: base.Add(time.Duration(i) * 15 * time.Second), Ticks: 5, IntervalSeconds: 3, Groups: []observe.LoadGroup{
+			{WaitClass: "Lock", WaitEvent: "transactionid", BackendType: "client backend", DBID: 5, DatName: "app", UserID: 10, UserName: "u", Application: "api", QueryID: -42, Samples: 10},
+			{WaitClass: "CPU", BackendType: "client backend", DBID: 5, DatName: "app", UserID: 10, UserName: "u", Application: "api", Samples: 5},
+		}}
+		if err := s.InsertLoadBucket(ctx, tg.ID, b); err != nil {
+			t.Fatal(err)
+		}
+		// A retried write of the same bucket is ignored.
+		if err := s.InsertLoadBucket(ctx, tg.ID, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	from, to := base, base.Add(time.Minute)
+	rows, ticks, err := s.LoadRows(ctx, tg.ID, from, to, time.Minute, repository.LoadByQuery, repository.LoadFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ticks) != 1 || ticks[0].Ticks != 20 {
+		t.Fatalf("ticks = %+v", ticks)
+	}
+	var lock int64
+	for _, r := range rows {
+		if r.WaitClass == "Lock" {
+			lock = r.Samples
+			if len(r.Key) != 5 || r.Key[0] != "5" || r.Key[1] != "10" || r.Key[2] != "-42" || r.Key[3] != "app" {
+				t.Fatalf("key = %v", r.Key)
+			}
+		}
+		if r.WaitClass == "CPU" && r.Key[2] != "0" {
+			t.Fatalf("missing query id must read as 0: %v", r.Key)
+		}
+	}
+	if lock != 40 {
+		t.Fatalf("lock samples = %d, want 40 (duplicates ignored)", lock)
+	}
+	qid := int64(-42)
+	rows, _, err = s.LoadRows(ctx, tg.ID, from, to, time.Minute, repository.LoadByEvent, repository.LoadFilter{QueryID: &qid})
+	if err != nil || len(rows) != 1 || rows[0].Key[0] != "transactionid" {
+		t.Fatalf("filtered rows = %+v, %v", rows, err)
+	}
+	refs, err := s.QueryRefsByActivity(ctx, tg.ID, []repository.StatementRef{{DBID: 5, UserID: 10, QueryID: -42}, {DBID: 5, UserID: 10, QueryID: 99}}, true)
+	if err != nil || len(refs) != 1 || refs[0].Text == nil || *refs[0].Text != text {
+		t.Fatalf("refs = %+v, %v", refs, err)
+	}
+	if refs, _ = s.QueryRefsByActivity(ctx, tg.ID, []repository.StatementRef{{DBID: 5, UserID: 10, QueryID: -42}}, false); refs[0].Text != nil {
+		t.Fatal("text must be left out when not requested")
+	}
+}
