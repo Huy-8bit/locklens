@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { Link, NavLink, Outlet } from 'react-router'
-import { Activity, ArrowRight, Database, Gauge, HardDrive, Lock, Timer, Users, Zap } from 'lucide-react'
+import { Activity, ArrowRight, Gauge, Lock, Timer, Users, Zap } from 'lucide-react'
 import { useActivity, useCommands, useOverview, useQueries, useTarget } from '../api/hooks'
 import type { OverviewResponse } from '../api/types'
 import { CommandMix, CommandsChart } from '../components/Commands'
@@ -37,6 +37,17 @@ function Kpis({ o }: { o: OverviewResponse }) {
   const lag = standby ? v('standby.replay_delay_bytes') : v('replication.max_replay_lag_bytes')
   const usageTone = usage === null ? undefined : usage >= 0.95 ? 'crit' : usage >= 0.8 ? 'warn' : undefined
 
+  const waiting = v('sessions.waiting_lock')
+  const idleTx = v('sessions.idle_in_transaction')
+  const secondary: { label: string; value: string; title: string }[] = [
+    { label: 'Transactions/s', value: rate(tps, ''), title: `${rate(rollbacks)} rollbacks` },
+    { label: 'Cache hits', value: pct(v('cache.hit_ratio')), title: 'Shared buffer hit ratio' },
+    { label: 'Rows read/s', value: rate(read, ''), title: 'Returned + fetched' },
+    { label: 'Rows written/s', value: rate(written, ''), title: 'Inserted + updated + deleted' },
+    { label: 'Temp files', value: `${bytes(v('temp.bytes.per_s'))}/s`, title: 'Sorts and hashes spilling to disk' },
+    { label: 'Size', value: bytes(v('db.total_size_bytes')), title: 'All databases' },
+  ]
+
   return (
     <>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
@@ -52,20 +63,25 @@ function Kpis({ o }: { o: OverviewResponse }) {
           <Meter value={used} max={max} tone={usageTone} />
           <div className="mt-1 text-xs text-muted">{pct(usage, 0)} of available slots</div>
         </div>
-        <Stat icon={<Activity aria-hidden className="h-3.5 w-3.5" />} label="Running now" value={num(v('sessions.active'))} sub={`${num(v('sessions.idle_in_transaction'))} idle in transaction · ${num(v('sessions.waiting_lock'))} waiting`} />
-        <Stat icon={<Zap aria-hidden className="h-3.5 w-3.5" />} label="Queries per second" value={rate(calls, '')} sub={calls && execMs !== null ? `avg ${ms(execMs / calls)} per query` : 'from pg_stat_statements'} />
-        <Stat icon={<Gauge aria-hidden className="h-3.5 w-3.5" />} label="Transactions per second" value={rate(tps, '')} sub={`${rate(rollbacks)} rollbacks`} />
-        <Stat icon={<HardDrive aria-hidden className="h-3.5 w-3.5" />} label="Cache hit ratio" value={pct(v('cache.hit_ratio'))} sub="shared buffers" />
-        <Stat icon={<Database aria-hidden className="h-3.5 w-3.5" />} label="Database size" value={bytes(v('db.total_size_bytes'))} sub="all databases" />
+        <Stat
+          icon={<Activity aria-hidden className="h-3.5 w-3.5" />}
+          label="Running now"
+          value={num(v('sessions.active'))}
+          sub={waiting ? `${num(waiting)} waiting for a lock` : idleTx ? `${num(idleTx)} idle in transaction` : 'active sessions'}
+        />
+        <Stat icon={<Lock aria-hidden className="h-3.5 w-3.5" />} label="Blocked" value={num(blocked)} tone={blocked ? 'crit' : undefined} sub={blocked ? `longest wait ${seconds(v('blocking.max_lock_wait_seconds'))}` : 'no lock waits'} />
+        <Stat icon={<Timer aria-hidden className="h-3.5 w-3.5" />} label="Oldest transaction" value={oldest === null ? 'none' : seconds(oldest)} tone={oldest !== null && oldest > 300 ? 'warn' : undefined} sub={`${num(v('transactions.long'))} long-running`} />
+        <Stat icon={<Zap aria-hidden className="h-3.5 w-3.5" />} label="Queries/s" value={rate(calls, '')} sub={calls && execMs !== null ? `avg ${ms(execMs / calls)}` : 'pg_stat_statements'} />
+        <Stat icon={<Gauge aria-hidden className="h-3.5 w-3.5" />} label={standby ? 'Replay delay' : 'Replica lag'} value={bytes(lag)} sub={standby ? 'not yet replayed' : 'largest standby'} />
       </div>
-      <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat icon={<Lock aria-hidden className="h-3.5 w-3.5" />} label="Blocked sessions" value={num(blocked)} tone={blocked ? 'crit' : undefined} sub={blocked ? `longest wait ${seconds(v('blocking.max_lock_wait_seconds'))}` : 'no lock waits'} />
-        <Stat icon={<Timer aria-hidden className="h-3.5 w-3.5" />} label="Oldest transaction" value={oldest === null ? 'none open' : seconds(oldest)} tone={oldest !== null && oldest > 300 ? 'warn' : undefined} sub={`${num(v('transactions.long'))} long-running`} />
-        <Stat label="Rows read per second" value={rate(read, '')} sub="returned + fetched" />
-        <Stat label="Rows written per second" value={rate(written, '')} sub="inserted + updated + deleted" />
-        <Stat label="Temp files written" value={`${bytes(v('temp.bytes.per_s'))}/s`} sub="sorts and hashes spilling to disk" />
-        <Stat label={standby ? 'Replay delay' : 'Replica lag'} value={bytes(lag)} sub={standby ? 'received, not yet replayed' : 'largest replay lag'} />
-      </div>
+      <dl className="mt-3 grid grid-cols-2 divide-line rounded-xl border border-line bg-surface sm:grid-cols-3 sm:divide-x xl:grid-cols-6">
+        {secondary.map((x) => (
+          <div key={x.label} title={x.title} className="px-4 py-2.5">
+            <dt className="text-xs text-muted">{x.label}</dt>
+            <dd className="num text-base font-semibold text-ink">{x.value}</dd>
+          </div>
+        ))}
+      </dl>
     </>
   )
 }

@@ -13,8 +13,16 @@
 name: locklens
 
 services:
+  # PostgreSQL 18 with TimescaleDB (Community edition): history tables are
+  # hypertables, compressed after a day, and retention drops whole chunks.
+  # Same PostgreSQL version and data directory as postgres:18.6-alpine, so an
+  # existing store volume is converted in place on the next start.
   store:
-    image: postgres:18.6-alpine
+    image: timescale/timescaledb:2.30.2-pg18
+    # The extension must be preloaded; a data directory created by the plain
+    # postgres image does not list it in postgresql.conf. Telemetry to
+    # Timescale is turned off.
+    command: ["postgres", "-c", "shared_preload_libraries=timescaledb", "-c", "timescaledb.telemetry_level=off"]
     environment:
       POSTGRES_USER: locklens_store
       POSTGRES_PASSWORD: ${LOCKLENS_STORE_PASSWORD:?set it in deploy/.env (make up creates one)}
@@ -56,6 +64,9 @@ services:
       # Active session sampling (database load).
       LOCKLENS_LOAD_SAMPLING: ${LOCKLENS_LOAD_SAMPLING:-true}
       LOCKLENS_LOAD_SAMPLE_INTERVAL: ${LOCKLENS_LOAD_SAMPLE_INTERVAL:-2s}
+      # TimescaleDB in the store: auto (use it when available), on, or off.
+      LOCKLENS_STORE_TIMESCALE: ${LOCKLENS_STORE_TIMESCALE:-auto}
+      LOCKLENS_STORE_COMPRESS_AFTER: ${LOCKLENS_STORE_COMPRESS_AFTER:-24h}
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/readyz"]
       interval: 2s

@@ -106,7 +106,7 @@ describe('DatabaseOverview', () => {
       '/api/v1/targets/1/metrics': () => metrics,
     })
     const { container } = renderAt('/databases/1', '/databases/:id', <DatabaseOverview />)
-    const qps = (await screen.findByText('Queries per second')).closest('div')?.parentElement
+    const qps = (await screen.findByText('Queries/s', { selector: 'span' })).closest('div')?.parentElement
     expect(qps && within(qps).getByText('—')).toBeInTheDocument()
     expect(screen.getByText('12')).toBeInTheDocument()
     expect(await screen.findAllByRole('table', { name: 'Workload by statement type' })).not.toHaveLength(0)
@@ -176,7 +176,6 @@ describe('OverviewPage', () => {
       '/api/v1/fleet/metrics': () => ({ body: { from: '2026-10-24T12:00:00Z', to: '2026-10-24T12:15:00Z', step_seconds: 60, targets: 1, series: [] } }),
       '/api/v1/fleet/queries': () => ({ body: { from: '', to: '', sort: 'total_time', items: [], targets: 1 } }),
       '/api/v1/incidents': () => ({ body: { incidents: [], total: 0, page_size: 50, rules: [] } }),
-      '/api/v1/targets/1/workspace/policy': () => ({ body: { ...sqlPolicy, sql_enabled: false, configured: false } }),
     })
     const { container } = renderAt('/overview', '/overview', <OverviewPage />)
     const dbs = (await screen.findByText('Databases monitored')).parentElement
@@ -188,7 +187,6 @@ describe('OverviewPage', () => {
     const qps = screen.getByText('Query throughput').parentElement
     expect(qps && within(qps).getByText('—')).toBeInTheDocument()
     expect(screen.getByText('No replication observed')).toBeInTheDocument()
-    expect(await screen.findByText('The SQL editor is off for this instance')).toBeInTheDocument()
     expect(await axeViolations(container)).toEqual([])
   })
 })
@@ -248,7 +246,7 @@ describe('roles', () => {
       '/api/v1/settings/rules': () => ({ body: { thresholds: {}, defaults: {} } }),
       '/api/v1/storage': () => ({ body: { tables: [] } }),
     })
-    const { container } = renderAt('/settings', '/settings', <SettingsPage />)
+    const { container } = renderAt('/settings/users', '/settings/:section', <SettingsPage />)
     const table = await screen.findByRole('table', { name: 'Users' })
     expect(within(table).getByRole('combobox', { name: 'Role of admin' })).toBeDisabled()
     expect(within(table).getByRole('combobox', { name: 'Role of dana' })).toBeEnabled()

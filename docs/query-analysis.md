@@ -74,7 +74,7 @@ For each query:
 - `load_ratio` = total time(current) / total time(previous)
 - `mean_ratio` = mean time(current) / mean time(previous)
 
-Flags, with the thresholds from **Settings → Rule thresholds** (defaults; demo
+Flags, with the thresholds from **Settings → Alert rules** (defaults; demo
 mode in parentheses):
 
 | Flag | Condition |
@@ -141,7 +141,7 @@ Sessions pages can show it:
 
 - The normalised statement text is stored once per identity, and live session
   queries are kept in activity snapshots.
-- It can be switched off per target (**Settings → instance → Collect SQL
+- It can be switched off per target (**Settings → Instances → Edit → Collect SQL
   text**). Then the text is not stored (it is still read briefly to classify
   each statement and then dropped), session queries are not collected, and
   the target's stored statement texts are deleted.

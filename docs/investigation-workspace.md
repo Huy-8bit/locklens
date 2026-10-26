@@ -20,7 +20,7 @@ use them:
 
 ## Adding an instance from one connection string
 
-**Settings → Add instance** (`POST /api/v1/targets/inspect`, then
+**Settings → Instances → Add instance** (`POST /api/v1/targets/inspect`, then
 `POST /api/v1/targets/quick`) takes one connection string, connects, and shows a plan:
 
 | The role is | LockLens |

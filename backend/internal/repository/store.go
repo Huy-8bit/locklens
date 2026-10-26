@@ -37,6 +37,8 @@ var ErrNotFound = errors.New("not found")
 type Store struct {
 	pool *pgxpool.Pool
 	red  *config.Redactor
+	// timescale is set once by SetupTimescale, before the store is shared.
+	timescale TimescaleStatus
 }
 
 // Options configure the store pool.

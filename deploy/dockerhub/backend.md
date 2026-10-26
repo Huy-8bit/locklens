@@ -22,7 +22,8 @@ docker network create locklens
 
 docker run -d --name locklens-store --network locklens \
   -e POSTGRES_USER=locklens -e POSTGRES_PASSWORD=change-me -e POSTGRES_DB=locklens \
-  -v locklens-store:/var/lib/postgresql postgres:18-alpine
+  -v locklens-store:/var/lib/postgresql timescale/timescaledb:2.30.2-pg18 \
+  postgres -c shared_preload_libraries=timescaledb -c timescaledb.telemetry_level=off
 
 docker run -d --name locklens-backend --network locklens \
   -e LOCKLENS_STORE_DSN='postgres://locklens:change-me@locklens-store:5432/locklens?sslmode=disable' \

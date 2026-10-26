@@ -28,6 +28,12 @@ func freshStore(t *testing.T) (*repository.Store, string) {
 	if admin == "" {
 		t.Fatal("LOCKLENS_IT_ADMIN_DSN is required; run scripts/integration-test.sh")
 	}
+	return freshStoreOn(t, admin)
+}
+
+// freshStoreOn creates an empty store database on the server of admin.
+func freshStoreOn(t *testing.T, admin string) (*repository.Store, string) {
+	t.Helper()
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, admin)
 	if err != nil {
@@ -475,5 +481,113 @@ func TestLoadBucketsAndStatementResolution(t *testing.T) {
 	}
 	if refs, _ = s.QueryRefsByActivity(ctx, tg.ID, []repository.StatementRef{{DBID: 5, UserID: 10, QueryID: -42}}, false); refs[0].Text != nil {
 		t.Fatal("text must be left out when not requested")
+	}
+}
+
+func TestTimescaleHypertablesCompressionAndRetention(t *testing.T) {
+	admin := os.Getenv("LOCKLENS_IT_TIMESCALE_DSN")
+	if admin == "" {
+		t.Skip("LOCKLENS_IT_TIMESCALE_DSN not set")
+	}
+	ctx := context.Background()
+	s, _ := freshStoreOn(t, admin)
+	if _, err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tg := target(t, s, "ts")
+	now := time.Now().UTC().Truncate(time.Second)
+	// Ten days of points, written before the conversion: they must move into chunks.
+	iv := 3600.0
+	for h := 0; h < 240; h++ {
+		at := now.Add(-time.Duration(h) * time.Hour)
+		if err := s.InsertPoints(ctx, tg.ID, at, []observe.Point{{Metric: "xact.commit.per_s", Value: observe.F(float64(h)), IntervalSeconds: &iv}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.InsertActivitySnapshot(ctx, tg.ID, now.Add(-time.Hour), 1, 1, 0, []byte(`{"schema_version":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	snaps, err := s.ListActivitySnapshots(ctx, tg.ID, now.Add(-2*time.Hour), now, false, 10)
+	if err != nil || len(snaps) != 1 {
+		t.Fatalf("snapshots %v %v", snaps, err)
+	}
+
+	st, err := s.SetupTimescale(ctx, repository.TimescaleAuto, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Enabled || !st.Compression || st.License != "timescale" || len(st.Hypertables) != 9 {
+		t.Fatalf("status = %+v", st)
+	}
+	// Idempotent: a restart changes nothing.
+	if st2, err := s.SetupTimescale(ctx, repository.TimescaleAuto, time.Hour); err != nil || len(st2.Hypertables) != 9 {
+		t.Fatalf("second setup: %+v %v", st2, err)
+	}
+	var n int
+	if err := s.Pool().QueryRow(ctx, "SELECT count(*) FROM metric_points").Scan(&n); err != nil || n != 240 {
+		t.Fatalf("rows after conversion = %d, %v", n, err)
+	}
+	// Snapshots keep their ids (the primary key now includes ts).
+	if _, raw, err := s.GetActivitySnapshot(ctx, tg.ID, snaps[0].ID); err != nil || len(raw) == 0 {
+		t.Fatalf("snapshot by id: %v", err)
+	}
+
+	// Compress the old chunks now (the policy would do it in the background),
+	// then write into one of them again and read it back.
+	if _, err := s.Pool().Exec(ctx, "SELECT compress_chunk(c, if_not_compressed => true) FROM show_chunks('metric_points', older_than => now() - interval '2 days') c"); err != nil {
+		t.Fatal(err)
+	}
+	old := now.Add(-100 * time.Hour)
+	if err := s.InsertPoints(ctx, tg.ID, old, []observe.Point{{Metric: "xact.commit.per_s", Value: observe.F(-1), IntervalSeconds: &iv}}); err != nil {
+		t.Fatalf("a duplicate in a compressed chunk must be ignored: %v", err)
+	}
+	series, err := s.QuerySeries(ctx, tg.ID, []string{"xact.commit.per_s"}, now.Add(-200*time.Hour), now, 24*time.Hour)
+	if err != nil || len(series) != 1 || len(series[0].Points) < 8 {
+		t.Fatalf("series over compressed chunks: %+v %v", series, err)
+	}
+	sizes, err := s.TableSizes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mp repository.StorageStats
+	for _, x := range sizes {
+		if x.Table == "metric_points" {
+			mp = x
+		}
+	}
+	if mp.Bytes == 0 || mp.CompressedBefore == nil || mp.CompressedAfter == nil || *mp.CompressedAfter >= *mp.CompressedBefore {
+		t.Fatalf("metric_points size = %+v", mp)
+	}
+
+	// Retention drops whole chunks older than the cutoff.
+	res, err := s.ApplyRetention(ctx, repository.RetentionPolicy{History: 5 * 24 * time.Hour, Incidents: 90 * 24 * time.Hour, Findings: 30 * 24 * time.Hour}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["metric_points (chunks)"] < 3 {
+		t.Fatalf("retention = %v", res)
+	}
+	var oldest time.Time
+	if err := s.Pool().QueryRow(ctx, "SELECT min(ts) FROM metric_points").Scan(&oldest); err != nil {
+		t.Fatal(err)
+	}
+	if oldest.Before(now.Add(-6 * 24 * time.Hour)) {
+		t.Fatalf("oldest point %s is older than the cutoff plus one chunk", oldest)
+	}
+}
+
+func TestTimescaleModesOnPlainPostgreSQL(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+	st, err := s.SetupTimescale(ctx, repository.TimescaleAuto, time.Hour)
+	if err != nil || st.Enabled || st.Reason == "" {
+		t.Fatalf("auto on plain PostgreSQL: %+v %v", st, err)
+	}
+	if _, err := s.SetupTimescale(ctx, repository.TimescaleOn, time.Hour); err == nil {
+		t.Fatal("on must fail without TimescaleDB")
+	}
+	// Retention still works with batched deletes.
+	if _, err := s.ApplyRetention(ctx, repository.RetentionPolicy{History: time.Hour, Incidents: time.Hour * 24, Findings: time.Hour}, time.Now()); err != nil {
+		t.Fatal(err)
 	}
 }

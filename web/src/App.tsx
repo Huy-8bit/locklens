@@ -92,6 +92,7 @@ export function App() {
           <Route path="sql/:targetId" element={<RequirePermission perm="workspace.sql"><SqlPage /></RequirePermission>} />
           <Route path="account" element={<AccountPage />} />
           <Route path="settings" element={<RequirePermission perm="targets.manage"><SettingsPage /></RequirePermission>} />
+          <Route path="settings/:section" element={<RequirePermission perm="targets.manage"><SettingsPage /></RequirePermission>} />
           <Route path="settings/targets/new" element={<RequirePermission perm="targets.manage"><QuickAddPage /></RequirePermission>} />
           <Route path="settings/targets/new/manual" element={<RequirePermission perm="targets.manage"><TargetFormPage /></RequirePermission>} />
           <Route path="settings/targets/:targetId" element={<RequirePermission perm="targets.manage"><TargetFormPage /></RequirePermission>} />

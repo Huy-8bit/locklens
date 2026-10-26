@@ -226,7 +226,7 @@ the API. The test:
     lists the `CREATE ROLE`/`GRANT` statements without the password, the
     roles are created after confirmation, and the instance is stored with
     `locklens_monitor`; the advanced form still tests a connection;
-11. adds a viewer under Settings → Users, signs in as that viewer in a second
+11. adds a viewer under Settings → Users and roles, signs in as that viewer in a second
     browser context, and checks that the SQL Editor and Settings are not
     offered and that the API refuses SQL and the users list with 403;
 12. checks Databases, standby replication (streaming), Topology, Connections,

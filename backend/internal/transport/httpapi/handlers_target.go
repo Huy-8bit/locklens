@@ -143,13 +143,7 @@ func (s *Server) targetMetrics(w http.ResponseWriter, r *http.Request) {
 	if v, ok := s.view(t.ID); ok {
 		collectors = v.Collectors
 	}
-	minStep := time.Duration(t.IntervalSeconds) * time.Second
-	for _, m := range metrics {
-		if status, ok := collectors[repository.MetricCollector(m)]; ok {
-			minStep = max(minStep, time.Duration(status.IntervalSeconds*float64(time.Second)))
-		}
-	}
-	step, err := metricStep(r, from, to, minStep)
+	step, err := metricStep(r, from, to, s.collectionStep(t, metrics))
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -315,4 +309,22 @@ func (s *Server) targetGaps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"gaps": gaps})
+}
+
+// collectionStep is the shortest bucket that holds at least one sample of
+// each metric: the target's interval, or the slower interval of the
+// collector behind a metric. A shorter bucket would alternate between a
+// value and a gap.
+func (s *Server) collectionStep(t targets.View, metrics []string) time.Duration {
+	collectors := t.Status.Collectors
+	if v, ok := s.view(t.ID); ok {
+		collectors = v.Collectors
+	}
+	step := time.Duration(t.IntervalSeconds) * time.Second
+	for _, m := range metrics {
+		if status, ok := collectors[repository.MetricCollector(m)]; ok {
+			step = max(step, time.Duration(status.IntervalSeconds*float64(time.Second)))
+		}
+	}
+	return step
 }

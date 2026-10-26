@@ -10,10 +10,7 @@ import { tableCls, tdCls, tdNum, Th, trCls } from '../components/Table'
 import { TimeChart } from '../components/TimeChart'
 import { Card, Delta, Empty, ErrorBox, KpiCard, Load, Meter, Pills, selectCls, Spinner } from '../components/ui'
 import { BlockingGraph } from '../components/widgets/BlockingGraph'
-import { ExplorerPanel, type ExplorerSelection } from '../components/widgets/ExplorerPanel'
-import { InstanceSelect } from '../components/widgets/InstanceSelect'
 import { SessionsTable } from '../components/widgets/SessionsTable'
-import { SqlPanel } from '../components/widgets/SqlPanel'
 import { lagHealth, TopologyGraph } from '../components/widgets/TopologyGraph'
 import { combine, firstLast, fleetPoints, sumLatest, topology } from '../lib/fleet'
 import { bytes, compact, ms, num, pct, rate } from '../lib/format'
@@ -340,13 +337,6 @@ export default function OverviewPage() {
   const load = useFleetMetrics(env, LOAD, range)
   const host = useFleetMetrics(env, HOST, range)
   const targets = useMemo(() => live.data?.targets ?? [], [live.data])
-  const [explorerId, setExplorerId] = useState(0)
-  const [sqlId, setSqlId] = useState(0)
-  const [selection, setSelection] = useState<ExplorerSelection | null>(null)
-  const list = targets.map((t) => t.target)
-  const pick = (id: number) => (list.some((t) => t.id === id) ? id : (list[0]?.id ?? 0))
-  const exId = pick(explorerId)
-  const sId = pick(sqlId)
   const blocked = targets.reduce((n, t) => n + (t.report?.analysis.summary.blocked_sessions ?? 0), 0)
 
   return (
@@ -369,9 +359,11 @@ export default function OverviewPage() {
           <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
             <ReadWriteCard d={rw.data} />
             <ThroughputCard d={load.data} />
-            <ResourcesCard targets={targets} d={host.data} />
+            <div className="lg:col-span-2 2xl:col-span-1">
+              <ResourcesCard targets={targets} d={host.data} />
+            </div>
           </div>
-          <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+          <div className="grid gap-4 lg:grid-cols-2">
             <Card title="Database topology" subtitle="Primaries and the standbys streaming from them" actions={<MoreLink to="/topology">View topology</MoreLink>}>
               <TopologyGraph targets={targets} compact />
               {host.data && topology(targets).groups.some((g) => g.edges.length > 0) && (
@@ -382,37 +374,13 @@ export default function OverviewPage() {
               )}
             </Card>
             <TopQueriesCard env={env} range={range} multi={targets.length > 1} />
-            <Card pad={false} title="Active sessions" subtitle="Running a query or holding a transaction, longest first" actions={<MoreLink to="/sessions">View all sessions</MoreLink>} className="lg:col-span-2 2xl:col-span-1">
+          </div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card pad={false} title="Active sessions" subtitle="Running a query or holding a transaction, longest first" actions={<MoreLink to="/sessions">View all sessions</MoreLink>}>
               <SessionsTable targets={targets} compact limit={6} />
             </Card>
-          </div>
-          <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
             <Card title="Blocking transactions" subtitle={blocked ? `${blocked} session${blocked === 1 ? '' : 's'} waiting on a lock held by another session` : 'From pg_blocking_pids() in the latest sample'} actions={<MoreLink to="/blocking">Details</MoreLink>}>
               <BlockingGraph targets={targets} max={2} />
-            </Card>
-            <Card pad={false} title="Database explorer" actions={<MoreLink to={exId ? `/explorer/${exId}` : '/explorer'}>Open explorer</MoreLink>}>
-              {exId > 0 && (
-                <ExplorerPanel
-                  key={exId}
-                  id={exId}
-                  compactView
-                  selection={selection}
-                  onSelect={setSelection}
-                  toolbar={
-                    <InstanceSelect
-                      targets={list}
-                      value={exId}
-                      onChange={(id) => {
-                        setExplorerId(id)
-                        setSelection(null)
-                      }}
-                    />
-                  }
-                />
-              )}
-            </Card>
-            <Card pad={false} title="SQL editor" subtitle="Read-only, never an administrative role" actions={<MoreLink to={sId ? `/sql/${sId}` : '/sql'}>Open editor</MoreLink>} className="xl:col-span-2 2xl:col-span-1">
-              {sId > 0 && <SqlPanel key={sId} id={sId} compactView toolbar={<InstanceSelect targets={list} value={sId} onChange={setSqlId} />} />}
             </Card>
           </div>
         </div>

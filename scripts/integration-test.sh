@@ -109,6 +109,11 @@ SQL
   sport=${sport##*:}
   echo "    standby on 127.0.0.1:${sport}"
 
+  local tsport
+  tsport=$("${compose[@]}" port timescale 5432) || return 1
+  tsport=${tsport##*:}
+  echo "    TimescaleDB on 127.0.0.1:${tsport}"
+
   local base="127.0.0.1:${port}/locklens_it?sslmode=disable"
   local log="$ARTIFACTS/integration-pg${version}.log"
   echo "    running integration tests (log: ${log#"$ROOT"/})"
@@ -123,6 +128,7 @@ SQL
     LOCKLENS_IT_LIMITED_DSN="postgres://locklens_limited:${limited_pw}@${base}" \
     LOCKLENS_IT_PGSS_OBSERVER_DSN="postgres://locklens_observer:${observer_pw}@127.0.0.1:${port}/locklens_pgss?sslmode=disable" \
     LOCKLENS_IT_PGSS_DEMO_DSN="postgres://demo_app:${demo_pw}@127.0.0.1:${port}/locklens_pgss?sslmode=disable" \
+    LOCKLENS_IT_TIMESCALE_DSN="postgres://locklens_it_admin:${admin_pw}@127.0.0.1:${tsport}/locklens_it?sslmode=disable" \
     LOCKLENS_IT_STANDBY_OBSERVER_DSN="postgres://locklens_observer:${observer_pw}@127.0.0.1:${sport}/locklens_it?sslmode=disable" \
     LOCKLENS_IT_COMPOSE_PROJECT="$project" \
     LOCKLENS_IT_COMPOSE_FILE="$COMPOSE_FILE" \

@@ -111,7 +111,7 @@ export function CommandMix({ data, onPick, active, compactView = false }: { data
                       {label}
                     </span>
                   )}
-                  <span className="ml-1.5 text-xs text-muted">{num(t.statements)} stmt</span>
+                  <span className="mt-0.5 block whitespace-nowrap pl-[18px] text-xs text-muted">{num(t.statements)} statement{t.statements === 1 ? '' : 's'}</span>
                 </td>
                 <td className="num whitespace-nowrap py-1.5 pl-3 text-right">
                   {compact(t.calls)} <span className="text-xs text-muted">{pct(calls ? t.calls / calls : null, 0)}</span>

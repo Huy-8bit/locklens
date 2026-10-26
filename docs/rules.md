@@ -32,7 +32,7 @@ condition is gone.
 
 ## Rules
 
-Thresholds are configurable in **Settings → Rule thresholds**. Defaults are
+Thresholds are configurable in **Settings → Alert rules**. Defaults are
 shown; values in parentheses apply in demo mode (`LOCKLENS_DEMO_MODE`), which
 shortens windows so lab scenarios trigger within minutes.
 

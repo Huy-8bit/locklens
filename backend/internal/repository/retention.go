@@ -36,6 +36,17 @@ func (s *Store) ApplyRetention(ctx context.Context, p RetentionPolicy, now time.
 	}
 	cutoff := now.Add(-p.History).UTC()
 	for _, t := range historyTables {
+		if s.isHypertable(t) {
+			// Whole chunks older than the cutoff are dropped: no row-by-row
+			// delete, no bloat. Rows of the chunk that straddles the cutoff
+			// stay until that chunk ends (at most one chunk interval longer).
+			var n int64
+			if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM drop_chunks($1::regclass, older_than => $2::timestamptz)", t, cutoff).Scan(&n); err != nil {
+				return res, s.red.Error(err)
+			}
+			res[t+" (chunks)"] += n
+			continue
+		}
 		if err := run(t, "ts < $1", cutoff); err != nil {
 			return res, err
 		}
@@ -98,15 +109,35 @@ type StorageStats struct {
 	Table string `json:"table"`
 	Bytes int64  `json:"bytes"`
 	Rows  int64  `json:"estimated_rows"`
+	// CompressedBefore and CompressedAfter are the sizes of the compressed
+	// chunks before and after compression (TimescaleDB); nil when nothing
+	// is compressed.
+	CompressedBefore *int64 `json:"compressed_before_bytes,omitempty"`
+	CompressedAfter  *int64 `json:"compressed_after_bytes,omitempty"`
 }
 
 // TableSizes returns sizes of LockLens' tables (estimated row counts).
 func (s *Store) TableSizes(ctx context.Context) ([]StorageStats, error) {
-	rows, err := s.pool.Query(ctx, `
-SELECT c.relname, pg_total_relation_size(c.oid), greatest(c.reltuples, 0)::bigint
+	q := `
+SELECT c.relname, pg_total_relation_size(c.oid), greatest(c.reltuples, 0)::bigint, NULL::bigint, NULL::bigint
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = current_schema() AND c.relkind = 'r'
-ORDER BY 2 DESC`)
+ORDER BY 2 DESC`
+	if s.timescale.Enabled {
+		// A hypertable's rows live in its chunks; compressed chunks report
+		// their size before compression too.
+		q = `
+SELECT c.relname,
+       CASE WHEN h.hypertable_name IS NULL THEN pg_total_relation_size(c.oid) ELSE hypertable_size(c.oid) END,
+       CASE WHEN h.hypertable_name IS NULL THEN greatest(c.reltuples, 0)::bigint ELSE approximate_row_count(c.oid) END,
+       cs.before_compression_total_bytes, cs.after_compression_total_bytes
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN timescaledb_information.hypertables h ON h.hypertable_schema = n.nspname AND h.hypertable_name = c.relname
+LEFT JOIN LATERAL (SELECT * FROM hypertable_compression_stats(c.oid) WHERE h.compression_enabled AND h.hypertable_name IS NOT NULL) cs ON true
+WHERE n.nspname = current_schema() AND c.relkind = 'r'
+ORDER BY 2 DESC`
+	}
+	rows, err := s.pool.Query(ctx, q)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -114,7 +145,7 @@ ORDER BY 2 DESC`)
 	var out []StorageStats
 	for rows.Next() {
 		var st StorageStats
-		if err := rows.Scan(&st.Table, &st.Bytes, &st.Rows); err != nil {
+		if err := rows.Scan(&st.Table, &st.Bytes, &st.Rows, &st.CompressedBefore, &st.CompressedAfter); err != nil {
 			return nil, s.red.Error(err)
 		}
 		out = append(out, st)

@@ -134,6 +134,9 @@
   --color-accent-soft: var(--accent-soft);
   --color-good: var(--good);
   --color-good-soft: var(--good-soft);
+  --color-good-mark: var(--good-mark);
+  --color-warn-mark: var(--warn-mark);
+  --color-crit-mark: var(--crit-mark);
   --color-warn: var(--warn);
   --color-warn-soft: var(--warn-soft);
   --color-crit: var(--crit);

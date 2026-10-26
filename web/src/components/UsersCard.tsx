@@ -80,7 +80,6 @@ export function UsersCard() {
   return (
     <Card
       pad={false}
-      title="Users"
       subtitle="Administrators manage everything; operators can preview rows and run read-only SQL; viewers only read monitoring data."
       actions={
         <Button size="sm" variant="primary" onClick={() => setAdding(true)}>

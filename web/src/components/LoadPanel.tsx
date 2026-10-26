@@ -37,7 +37,9 @@ function statementOf(g: LoadGroup, refs: Map<string, QueryRef>) {
 
 function seriesOf(d: LoadResponse, refs: Map<string, QueryRef>): ChartSeries[] {
   const byClass = d.load.dimension === 'class'
-  return d.load.series.map((s, i) => {
+  // The chart is load: sessions idle in a transaction run nothing, so they
+  // stay out of the stack (the table and the summary line still show them).
+  return d.load.series.filter((s) => !(byClass && s.key === 'IdleTx') && !s.key.startsWith('IdleTx/')).map((s, i) => {
     const g = d.load.top.find((t) => t.key === s.key)
     const ref = g && d.load.dimension === 'query' ? statementOf(g, refs) : undefined
     const text = ref?.query_text?.replace(/\s+/g, ' ').trim()

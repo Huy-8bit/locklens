@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func env(m map[string]string) func(string) string {
@@ -34,5 +35,26 @@ func TestTrustedProxies(t *testing.T) {
 	}
 	if _, err := LoadConfig(env(map[string]string{"LOCKLENS_TRUSTED_PROXIES": "http://frontend"})); err == nil || !strings.Contains(err.Error(), "LOCKLENS_TRUSTED_PROXIES") {
 		t.Fatalf("a URL must be rejected: %v", err)
+	}
+}
+
+func TestStoreTimescale(t *testing.T) {
+	get := func(kv map[string]string) func(string) string { return func(k string) string { return kv[k] } }
+	st, err := LoadStoreTimescale(get(nil))
+	if err != nil || st.Mode != "auto" || st.CompressAfter != 24*time.Hour {
+		t.Fatalf("defaults: %+v %v", st, err)
+	}
+	st, err = LoadStoreTimescale(get(map[string]string{"LOCKLENS_STORE_TIMESCALE": "ON", "LOCKLENS_STORE_COMPRESS_AFTER": "0"}))
+	if err != nil || st.Mode != "on" || st.CompressAfter != 0 {
+		t.Fatalf("on without compression: %+v %v", st, err)
+	}
+	for _, bad := range []map[string]string{
+		{"LOCKLENS_STORE_TIMESCALE": "yes"},
+		{"LOCKLENS_STORE_COMPRESS_AFTER": "10m"},
+		{"LOCKLENS_STORE_COMPRESS_AFTER": "soon"},
+	} {
+		if _, err := LoadStoreTimescale(get(bad)); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
 	}
 }

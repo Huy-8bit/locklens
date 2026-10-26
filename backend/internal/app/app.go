@@ -40,7 +40,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	if err != nil {
 		return err
 	}
-	store, err := OpenStore(ctx, cfg.StoreDSN, log)
+	store, err := OpenStore(ctx, cfg.StoreDSN, &cfg.StoreTimescale, log)
 	if err != nil {
 		return err
 	}

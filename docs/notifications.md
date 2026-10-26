@@ -91,7 +91,7 @@ version 1.
 A silence stops notifications for one instance, one rule, or both, from now
 for a chosen time (at most 30 days); incidents are still recorded. Operators
 and administrators create silences on the incident page ("Silence this rule on
-this instance for 1 hour / 4 hours / 1 day") or under **Settings → Silences**,
+this instance for 1 hour / 4 hours / 1 day") or under **Settings → Notifications** (Silences),
 and can end them early. An event that falls in a silence is recorded once as
 silenced and is not sent later; reminders are skipped while silenced.
 

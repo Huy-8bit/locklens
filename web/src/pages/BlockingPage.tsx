@@ -29,12 +29,25 @@ export default function BlockingPage() {
               </div>
               <Card title="Blocking transactions" subtitle="Each blocker and the sessions waiting behind it">
                 <BlockingGraph targets={d.targets} />
+                {withTrees.length > 0 && (
+                  <div className="mt-5 space-y-2 border-t border-line pt-4">
+                    {withTrees.map(({ t, report }) => (
+                      <details key={t.target.id} className="group rounded-lg border border-line">
+                        <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm font-medium text-ink hover:bg-surface-2">
+                          <span>
+                            Lock modes and objects · {t.target.name}
+                            <span className="ml-2 font-normal text-muted">every level of waiting, {report.analysis.summary.blocked_sessions} blocked</span>
+                          </span>
+                          <span aria-hidden className="text-muted transition-transform group-open:rotate-90">›</span>
+                        </summary>
+                        <div className="border-t border-line px-3 py-3">
+                          <BlockingTree report={report} />
+                        </div>
+                      </details>
+                    ))}
+                  </div>
+                )}
               </Card>
-              {withTrees.map(({ t, report }) => (
-                <Card key={t.target.id} title={`Blocking tree · ${t.target.name}`} subtitle="Every level of waiting, with lock modes and the objects involved">
-                  <BlockingTree report={report} />
-                </Card>
-              ))}
               {long.length > 0 && (
                 <Card pad={false} title="Long-running transactions" subtitle="Open transactions older than the report threshold; they can hold locks and keep vacuum from cleaning up">
                   <div className="overflow-x-auto">

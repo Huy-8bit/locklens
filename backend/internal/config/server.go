@@ -38,6 +38,8 @@ type Config struct {
 	// PublicURL is LockLens' address as users reach it, for links in
 	// notifications (for example https://locklens.example.com).
 	PublicURL string
+	// StoreTimescale says whether the monitoring store uses TimescaleDB.
+	StoreTimescale StoreTimescale
 	// TrustedProxies are the networks of reverse proxies (the frontend) whose
 	// X-Forwarded-For header names the real client; TrustedProxyHosts are
 	// host names of such proxies, resolved periodically (for example the
@@ -109,6 +111,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	c.MetricsEnabled = boolean("LOCKLENS_METRICS_ENABLED", true)
 	c.DemoMode = boolean("LOCKLENS_DEMO_MODE", false)
 	c.LoadSampling = boolean("LOCKLENS_LOAD_SAMPLING", true)
+	if st, err := LoadStoreTimescale(getenv); err != nil {
+		errs = append(errs, err)
+	} else {
+		c.StoreTimescale = st
+	}
 	c.LoadSampleInterval = dur("LOCKLENS_LOAD_SAMPLE_INTERVAL", 2*time.Second, time.Second)
 	if v := strings.TrimRight(strings.TrimSpace(getenv("LOCKLENS_PUBLIC_URL")), "/"); v != "" {
 		u, err := url.Parse(v)
@@ -186,3 +193,37 @@ func def(v, d string) string {
 
 // Getenv is the production environment lookup.
 var Getenv = os.Getenv
+
+// StoreTimescale configures TimescaleDB in the monitoring store.
+type StoreTimescale struct {
+	// Mode is auto (use it when the server has it), on (require it), or off.
+	Mode string
+	// CompressAfter is the age at which chunks are compressed; 0 disables
+	// compression.
+	CompressAfter time.Duration
+}
+
+// LoadStoreTimescale reads LOCKLENS_STORE_TIMESCALE and
+// LOCKLENS_STORE_COMPRESS_AFTER.
+func LoadStoreTimescale(getenv func(string) string) (StoreTimescale, error) {
+	st := StoreTimescale{Mode: strings.ToLower(strings.TrimSpace(getenv("LOCKLENS_STORE_TIMESCALE"))), CompressAfter: 24 * time.Hour}
+	if st.Mode == "" {
+		st.Mode = "auto"
+	}
+	var errs []error
+	if st.Mode != "auto" && st.Mode != "on" && st.Mode != "off" {
+		errs = append(errs, errors.New("LOCKLENS_STORE_TIMESCALE must be auto, on, or off"))
+	}
+	if v := strings.TrimSpace(getenv("LOCKLENS_STORE_COMPRESS_AFTER")); v != "" {
+		d, err := time.ParseDuration(v)
+		switch {
+		case v == "0" || (err == nil && d == 0):
+			st.CompressAfter = 0
+		case err != nil || d < time.Hour:
+			errs = append(errs, errors.New("LOCKLENS_STORE_COMPRESS_AFTER must be 0 (no compression) or a duration of at least 1h, for example 24h"))
+		default:
+			st.CompressAfter = d
+		}
+	}
+	return st, errors.Join(errs...)
+}

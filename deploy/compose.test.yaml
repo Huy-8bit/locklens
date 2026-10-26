@@ -66,3 +66,23 @@ services:
       interval: 1s
       timeout: 3s
       retries: 120
+
+  # A TimescaleDB server for the monitoring store's hypertable, compression,
+  # and chunk retention tests (the store also runs on plain PostgreSQL: the
+  # postgres service above covers that path).
+  timescale:
+    image: timescale/timescaledb:2.30.2-pg18
+    environment:
+      POSTGRES_USER: ${LOCKLENS_IT_ADMIN_USER:?}
+      POSTGRES_PASSWORD: ${LOCKLENS_IT_ADMIN_PASSWORD:?}
+      POSTGRES_DB: ${LOCKLENS_IT_DATABASE:?}
+    command: ["postgres", "-c", "shared_preload_libraries=timescaledb", "-c", "timescaledb.telemetry_level=off"]
+    ports:
+      - "127.0.0.1::5432"
+    tmpfs:
+      - /var/lib/postgresql:size=512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 1s
+      timeout: 3s
+      retries: 90

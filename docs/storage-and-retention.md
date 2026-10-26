@@ -8,7 +8,9 @@ of the monitored databases: collectors are read-only, but the store is
 written to continuously.
 
 The store role needs to own the schema objects (it runs the migrations). No
-extension is required.
+extension is required; with **TimescaleDB** (the default in Docker Compose)
+history is partitioned by time, compressed, and expired by whole chunks (see
+[TimescaleDB](#timescaledb)).
 
 ### Schema and migrations
 
@@ -31,6 +33,76 @@ recorded in `schema_migrations`; `/readyz` reports the schema version.
 | `incidents`, `incident_events` | Incidents and their evidence | Incidents (resolved ones) |
 | `settings` | Rule thresholds | — |
 
+## TimescaleDB
+
+With TimescaleDB, the history tables (`metric_points`, `query_samples`,
+`statement_collections`, `activity_snapshots`, `table_stats`, `index_stats`,
+`state_snapshots`, `load_samples`, `load_buckets`) are **hypertables**:
+
+- **Partitioned by time** into daily chunks (weekly for the small tables), so
+  a chart reads only the chunks of its time range.
+- **Compressed** (Community edition) once a chunk is older than
+  `LOCKLENS_STORE_COMPRESS_AFTER` (default 24 h), by a TimescaleDB background
+  job. Rows are grouped by target and metric (or statement), so a chart still
+  reads one series, not the whole chunk. Late rows and `ON CONFLICT DO NOTHING`
+  inserts into compressed chunks work.
+- **Expired by whole chunks**: retention drops chunks older than the cutoff,
+  which takes milliseconds and returns the disk space at once. Rows of the
+  chunk that spans the cutoff stay until that chunk ends, at most one chunk
+  interval longer than `LOCKLENS_RETENTION`.
+
+The other tables (targets, incidents, findings, users, …) stay ordinary
+tables.
+
+| `LOCKLENS_STORE_TIMESCALE` | Behaviour |
+| --- | --- |
+| `auto` (default) | Use TimescaleDB when the store's server has the extension and preloads it; otherwise keep plain tables and say why on the Settings page and in the log |
+| `on` | Refuse to start without TimescaleDB |
+| `off` | Plain tables |
+
+The setup runs after the migrations on every start and is idempotent. A store
+that gains the extension later (for example after switching the Compose image)
+is converted on the next start: existing rows are moved into chunks in one
+transaction per table, which takes a while on a large store, once. Back up the
+store first.
+
+**Docker Compose** runs `timescale/timescaledb:2.30.2-pg18`: PostgreSQL 18.6
+with the same data directory and C library as the `postgres:18.6-alpine` image
+used before, so an existing store volume is converted in place. The extension
+is preloaded with `shared_preload_libraries=timescaledb` on the command line,
+and TimescaleDB's telemetry is turned off with
+`timescaledb.telemetry_level=off`.
+
+**Your own store server**: install TimescaleDB, add it to
+`shared_preload_libraries`, restart, and run `CREATE EXTENSION timescaledb` once
+as a superuser in the store database (LockLens tries this itself and falls back
+to plain tables when its role may not). Managed PostgreSQL without TimescaleDB
+works unchanged with `auto`.
+
+**Editions.** Hypertables and chunk retention are in TimescaleDB's
+Apache-2.0 edition; compression needs the Community edition (Timescale
+License), which the `timescale/timescaledb` images contain. With an
+Apache-only build (`-oss` images), LockLens uses hypertables without
+compression.
+
+### Measured
+
+One synthetic `metric_points` table on the same machine: 7 days of 5 targets ×
+40 metrics every 10 s (12.1 million rows), a mix of steady gauges, noisy
+rates, and constants; PostgreSQL 18.6 with and without TimescaleDB 2.30.2, the
+5 oldest days compressed.
+
+| | PostgreSQL | TimescaleDB |
+| --- | --- | --- |
+| Size | 1,788 MB | 717 MB (compressed days: 1,099 MB → 33 MB, 33×; the 2 recent days stay uncompressed) |
+| 7-day chart of one metric (15-minute steps), warm | ~155 ms | ~22 ms |
+| Last hour of one metric (10-second steps), warm | ~1.5 ms | ~0.5 ms |
+| Expire one day (1.7 million rows) | 534 ms as one `DELETE` (LockLens deletes in paced batches), space reused only after vacuum | 10 ms (`drop_chunks`), space returned at once |
+
+Synthetic data, one machine: real metrics compress differently (steady
+gauges better, noisy rates worse). Check the Settings page (Monitoring store),
+which shows each table's size and compression ratio.
+
 ## Retention
 
 | Data | Variable | Default |
@@ -42,7 +114,9 @@ recorded in `schema_migrations`; `/readyz` reports the schema version.
 Incidents contain their own copy of the evidence, so expiring raw history
 never changes an incident. Open incidents are never deleted.
 
-Cleanup runs one minute after startup and then every hour. It deletes in batches of
+Cleanup runs one minute after startup and then every hour. With TimescaleDB
+it drops whole chunks of the history tables (see above). Otherwise, and for the
+other tables, it deletes in batches of
 5,000 rows with a 50 ms pause between batches, so it never holds long locks
 on the store or blocks collectors and the API. Deleted space is reused by
 PostgreSQL after autovacuum; the files do not shrink by themselves.
@@ -135,6 +209,6 @@ deletes it.
 
 There is no in-place re-encryption command yet. To change
 `LOCKLENS_MASTER_KEY`, start with the new key and re-enter each target's DSN
-(Settings → target → Connection string). Targets whose DSN cannot be decrypted
+(Settings → Instances → Edit → Connection string). Targets whose DSN cannot be decrypted
 show the error "cannot decrypt stored secret (wrong LOCKLENS_MASTER_KEY or
 corrupted data)" and stay unreachable until updated.

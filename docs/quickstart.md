@@ -101,7 +101,7 @@ defaults are deliberately slower ([rules.md](rules.md)).
    blocking snapshots ("Show blocking graph"), and how it resolved.
 3. **Export HTML report** downloads a standalone file that opens offline;
    **Export JSON** is the machine-readable form (import it on another
-   LockLens instance under **Settings → Import an incident**).
+   LockLens instance under **Settings → Data and storage** (Import an incident)).
 
 ### 5. Optional: host metrics
 
@@ -109,7 +109,7 @@ defaults are deliberately slower ([rules.md](rules.md)).
 make lab-up-host
 ```
 
-starts node_exporter as well. In **Settings → lab-primary → Edit**, set the
+starts node_exporter as well. In **Settings → Instances → lab-primary → Edit**, set the
 node_exporter URL to `http://node-exporter:9100/metrics`. On Docker Desktop
 and similar, it reports the Linux VM's CPU and memory, not your computer's.
 
@@ -144,7 +144,7 @@ the password. Keep the master key: it encrypts stored connection strings.
 Edit `deploy/.env` (see [deploy/.env.example](../deploy/.env.example)) to
 choose your own values; changing `LOCKLENS_ADMIN_PASSWORD` and running
 `make up` again resets the administrator's password. Then add your databases
-under **Settings → Add instance**; from the container, use an address it can
+under **Settings → Instances → Add instance**; from the container, use an address it can
 reach (a Docker service name or `host.docker.internal`), not `localhost`.
 
 ### Build from source
@@ -188,7 +188,7 @@ The server serves the API only. For the UI, run the frontend image against it
 (`docker run -p 127.0.0.1:3000:8080 -e LOCKLENS_BACKEND_URL=http://host.docker.internal:8080 locklens-frontend:local`
 after `make image`), or Vite during development
 (`cd web && LOCKLENS_DEV_API=http://127.0.0.1:8080 npm run dev`). Open the UI,
-sign in as `admin`, and add instances under **Settings → Add instance**. When
+sign in as `admin`, and add instances under **Settings → Instances → Add instance**. When
 the server listens beyond loopback, see [deployment.md](deployment.md).
 
 Next: [configuration.md](configuration.md) for all settings,
@@ -196,7 +196,7 @@ Next: [configuration.md](configuration.md) for all settings,
 
 ## Add your own database
 
-Under **Settings → Add instance**, paste a connection string and choose
+Under **Settings → Instances → Add instance**, paste a connection string and choose
 **Check connection**:
 
 - a regular role (for example one with `pg_monitor`) is used as is;
@@ -209,6 +209,6 @@ From a LockLens container, use an address the container can reach (for
 example the database's Docker service name, or `host.docker.internal` for a
 database published on your machine), not `localhost`.
 
-To give colleagues access, add users under **Settings → Users**: viewers read
+To give colleagues access, add users under **Settings → Users and roles**: viewers read
 the dashboards, operators can also preview rows and run read-only SQL.
 

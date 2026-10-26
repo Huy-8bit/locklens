@@ -6,13 +6,13 @@ LockLens runs as two images plus a PostgreSQL database for its own data:
 | --- | --- | --- | --- |
 | Backend | `locklens-backend` ([backend/Dockerfile](../backend/Dockerfile)) | `locklens server`: collectors, rules, incident recorder, REST API and live events; the `locklens` CLI; the `locklens-lab` scenario runner | `8080`: `/api/`, `/healthz`, `/readyz`, `/metrics` |
 | Frontend | `locklens-frontend` ([web/Dockerfile](../web/Dockerfile)) | The built React UI on nginx (unprivileged), with a reverse proxy for `/api/` | `8080`: the UI, `/api/` (proxied), `/frontend-healthz` |
-| Store | any PostgreSQL 14+ (`postgres:18-alpine` in Compose) | LockLens' history, users, encrypted connection strings | `5432` |
+| Store | any PostgreSQL 14+; TimescaleDB recommended (`timescale/timescaledb:2.30.2-pg18` in Compose) | LockLens' history, users, encrypted connection strings | `5432` |
 
 ```mermaid
 flowchart LR
     B[Browser] -- "UI and /api/ (one origin)" --> F[frontend<br/>nginx :8080]
     F -- "/api/ (proxy)" --> A[backend<br/>locklens server :8080]
-    A --> S[(store<br/>PostgreSQL)]
+    A --> S[(store<br/>PostgreSQL + TimescaleDB)]
     A -- "read-only" --> T[(monitored<br/>PostgreSQL)]
 ```
 
@@ -44,7 +44,8 @@ export LOCKLENS_MASTER_KEY="$(openssl rand -base64 32)"   # keep it
 docker network create locklens
 docker run -d --name locklens-store --network locklens \
   -e POSTGRES_USER=locklens -e POSTGRES_PASSWORD=change-me -e POSTGRES_DB=locklens \
-  -v locklens-store:/var/lib/postgresql postgres:18-alpine
+  -v locklens-store:/var/lib/postgresql timescale/timescaledb:2.30.2-pg18 \
+  postgres -c shared_preload_libraries=timescaledb -c timescaledb.telemetry_level=off
 docker run -d --name locklens-backend --network locklens \
   -e LOCKLENS_STORE_DSN='postgres://locklens:change-me@locklens-store:5432/locklens?sslmode=disable' \
   -e LOCKLENS_MASTER_KEY -e LOCKLENS_ADMIN_PASSWORD='choose-a-long-password' \

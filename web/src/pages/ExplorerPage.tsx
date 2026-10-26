@@ -121,18 +121,23 @@ function InstanceExplorer({ id, list }: { id: number; list: { id: number; name: 
 
   return (
     <div className="space-y-4">
-      {canMeta && (
-        <div className="flex flex-wrap justify-end gap-2">
-          <Button size="sm" onClick={() => void qc.invalidateQueries({ queryKey: ['t', id, 'catalog'] })}>
-            <RefreshCw aria-hidden className="h-3.5 w-3.5" /> Refresh structure
-          </Button>
-          <Button size="sm" variant="ghost" aria-expanded={showAccess} onClick={toggleAccess}>
-            <KeyRound aria-hidden className="h-3.5 w-3.5" /> Access settings
-          </Button>
-        </div>
-      )}
       {canMeta && showAccess && p && <AccessSetup id={id} policy={p} />}
-      <Card pad={false} className="pt-4">
+      <Card
+        pad={false}
+        title="Database objects"
+        actions={
+          canMeta ? (
+            <>
+              <Button size="sm" onClick={() => void qc.invalidateQueries({ queryKey: ['t', id, 'catalog'] })}>
+                <RefreshCw aria-hidden className="h-3.5 w-3.5" /> Refresh structure
+              </Button>
+              <Button size="sm" variant="ghost" aria-expanded={showAccess} onClick={toggleAccess}>
+                <KeyRound aria-hidden className="h-3.5 w-3.5" /> Access settings
+              </Button>
+            </>
+          ) : undefined
+        }
+      >
         <ExplorerPanel id={id} selection={{ schema, object }} onSelect={(sel) => go(id, sel.schema, sel.object)} toolbar={<InstanceSelect targets={list} value={id} onChange={(n) => go(n)} />} />
       </Card>
       {(!canMeta || !object) && p && <StatsOverview id={id} />}

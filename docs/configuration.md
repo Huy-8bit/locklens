@@ -24,6 +24,8 @@ All problems are reported at once.
 | `LOCKLENS_ADMIN_USER` | `admin` | Administrator user name. |
 | `LOCKLENS_COOKIE_SECURE` | `auto` | `auto` sets the session cookie's `Secure` flag unless the listen address is loopback (plain HTTP on loopback would never send a Secure cookie). Set `true` behind an HTTPS proxy, `false` only for local plain-HTTP setups such as the Docker lab. |
 | `LOCKLENS_SESSION_IDLE` | `12h` | A session ends after this much inactivity (minimum `5m`). Activity extends it. |
+| `LOCKLENS_STORE_TIMESCALE` | `auto` | Use TimescaleDB in the monitoring store: `auto` when the store's server has the extension (preloaded), `on` to refuse to start without it, `off` for plain tables. See [storage-and-retention.md](storage-and-retention.md#timescaledb). |
+| `LOCKLENS_STORE_COMPRESS_AFTER` | `24h` | Compress history chunks older than this (TimescaleDB Community edition); `0` turns compression off (minimum `1h`). |
 | `LOCKLENS_RETENTION` | `168h` (7 days) | History retention: metric points, statement samples and collections, activity snapshots, table and index statistics, state snapshots (minimum `1h`). |
 | `LOCKLENS_INCIDENT_RETENTION` | `2160h` (90 days) | Incidents and their events are kept this long after they resolve (minimum `24h`). Open incidents are never deleted. |
 | `LOCKLENS_FINDING_RETENTION` | `720h` (30 days) | Resolved findings and collection-gap records (minimum `1h`). Incidents keep their own copy of the evidence, so this never changes an incident. |
@@ -52,7 +54,7 @@ LockLens has users with one of three roles:
 The **environment administrator** comes from `LOCKLENS_ADMIN_USER` and
 `LOCKLENS_ADMIN_PASSWORD`. It is always an enabled administrator and cannot be
 changed or deleted in the UI, so access can always be recovered by restarting
-with a new password. Other users are added under **Settings → Users** (or
+with a new password. Other users are added under **Settings → Users and roles** (or
 `POST /api/v1/users`); users change their own password under **Account**.
 
 - On the first start, set `LOCKLENS_ADMIN_PASSWORD` (12 to 72 bytes) or
@@ -77,7 +79,7 @@ with a new password. Other users are added under **Settings → Users** (or
 ## Targets
 
 Targets are normally added in the UI from a single connection string
-(**Settings → Add instance**, see
+(**Settings → Instances → Add instance**, see
 [investigation-workspace.md](investigation-workspace.md#adding-an-instance-from-one-connection-string))
 or through the API ([api.md](api.md)). The advanced form sets every option.
 Per target:
@@ -131,7 +133,7 @@ does not stop startup. The Docker lab uses
 
 ## Rule thresholds
 
-Rule thresholds are edited in **Settings → Rule thresholds** (or
+Rule thresholds are edited in **Settings → Alert rules** (or
 `PUT /api/v1/settings/rules`) and stored in the monitoring store. They apply
 from the next evaluation. Defaults and meanings are in [rules.md](rules.md).
 

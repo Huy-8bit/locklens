@@ -36,7 +36,7 @@ flowchart LR
         RET[retention]
         AUTH[auth<br/>sessions, CSRF]
     end
-    STORE[(monitoring store<br/>PostgreSQL)]
+    STORE[(monitoring store<br/>PostgreSQL / TimescaleDB)]
     UI[React UI]
     T1 & T2 --> M
     NE --> M
@@ -89,7 +89,7 @@ flowchart LR
 | `backend/internal/app` | Wiring and startup of `locklens server` (store and migrations, admin bootstrap, bootstrap targets, restart recovery), graceful shutdown |
 | `backend/internal/config` | Server settings from the environment; PostgreSQL connection settings and credential redaction |
 | `backend/internal/lib/logger` | Structured loggers (text or JSON) on stderr |
-| `backend/internal/repository` | Monitoring store: embedded migrations with an advisory lock, all SQL for targets, metrics, statements, snapshots, findings, incidents, sessions, retention |
+| `backend/internal/repository` | Monitoring store: embedded migrations with an advisory lock, TimescaleDB setup (hypertables, compression, chunk retention) when available, all SQL for targets, metrics, statements, snapshots, findings, incidents, sessions, retention |
 | `backend/internal/lib/secret` | AES-256-GCM sealing of DSNs with the master key |
 | `backend/internal/domain/auth` | bcrypt passwords, server-side sessions, CSRF and Origin checks, login rate limiting |
 | `backend/internal/domain/targets` | Target validation, encryption, connection tests, bootstrap file |

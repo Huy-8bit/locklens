@@ -10,5 +10,5 @@ func (s *Server) storageStats(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tables": st})
+	writeJSON(w, http.StatusOK, map[string]any{"tables": st, "timescale": s.d.Store.Timescale()})
 }

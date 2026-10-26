@@ -96,7 +96,12 @@ func (s *Server) fleetMetrics(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	step := stepFor(from, to, 10*time.Second)
+	// Buckets hold a sample of every target: the slowest collection decides.
+	minStep := 10 * time.Second
+	for _, t := range ts {
+		minStep = max(minStep, s.collectionStep(t, metrics))
+	}
+	step := stepFor(from, to, minStep)
 	type acc struct {
 		sum, max float64
 		n        int

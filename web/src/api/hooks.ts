@@ -12,6 +12,8 @@ import type {
   GridResult,
   Incident,
   IncidentEventsResponse,
+  StoreTable,
+  StoreTimescale,
   ChannelInput,
   Delivery,
   NotificationChannel,
@@ -226,7 +228,7 @@ export function useSaveRules() {
 }
 
 export function useStorage() {
-  return useQuery({ queryKey: ['storage'], queryFn: () => api<{ tables: { table: string; bytes: number; estimated_rows: number }[] | null }>('/api/v1/storage') })
+  return useQuery({ queryKey: ['storage'], queryFn: () => api<{ tables: StoreTable[] | null; timescale?: StoreTimescale }>('/api/v1/storage') })
 }
 
 // Workspace: catalog metadata and table data, run on demand against the

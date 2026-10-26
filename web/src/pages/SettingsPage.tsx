@@ -1,14 +1,15 @@
-import { useState } from 'react'
-import { Link, useNavigate } from 'react-router'
-import { Plus } from 'lucide-react'
-import { useDeleteTarget, useImportIncident, useRuleSettings, useSaveRules, useStorage, useTargets } from '../api/hooks'
-import type { Target, Thresholds } from '../api/types'
+import { useState, type ReactNode } from 'react'
+import { Link, Navigate, NavLink, useNavigate, useParams } from 'react-router'
+import { Bell, HardDrive, Plus, Server, SlidersHorizontal, Users } from 'lucide-react'
+import { useDeleteTarget, useImportIncident, useStorage, useTargets } from '../api/hooks'
+import type { Permission, Target } from '../api/types'
 import { PageHeader } from '../components/Shell'
 import { UsersCard } from '../components/UsersCard'
 import { NotificationsCard, SilencesCard } from '../components/NotificationsCard'
 import { useCan } from '../auth'
+import { ThresholdsForm } from '../components/ThresholdsForm'
 import { tableCls, tdCls, tdNum, Th, trCls } from '../components/Table'
-import { Badge, Button, Card, Confirm, Empty, ErrorBox, inputCls, Load, StateBadge } from '../components/ui'
+import { Badge, Button, Card, Confirm, cx, Empty, ErrorBox, Load, StateBadge } from '../components/ui'
 import { bytes, compact, seconds } from '../lib/format'
 
 function Targets() {
@@ -18,7 +19,6 @@ function Targets() {
   return (
     <Card
       pad={false}
-      title="Instances"
       subtitle="Connection strings are encrypted and never shown again."
       actions={
         <Link to="/settings/targets/new" className="inline-flex items-center gap-1.5 rounded-lg border border-accent-fill bg-accent-fill px-3 py-1.5 text-sm font-medium text-accent-ink">
@@ -51,7 +51,7 @@ function Targets() {
                   {d.targets.map((t) => (
                     <tr key={t.id} className={trCls}>
                       <td className={tdCls}>
-                        <Link className="font-medium hover:underline" to={`/databases/${t.id}`}>
+                        <Link className="whitespace-nowrap font-medium hover:underline" to={`/databases/${t.id}`}>
                           {t.name}
                         </Link>
                       </td>
@@ -101,63 +101,37 @@ function Targets() {
   )
 }
 
-function Rules() {
-  const q = useRuleSettings()
-  const save = useSaveRules()
-  const [draft, setDraft] = useState<Thresholds | null>(null)
-  return (
-    <Card title="Alert thresholds" subtitle="When the rules report a finding or open an incident. Changes apply from the next evaluation.">
-      <Load q={q}>
-        {(d) => {
-          const values = draft ?? d.thresholds
-          return (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault()
-                if (draft) save.mutate(draft, { onSuccess: () => setDraft(null) })
-              }}
-            >
-              <div className="grid gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
-                {Object.keys(values)
-                  .sort()
-                  .map((k) => (
-                    <label key={k} className="block text-xs">
-                      <span className="break-words text-muted">{k.replace(/_/g, ' ')}</span>
-                      <input
-                        type="number"
-                        step="any"
-                        className={`${inputCls} mt-0.5`}
-                        value={values[k]}
-                        onChange={(e) => setDraft({ ...values, [k]: Number(e.target.value) })}
-                      />
-                      {values[k] !== d.defaults[k] && <span className="text-muted">default {d.defaults[k]}</span>}
-                    </label>
-                  ))}
-              </div>
-              {save.error && <div className="mt-3"><ErrorBox error={save.error} title="Thresholds rejected" /></div>}
-              <div className="mt-3 flex gap-2">
-                <Button type="submit" variant="primary" disabled={!draft} busy={save.isPending}>
-                  Save thresholds
-                </Button>
-                <Button onClick={() => setDraft({ ...d.defaults })}>Reset to defaults</Button>
-              </div>
-            </form>
-          )
-        }}
-      </Load>
-    </Card>
-  )
-}
-
 function Storage() {
   const q = useStorage()
+  const [all, setAll] = useState(false)
   return (
     <Card pad={false} title="Monitoring store" subtitle="LockLens' own database. Retention is set with LOCKLENS_RETENTION, LOCKLENS_INCIDENT_RETENTION, and LOCKLENS_FINDING_RETENTION.">
       <Load q={q}>
         {(d) => {
           const tables = d.tables ?? []
+          // Older servers do not report it.
+          const ts = d.timescale ?? { enabled: false, compression: false, reason: 'not reported by this server' }
+          const before = tables.reduce((n, t) => n + (t.compressed_before_bytes ?? 0), 0)
+          const after = tables.reduce((n, t) => n + (t.compressed_after_bytes ?? 0), 0)
           return (
             <div className="overflow-x-auto">
+              <div className="px-5 pb-3 text-sm">
+                {ts.enabled ? (
+                  <p>
+                    <Badge tone="good">TimescaleDB {ts.version}</Badge>{' '}
+                    <span className="text-ink-2">
+                      {ts.hypertables?.length ?? 0} history tables are hypertables (daily or weekly chunks; retention drops whole chunks).{' '}
+                      {ts.compression
+                        ? `Chunks older than ${seconds(ts.compress_after_seconds ?? 0)} are compressed${before > 0 ? `: ${bytes(before)} stored in ${bytes(after)} (${(before / Math.max(after, 1)).toFixed(1)}× smaller)` : ''}.`
+                        : `Compression is off${ts.license === 'apache' ? ' (Apache-only build: compression needs the Community edition)' : ' (LOCKLENS_STORE_COMPRESS_AFTER=0)'}.`}
+                    </span>
+                  </p>
+                ) : (
+                  <p className="text-ink-2">
+                    <Badge>PostgreSQL tables</Badge> {ts.reason}. With TimescaleDB, history is partitioned by time and compressed; see the deployment guide.
+                  </p>
+                )}
+              </div>
               <table className={tableCls}>
                 <caption className="sr-only">Monitoring store tables</caption>
                 <thead>
@@ -165,20 +139,34 @@ function Storage() {
                     <Th>Table</Th>
                     <Th align="right">Size</Th>
                     <Th align="right">Rows (estimate)</Th>
+                    {ts.compression && <Th align="right">Compression</Th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {tables.map((t) => (
+                  {(all ? tables : tables.slice(0, 8)).map((t) => (
                     <tr key={t.table} className={trCls}>
                       <td className={`${tdCls} font-mono text-xs`}>{t.table}</td>
                       <td className={tdNum}>{bytes(t.bytes)}</td>
                       <td className={tdNum}>{compact(t.estimated_rows)}</td>
+                      {ts.compression && (
+                        <td className={tdNum}>{t.compressed_before_bytes && t.compressed_after_bytes ? `${(t.compressed_before_bytes / t.compressed_after_bytes).toFixed(1)}×` : '—'}</td>
+                      )}
                     </tr>
                   ))}
+                  {tables.length > 8 && (
+                    <tr>
+                      <td colSpan={ts.compression ? 4 : 3} className="px-4 py-2">
+                        <button type="button" onClick={() => setAll((a) => !a)} className="text-sm font-medium text-accent hover:underline">
+                          {all ? 'Show the largest tables only' : `Show all ${tables.length} tables`}
+                        </button>
+                      </td>
+                    </tr>
+                  )}
                   <tr className="border-t border-line-strong font-medium">
                     <td className={tdCls}>Total</td>
                     <td className={tdNum}>{bytes(tables.reduce((n, t) => n + t.bytes, 0))}</td>
                     <td />
+                    {ts.compression && <td />}
                   </tr>
                 </tbody>
               </table>
@@ -218,19 +206,100 @@ function ImportIncident() {
   )
 }
 
-export default function SettingsPage() {
-  const can = useCan()
-  return (
-    <>
-      <PageHeader title="Settings" subtitle="Server settings (listen address, retention, master key) come from environment variables." />
-      <div className="space-y-3">
-        <Targets />
-        {can('users.manage') && <UsersCard />}
+interface Section {
+  id: string
+  label: string
+  description: string
+  icon: ReactNode
+  perm: Permission
+  render: () => ReactNode
+}
+
+const SECTIONS: Section[] = [
+  { id: '', label: 'Instances', description: 'The PostgreSQL servers LockLens monitors.', icon: <Server />, perm: 'targets.manage', render: () => <Targets /> },
+  { id: 'users', label: 'Users and roles', description: 'Who can sign in and what each role may do.', icon: <Users />, perm: 'users.manage', render: () => <UsersCard /> },
+  {
+    id: 'notifications',
+    label: 'Notifications',
+    description: 'Where incidents are sent, and silences for maintenance.',
+    icon: <Bell />,
+    perm: 'settings.manage',
+    render: () => (
+      <div className="space-y-4">
         <NotificationsCard />
         <SilencesCard />
-        <Rules />
-        <ImportIncident />
+      </div>
+    ),
+  },
+  {
+    id: 'rules',
+    label: 'Alert rules',
+    description: 'When a rule reports a finding or opens an incident.',
+    icon: <SlidersHorizontal />,
+    perm: 'settings.manage',
+    render: () => (
+      <Card>
+        <div className="pt-5">
+          <ThresholdsForm />
+        </div>
+      </Card>
+    ),
+  },
+  {
+    id: 'data',
+    label: 'Data and storage',
+    description: "LockLens' own database, retention, and incident import.",
+    icon: <HardDrive />,
+    perm: 'settings.manage',
+    render: () => (
+      <div className="space-y-4">
         <Storage />
+        <ImportIncident />
+      </div>
+    ),
+  },
+]
+
+export default function SettingsPage() {
+  const can = useCan()
+  const id = useParams().section ?? ''
+  const sections = SECTIONS.filter((x) => can(x.perm))
+  const current = sections.find((x) => x.id === id)
+  if (!current) return <Navigate to="/settings" replace />
+  return (
+    <>
+      <PageHeader title="Settings" subtitle="Server settings such as the listen address, retention, and the master key come from environment variables." />
+      <div className="grid gap-6 lg:grid-cols-[14rem_minmax(0,1fr)]">
+        <nav aria-label="Settings" className="-mx-3 overflow-x-auto px-3 lg:mx-0 lg:overflow-visible lg:px-0">
+          <ul className="flex gap-1 lg:sticky lg:top-0 lg:flex-col">
+            {sections.map((x) => (
+              <li key={x.id}>
+                <NavLink
+                  to={x.id ? `/settings/${x.id}` : '/settings'}
+                  end
+                  className={({ isActive }) =>
+                    cx(
+                      'flex items-center gap-2.5 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium [&>svg]:h-4 [&>svg]:w-4',
+                      isActive ? 'bg-accent-soft font-semibold text-ink [&>svg]:text-accent' : 'text-ink-2 hover:bg-surface-2 hover:text-ink',
+                    )
+                  }
+                >
+                  {x.icon}
+                  {x.label}
+                </NavLink>
+              </li>
+            ))}
+          </ul>
+        </nav>
+        <section aria-labelledby="settings-section" className="min-w-0">
+          <div className="mb-4">
+            <h2 id="settings-section" className="text-lg font-semibold tracking-tight text-ink">
+              {current.label}
+            </h2>
+            <p className="mt-0.5 text-sm text-ink-2">{current.description}</p>
+          </div>
+          {current.render()}
+        </section>
       </div>
     </>
   )

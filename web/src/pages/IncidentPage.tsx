@@ -52,15 +52,19 @@ export default function IncidentPage() {
             </Link>
             <PageHeader
               title={
-                <span className="flex flex-wrap items-center gap-2">
+                <>
+                  <span className="text-muted">#{i.id}</span> {i.title}
+                </>
+              }
+              subtitle={
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <SeverityBadge severity={i.severity} />
                   <Badge tone={i.state === 'open' ? 'crit' : 'good'}>{i.state === 'open' ? 'open' : 'resolved'}</Badge>
                   <span>
-                    #{i.id} {i.title}
+                    {i.target_name} · {info.name} · opened {time(i.opened_at, { date: true })} · {i.state === 'open' ? 'open for' : 'lasted'} {seconds((to - from) / 1000)}
                   </span>
                 </span>
               }
-              subtitle={`${i.target_name} · ${info.name} · opened ${time(i.opened_at, { date: true })} · ${i.state === 'open' ? 'open for' : 'lasted'} ${seconds((to - from) / 1000)}`}
               actions={
                 <>
                   <label className="inline-flex items-center gap-1.5 text-xs text-ink-2">

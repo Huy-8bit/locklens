@@ -6,14 +6,16 @@ environment on one screen; every card leads to a page with the detail.
 
 ## Layout
 
-- **Sidebar**: Overview, Databases, Topology, Queries, Sessions, Blocking,
-  Explorer, SQL Editor, Incidents (with the number of open incidents),
-  Connections, Settings. At the bottom, **System status**: the monitoring
-  store, the collectors, alerts, and the store writer, from `GET /api/v1/system`.
-  Below 1024 px the sidebar becomes a menu.
+- **Sidebar**, grouped by task: Overview, Databases, Topology; **Workload**
+  (Queries, Sessions, Blocking, Connections); **Investigate** (Explorer, SQL
+  Editor); **Respond** (Incidents, with the number of open incidents). Settings
+  sits at the bottom with a one-line **system status** (monitoring, collectors,
+  store) that expands into details, from `GET /api/v1/system`. Open incidents
+  are not a system problem; they have their own badge. Below 1024 px the
+  sidebar becomes a menu.
 - **Top bar**: search (⌘K / Ctrl+K) over pages, databases, open incidents, and
   statement text; the **environment** selector; the **time range**; the
-  **Live** switch; notifications (open incidents); and the account menu with the
+  **Live** switch (a pill: green and pulsing while live, grey when paused); notifications (open incidents); and the account menu with the
   signed-in user and their role, the theme switch, Account, Settings
   (administrators), and sign-out.
 - **Roles**: the sidebar and pages show only what the role can use. Viewers do
@@ -52,7 +54,7 @@ the meaning without color.
 | Page | Answers | Main sources |
 | --- | --- | --- |
 | **Databases** | Every monitored server of the environment with state, connections, queries/s, transactions/s, blocked sessions, cache hit ratio, size, open incidents | latest samples |
-| **Database** (`/databases/:id`) | One instance, in tabs: **Overview** (twelve current values, queries by type, transactions, connections by state, rows, execution time, cache, WAL, temp files, query mix, longest-running queries, most expensive queries, alerts, collectors), **Load** (average active sessions from active session sampling, stacked by wait class, wait event, statement, user, database, application, or backend type, with the top groups; a wait class leads to the statements waiting on it), **Queries** (by type, every statement with SQL), **Activity** (sessions and the blocking tree), **Replication** (role, standbys, slots, WAL, archiving), **Alerts** (incidents and findings) | latest samples, metric history, `pg_stat_statements` |
+| **Database** (`/databases/:id`) | One instance, in tabs: **Overview** (six health values: connections, running, blocked, oldest transaction, queries per second, replica lag; then a compact row of transactions, cache hits, rows read and written, temp files, and size; queries by type, transactions, connections by state, rows, execution time, cache, WAL, temp files, query mix, longest-running queries, most expensive queries, alerts, collectors), **Load** (average active sessions from active session sampling, stacked by wait class, wait event, statement, user, database, application, or backend type, with the top groups; a wait class leads to the statements waiting on it; sessions idle in a transaction are listed but not stacked, since they are not load), **Queries** (by type, every statement with SQL), **Activity** (sessions and the blocking tree), **Replication** (role, standbys, slots, WAL, archiving), **Alerts** (incidents and findings) | latest samples, metric history, `pg_stat_statements` |
 | **Topology** | How replication is laid out and whether it keeps up: the replication graph, streaming standbys with byte and time lag and a health label, slots and retained WAL, instances outside any observed pair | replication collector |
 | **Queries** | The most expensive statements across instances (top 50 by total time, calls, mean latency, or rows), filterable by type and SQL text. A statement page (`/queries/:target/:id`) shows the formatted SQL, rate and mean time over time, and the comparison with the previous period | `pg_stat_statements` deltas |
 | **Sessions** | Who is connected and doing what, across instances: counts by state and every client session that runs a query, holds a transaction, or waits, with its SQL; a panel shows everything about one backend | latest activity samples |
@@ -61,7 +63,7 @@ the meaning without color.
 | **SQL Editor** | Read-only investigation: one statement at a time, results (at most 500 rows or 1 MiB), the **execution plan** as a graph from `EXPLAIN (FORMAT JSON)` (no ANALYZE: the statement is planned, not run), and messages with PostgreSQL's error code and position | separate browsing role |
 | **Incidents** | Every recorded incident (open or all) with instance, duration, and acknowledgement. An incident page explains what happened in plain words with the key numbers, shows the statement involved (SQL, time per call and calls around the incident) or the blocking graph, the sessions active when it opened with their SQL, the top statements by execution time, the instance's signals around it, and a timeline with repeated samples collapsed; JSON and standalone HTML export | incident store |
 | **Connections** | Connection usage per instance (used / max, reserved), client sessions by state over time, and who is connected: sessions grouped by database, user, application, client address, and state, with the oldest in each group | `pg_stat_activity` (grouped, LockLens's own connections excluded) |
-| **Settings** (administrators) | Instances (add, edit, environment, test connection, delete), **Users** (add, change role, reset password, disable, delete), **Notifications** (Slack, webhook, and email channels, test messages, recent deliveries; see [notifications.md](notifications.md)), **Silences**, alert thresholds, incident import, monitoring store size | configuration |
+| **Settings** (administrators) | Sections, each with its own address: **Instances** (`/settings`: add, edit, environment, test connection, delete), **Users and roles** (`/settings/users`), **Notifications** (`/settings/notifications`: Slack, webhook, and email channels, test messages, recent deliveries, silences; see [notifications.md](notifications.md)), **Alert rules** (`/settings/rules`: thresholds grouped by rule, in seconds, MiB, %, or ×, with each default and a reset; unsaved changes are counted in a bar that stays in view), **Data and storage** (`/settings/data`: TimescaleDB status, the largest tables with compression, incident import) | configuration |
 | **Add an instance** | Paste one connection string, check it, read the plan (use as is, reuse LockLens's roles, or create them for a superuser, with the statements shown), choose row browsing and the SQL editor, add. An advanced form sets interval, pool size, and node_exporter | `targets/inspect`, `targets/quick` |
 | **Account** | Your user name and role, what the role allows, and a password change (except for the environment administrator) | session |
 

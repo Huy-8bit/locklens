@@ -46,7 +46,7 @@ function NavItem({ to, icon, children, badge, end }: { to: string; icon: ReactNo
       to={to}
       end={end}
       className={({ isActive }) =>
-        cx('flex items-center gap-3 rounded-lg px-3 py-2 text-[13.5px] font-medium transition-colors', isActive ? 'bg-nav-active text-white shadow-sm' : 'text-nav-muted hover:bg-nav-hover hover:text-nav-ink')
+        cx('flex items-center gap-3 rounded-lg px-3 py-[7px] text-[13.5px] font-medium transition-colors', isActive ? 'bg-nav-active text-white shadow-sm' : 'text-nav-muted hover:bg-nav-hover hover:text-nav-ink')
       }
     >
       <span aria-hidden className="shrink-0 [&>svg]:h-[18px] [&>svg]:w-[18px]">{icon}</span>
@@ -70,37 +70,35 @@ function statusRows(s: SystemResponse | undefined): { label: string; ok: boolean
 
 function SystemStatus() {
   const q = useSystem()
-  const rows = statusRows(q.data)
-  const allOk = rows.length > 0 && rows.every((r) => r.ok)
+  const [open, setOpen] = useState(false)
+  const rows = statusRows(q.data).filter((r) => r.label !== 'Alerts')
+  const problems = rows.filter((r) => !r.ok)
+  const summary = !q.data ? 'Checking status…' : problems.length === 0 ? 'All systems operational' : problems.map((p) => `${p.label}: ${p.detail}`).join(' · ')
   return (
-    <section aria-label="System status" className="rounded-xl border border-white/10 bg-white/[0.04] p-3">
-      <h2 className="text-[12.5px] font-semibold text-nav-ink">System Status</h2>
-      <p className="mt-1 flex items-center gap-2 text-[12.5px] text-nav-ink">
-        {q.data ? (
-          allOk ? (
-            <>
-              <CircleCheck aria-hidden className="h-4 w-4 text-[#4ade80]" /> All systems operational
-            </>
-          ) : (
-            <>
-              <TriangleAlert aria-hidden className="h-4 w-4 text-[#fbbf24]" /> Attention needed
-            </>
-          )
-        ) : (
-          'Checking…'
-        )}
-      </p>
-      <ul className="mt-2 space-y-1.5">
-        {rows.map((r) => (
-          <li key={r.label} className="flex items-center justify-between gap-2 text-[12.5px]">
-            <span className="flex items-center gap-2 text-nav-muted">
-              {r.ok ? <CircleCheck aria-hidden className="h-4 w-4 text-[#4ade80]" /> : <OctagonAlert aria-hidden className="h-4 w-4 text-[#f87171]" />}
-              {r.label}
-            </span>
-            <span className={r.ok ? 'text-[#4ade80]' : 'text-[#fca5a5]'}>{r.detail}</span>
-          </li>
-        ))}
-      </ul>
+    <section aria-label="System status" className="rounded-lg">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12.5px] text-nav-muted hover:bg-nav-hover hover:text-nav-ink"
+      >
+        <span aria-hidden className={cx('h-2 w-2 shrink-0 rounded-full', !q.data ? 'bg-nav-muted' : problems.length ? 'bg-[#fbbf24]' : 'bg-[#4ade80]')} />
+        <span className="min-w-0 flex-1 truncate">{summary}</span>
+        <ChevronDown aria-hidden className={cx('h-3.5 w-3.5 shrink-0 transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <ul className="mt-1 space-y-1 px-3 pb-1">
+          {rows.map((r) => (
+            <li key={r.label} className="flex items-center justify-between gap-2 text-[12px]">
+              <span className="flex items-center gap-2 text-nav-muted">
+                {r.ok ? <CircleCheck aria-hidden className="h-3.5 w-3.5 text-[#4ade80]" /> : <OctagonAlert aria-hidden className="h-3.5 w-3.5 text-[#f87171]" />}
+                {r.label}
+              </span>
+              <span className={r.ok ? 'text-nav-muted' : 'text-[#fca5a5]'}>{r.detail}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   )
 }
@@ -207,10 +205,18 @@ function UserMenu() {
 function LiveSwitch() {
   const { live, setLive } = useScope()
   return (
-    <button type="button" role="switch" aria-checked={live} onClick={() => setLive(!live)} className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-sm font-medium text-ink-2 hover:bg-surface-2">
-      <span aria-hidden className={cx('relative inline-block h-6 w-11 rounded-full transition-colors', live ? 'bg-[#16a34a]' : 'bg-line-strong')}>
-        <span className={cx('absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all', live ? 'left-[22px]' : 'left-0.5')} />
-      </span>
+    <button
+      type="button"
+      role="switch"
+      aria-checked={live}
+      onClick={() => setLive(!live)}
+      title={live ? 'Pages refresh after every collection. Click to pause.' : 'Paused: nothing refreshes. Click to resume.'}
+      className={cx(
+        'flex h-9 items-center gap-2 rounded-xl border px-3 text-sm font-medium transition-colors',
+        live ? 'border-good/30 bg-good-soft text-good hover:border-good/50' : 'border-line-strong bg-surface text-ink-2 hover:bg-surface-2',
+      )}
+    >
+      <span aria-hidden className={cx('h-2 w-2 rounded-full', live ? 'bg-good-mark motion-safe:animate-pulse' : 'bg-muted')} />
       {live ? 'Live' : 'Paused'}
     </button>
   )
@@ -240,31 +246,56 @@ export function Shell() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  const sidebar = (
-    <nav aria-label="Main" className="flex h-full flex-col gap-5 overflow-y-auto bg-nav px-3 py-5">
-      <Link to="/" className="flex items-center gap-3 px-2">
-        <Database aria-hidden className="h-9 w-9 text-[#3b82f6]" strokeWidth={2.2} />
-        <span className="leading-tight">
-          <span className="block text-[19px] font-bold tracking-tight text-white">LockLens</span>
-          <span className="block text-[11px] text-nav-muted">PostgreSQL Monitoring &amp; Administration</span>
-        </span>
-      </Link>
-      <div className="space-y-1">
-        <NavItem to="/overview" icon={<LayoutDashboard />}>Overview</NavItem>
-        <NavItem to="/databases" icon={<Database />}>Databases</NavItem>
-        <NavItem to="/topology" icon={<Network />}>Topology</NavItem>
-        <NavItem to="/queries" icon={<ScrollText />}>Queries</NavItem>
-        <NavItem to="/sessions" icon={<Users />}>Sessions</NavItem>
-        <NavItem to="/blocking" icon={<Lock />}>Blocking</NavItem>
-        <NavItem to="/explorer" icon={<FolderTree />}>Explorer</NavItem>
-        {can('workspace.sql') && <NavItem to="/sql" icon={<SquareTerminal />}>SQL Editor</NavItem>}
-        <NavItem to="/incidents" icon={<TriangleAlert />} badge={openCount > 0 ? <span className="rounded-full bg-[#dc2626] px-2 text-[11px] font-semibold leading-5 text-white">{openCount}</span> : undefined}>
+  const groups: { label?: string; items: ReactNode[] }[] = [
+    {
+      items: [
+        <NavItem key="o" to="/overview" icon={<LayoutDashboard />}>Overview</NavItem>,
+        <NavItem key="d" to="/databases" icon={<Database />}>Databases</NavItem>,
+        <NavItem key="t" to="/topology" icon={<Network />}>Topology</NavItem>,
+      ],
+    },
+    {
+      label: 'Workload',
+      items: [
+        <NavItem key="q" to="/queries" icon={<ScrollText />}>Queries</NavItem>,
+        <NavItem key="s" to="/sessions" icon={<Users />}>Sessions</NavItem>,
+        <NavItem key="b" to="/blocking" icon={<Lock />}>Blocking</NavItem>,
+        <NavItem key="c" to="/connections" icon={<Cable />}>Connections</NavItem>,
+      ],
+    },
+    {
+      label: 'Investigate',
+      items: [
+        <NavItem key="e" to="/explorer" icon={<FolderTree />}>Explorer</NavItem>,
+        can('workspace.sql') ? <NavItem key="sql" to="/sql" icon={<SquareTerminal />}>SQL Editor</NavItem> : null,
+      ],
+    },
+    {
+      label: 'Respond',
+      items: [
+        <NavItem key="i" to="/incidents" icon={<TriangleAlert />} badge={openCount > 0 ? <span className="rounded-full bg-[#dc2626] px-2 text-[11px] font-semibold leading-5 text-white">{openCount}</span> : undefined}>
           Incidents
-        </NavItem>
-        <NavItem to="/connections" icon={<Cable />}>Connections</NavItem>
-        {can('targets.manage') && <NavItem to="/settings" icon={<Settings />}>Settings</NavItem>}
+        </NavItem>,
+      ],
+    },
+  ]
+
+  const sidebar = (
+    <nav aria-label="Main" className="flex h-full flex-col overflow-y-auto bg-nav px-3 py-4">
+      <Link to="/" className="mb-4 flex items-center gap-2.5 px-3">
+        <Database aria-hidden className="h-7 w-7 text-[#3b82f6]" strokeWidth={2.2} />
+        <span className="text-[18px] font-bold tracking-tight text-white">LockLens</span>
+      </Link>
+      <div className="space-y-4">
+        {groups.map((g, i) => (
+          <div key={i}>
+            {g.label && <p className="px-3 pb-1 text-[11px] font-semibold tracking-wider text-nav-muted uppercase">{g.label}</p>}
+            <div className="space-y-0.5">{g.items}</div>
+          </div>
+        ))}
       </div>
-      <div className="mt-auto">
+      <div className="mt-auto space-y-1 border-t border-white/10 pt-3">
+        {can('targets.manage') && <NavItem to="/settings" icon={<Settings />}>Settings</NavItem>}
         <SystemStatus />
       </div>
     </nav>
@@ -292,14 +323,14 @@ export function Shell() {
           <button
             type="button"
             onClick={() => setPalette(true)}
-            className="flex min-w-0 flex-1 items-center gap-2.5 rounded-xl border border-line bg-surface-2 px-3 py-2 text-left text-sm text-muted hover:border-line-strong md:max-w-md xl:max-w-lg"
+            className="flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-xl border border-line bg-surface-2 px-3 text-left text-sm text-muted hover:border-line-strong md:max-w-xs xl:max-w-sm"
           >
             <Search aria-hidden className="h-4 w-4 shrink-0" />
-            <span className="truncate">Search databases, queries, sessions, or anything…</span>
+            <span className="truncate">Search or jump to…</span>
             <kbd className="ml-auto hidden rounded border border-line-strong bg-surface px-1.5 font-sans text-[11px] text-ink-2 sm:inline">⌘ K</kbd>
           </button>
-          <div className="ml-auto flex items-center gap-1.5 lg:gap-3">
-            <label className="hidden items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-sm font-medium md:flex">
+          <div className="ml-auto flex items-center gap-1.5 lg:gap-2">
+            <label className="hidden h-9 items-center gap-2 rounded-xl border border-line bg-surface px-3 text-sm font-medium md:flex">
               <Database aria-hidden className="h-4 w-4 text-[#16a34a]" />
               <span className="sr-only">Environment</span>
               <select value={env} onChange={(e) => setEnv(e.target.value)} className="bg-transparent pr-1 text-sm font-medium text-ink">
@@ -345,24 +376,24 @@ export function Shell() {
 /** Heading of a page section inside a layout that already has the page title. */
 export function SectionHeader({ title, subtitle, actions }: { title: ReactNode; subtitle?: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-      <div className="min-w-0">
+    <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <div className="min-w-0 flex-1">
         <h2 className="text-lg font-semibold tracking-tight text-ink">{title}</h2>
-        {subtitle && <p className="mt-0.5 text-sm text-ink-2">{subtitle}</p>}
+        {subtitle && <p className="mt-0.5 max-w-3xl text-sm text-ink-2">{subtitle}</p>}
       </div>
-      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
     </div>
   )
 }
 
 export function PageHeader({ title, subtitle, actions }: { title: ReactNode; subtitle?: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-      <div className="min-w-0">
+    <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <div className="min-w-0 flex-1">
         <h1 className="text-[26px] font-bold tracking-tight text-ink">{title}</h1>
-        {subtitle && <p className="mt-1 text-sm text-ink-2">{subtitle}</p>}
+        {subtitle && <p className="mt-1 max-w-3xl text-sm text-ink-2">{subtitle}</p>}
       </div>
-      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
     </div>
   )
 }

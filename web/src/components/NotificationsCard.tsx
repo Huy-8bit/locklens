@@ -184,8 +184,8 @@ export function NotificationsCard() {
   return (
     <Card
       pad={false}
-      title="Notifications"
-      subtitle="Where incidents are sent. Set LOCKLENS_PUBLIC_URL so messages link back to LockLens."
+      title="Channels"
+      subtitle="Slack, webhook, and email destinations. Set LOCKLENS_PUBLIC_URL so messages link back to LockLens."
       actions={
         <Button size="sm" onClick={() => setEditing('new')}>
           <Plus aria-hidden className="h-4 w-4" /> Add channel

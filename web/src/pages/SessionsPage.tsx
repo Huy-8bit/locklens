@@ -29,7 +29,7 @@ export default function SessionsPage() {
               </div>
               {stale.length > 0 && <Notice tone="warn">Not connected right now: {stale.map((t) => `${t.target.name} (sample from ${ago(t.observed_at)})`).join(', ')}.</Notice>}
               {hidden.length > 0 && <Notice tone="warn">Some sessions are hidden from the monitoring role on {hidden.map((t) => t.target.name).join(', ')} (grant pg_read_all_stats for full detail).</Notice>}
-              <Card pad={false} title="Sessions" subtitle="Plain idle connections are counted above; filter by state or search by query, user, application, or PID. At most 200 sessions per instance are shown.">
+              <Card pad={false} title="Client sessions" subtitle="Plain idle connections are counted above; filter by state or search by query, user, application, or PID. At most 200 sessions per instance are shown.">
                 <SessionsTable targets={d.targets} />
               </Card>
             </div>

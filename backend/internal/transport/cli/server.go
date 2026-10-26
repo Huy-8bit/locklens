@@ -69,9 +69,13 @@ func (a *app) migrateCommand() *cobra.Command {
 			if dsn == "" {
 				return usagef("LOCKLENS_STORE_DSN is required")
 			}
+			ts, err := config.LoadStoreTimescale(config.Getenv)
+			if err != nil {
+				return usagef("%s", err)
+			}
 			ctx, stop := signalContext(cmd.Context())
 			defer stop()
-			store, err := server.OpenStore(ctx, dsn, a.log)
+			store, err := server.OpenStore(ctx, dsn, &ts, a.log)
 			if err != nil {
 				return err
 			}
@@ -149,7 +153,7 @@ exists where the target collected it).`,
 			defer stop()
 			octx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
-			store, err := server.OpenStore(octx, dsn, a.log)
+			store, err := server.OpenStore(octx, dsn, nil, a.log)
 			if err != nil {
 				return err
 			}

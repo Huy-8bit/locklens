@@ -105,7 +105,7 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
       await expect(main.getByText(kpi, { exact: true }).first()).toBeVisible()
     }
     await expect(main.getByText('All healthy')).toBeVisible({ timeout: 60_000 })
-    for (const card of ['Read / write operations', 'Query throughput & latency', 'System resources', 'Database topology', 'Top queries', 'Active sessions', 'Blocking transactions', 'Database explorer', 'SQL editor']) {
+    for (const card of ['Read / write operations', 'Query throughput & latency', 'System resources', 'Database topology', 'Top queries', 'Active sessions', 'Blocking transactions']) {
       await expect(page.getByRole('heading', { name: card, exact: true })).toBeVisible()
     }
     // Replication is observed, not configured: the standby appears under its primary.
@@ -122,7 +122,8 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     base = new URL(page.url()).pathname
     targetId = base.split('/').pop() ?? ''
     await expect(page.getByRole('heading', { name: /lab-primary/ })).toBeVisible()
-    for (const kpi of ['Connections', 'Running now', 'Queries per second', 'Transactions per second', 'Cache hit ratio', 'Database size']) {
+    // Six health values first, then a compact row of throughput and size.
+    for (const kpi of ['Connections', 'Running now', 'Blocked', 'Oldest transaction', 'Queries/s', 'Transactions/s', 'Cache hits', 'Size']) {
       await expect(page.getByText(kpi, { exact: true }).first()).toBeVisible()
     }
     await expect(page.getByRole('heading', { name: 'Queries by type' })).toBeVisible()
@@ -290,7 +291,7 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     const json = readFileSync(jsonPath, 'utf8')
     expect(JSON.parse(json).format).toBe('locklens-incident')
     for (const s of forbidden) expect(json, 'export must not contain credentials').not.toContain(s)
-    await page.goto('/settings')
+    await page.goto('/settings/data')
     await page.getByLabel('Incident JSON file').setInputFiles(jsonPath)
     await expect(page).toHaveURL(/\/incidents\/\d+/)
     expect(new URL(page.url()).pathname).not.toBe(incidentURL)
@@ -328,7 +329,7 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
   })
 
   await test.step('roles: a viewer reads but cannot run SQL', async () => {
-    await page.goto('/settings')
+    await page.goto('/settings/users')
     await page.getByRole('button', { name: /Add user/ }).click()
     const dialog = page.getByRole('dialog', { name: 'Add user' })
     await dialog.getByLabel('User name').fill('e2e-viewer')
@@ -380,7 +381,11 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     await expect(page.getByRole('link', { name: /Blocking chain/ }).first()).toBeVisible()
     await expectAccessible(page, 'incidents')
     await page.goto('/settings')
+    // Settings is split into sections, each with its own address.
+    await page.getByRole('navigation', { name: 'Settings' }).getByRole('link', { name: 'Data and storage' }).click()
+    await expect(page).toHaveURL(/\/settings\/data$/)
     await expect(page.getByRole('table', { name: 'Monitoring store tables' })).toContainText('metric_points')
+    await expect(page.getByText(/TimescaleDB/).first()).toBeVisible()
     await expectAccessible(page, 'settings')
     await page.goto(incidentURL)
     await page.getByRole('button', { name: /account menu/i }).click()

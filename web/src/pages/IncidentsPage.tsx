@@ -20,7 +20,7 @@ export default function IncidentsPage() {
       <PageHeader title="Incidents" subtitle="Recorded automatically when a rule keeps firing, with the evidence collected at the time. Possible explanations are never presented as confirmed causes." />
       <Card
         pad={false}
-        title="Incidents"
+        title={state === 'open' ? 'Open incidents' : 'All incidents'}
         actions={
           <Segmented
             label="Incident state"

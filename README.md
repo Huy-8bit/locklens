@@ -24,15 +24,19 @@ and keep the evidence when something goes wrong.
 - **One screen for the whole fleet.** Connections, query throughput and
   latency, replication, slow queries, sessions, blocking, and incidents for
   every instance of an environment.
-- **Answers, not just charts.** Blocking chains with their root blocker,
-  queries grouped by statement type, and findings that show the evidence,
+- **Answers, not just charts.** Database load by wait class and statement
+  shows what keeps the server busy; blocking chains show their root blocker;
+  incidents name the statement and the sessions involved, with the evidence,
   possible explanations, and what to check next.
+- **Tells you when it matters.** Incidents go to Slack, webhooks, or email,
+  with reminders and silences for maintenance windows.
 - **Observe-only by design.** LockLens connects with a read-only role. It
   never cancels queries, terminates sessions, changes configuration, or runs
   DDL/DML on your databases.
 - **Two small images.** A Go backend (API, collectors, CLI) and an nginx
   frontend that serves the web UI and proxies the API. Their only dependency
-  is a PostgreSQL database for LockLens' own history.
+  is a PostgreSQL database for LockLens' own history; with TimescaleDB it is
+  partitioned by time and compressed.
 
 ## Features
 
@@ -43,9 +47,19 @@ and keep the evidence when something goes wrong.
 | **Investigate** | Database load from active session sampling: average active sessions by wait class, wait event, statement, user, or application · blocking trees from `pg_blocking_pids()` with lock modes and wait times · idle-in-transaction blockers · 13 evidence-based rules · incident recorder with the statement involved, the sessions and load when it started, and a timeline |
 | **Explore** *(opt-in)* | Browse schemas, tables, views, functions, types, indexes, and triggers · preview rows · read-only SQL editor with an execution-plan graph — never with an administrative role |
 | **Team** | Users with roles: administrators manage everything, operators also preview rows and run read-only SQL, viewers only read · add an instance by pasting one connection string |
-| **Operate** | Incident notifications to Slack, webhooks, and email, with reminders and silences · incident export to JSON and standalone HTML · Prometheus `/metrics` · health and readiness probes · retention · bounded buffering when the store is down |
+| **Operate** | Incident notifications to Slack, webhooks, and email, with reminders and silences · TimescaleDB store: time-partitioned, compressed history (plain PostgreSQL works too) · incident export to JSON and standalone HTML · Prometheus `/metrics` · health and readiness probes · retention · bounded buffering when the store is down |
 
 <table>
+  <tr>
+    <td width="33%"><img src="docs/images/database.png" alt="One instance: health values, queries by type, query mix"></td>
+    <td width="33%"><img src="docs/images/load.png" alt="Database load by wait class"></td>
+    <td width="33%"><img src="docs/images/incident.png" alt="An incident: what happened, who blocks whom, the sessions when it started"></td>
+  </tr>
+  <tr>
+    <td align="center">Instance overview</td>
+    <td align="center">Database load (active session sampling)</td>
+    <td align="center">Incident with its evidence</td>
+  </tr>
   <tr>
     <td width="33%"><img src="docs/images/queries.png" alt="Queries by statement type"></td>
     <td width="33%"><img src="docs/images/explorer.png" alt="Explorer with a table preview"></td>
@@ -63,7 +77,7 @@ and keep the evidence when something goes wrong.
 ### Try the demo lab
 
 Requires Docker with Compose v2 and `make`. It starts LockLens with a
-PostgreSQL primary, two streaming standbys, and a background workload, all on
+PostgreSQL primary, three streaming standbys, and a background workload, all on
 127.0.0.1 with fake, local-only credentials.
 
 ```sh
@@ -103,7 +117,8 @@ export LOCKLENS_MASTER_KEY="$(openssl rand -base64 32)"   # keep it: it encrypts
 docker network create locklens
 docker run -d --name locklens-store --network locklens \
   -e POSTGRES_USER=locklens -e POSTGRES_PASSWORD=change-me -e POSTGRES_DB=locklens \
-  -v locklens-store:/var/lib/postgresql postgres:18-alpine
+  -v locklens-store:/var/lib/postgresql timescale/timescaledb:2.30.2-pg18 \
+  postgres -c shared_preload_libraries=timescaledb -c timescaledb.telemetry_level=off
 
 docker run -d --name locklens-backend --network locklens \
   -e LOCKLENS_STORE_DSN='postgres://locklens:change-me@locklens-store:5432/locklens?sslmode=disable' \
@@ -135,7 +150,7 @@ CREATE ROLE locklens_observer LOGIN PASSWORD '…';
 GRANT pg_read_all_stats TO locklens_observer;
 ```
 
-Then paste its connection string in **Settings → Add instance**. You can also
+Then paste its connection string in **Settings → Instances → Add instance**. You can also
 paste a superuser connection string: LockLens shows the statements it would run,
 creates `locklens_monitor` and `locklens_reader` after you confirm, and stores
 only those. Standbys reuse the roles of their primary.
@@ -179,10 +194,13 @@ Reference: [CLI](docs/cli-reference.md).
 
 ```text
                               backend (locklens server)                                frontend (nginx)
-PostgreSQL targets ──read-only──► collectors ──► write queue ──► monitoring store
+PostgreSQL targets ──read-only──► collectors ──► write queue ──► monitoring store (PostgreSQL / TimescaleDB)
                                       │                                │
                                       ▼                                ▼
                            rules + incident recorder         REST API + live events ◄──/api/── web UI ◄── browser
+                                      │
+                                      ▼
+                           notifications (Slack, webhook, email)
 ```
 
 One worker per target runs its collectors on a schedule under a global

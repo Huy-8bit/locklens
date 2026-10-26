@@ -12,7 +12,7 @@ export const WAIT_CLASSES: { key: string; label: string; color: string; hint: st
   { key: 'IPC', label: 'IPC', color: 'var(--s5)', hint: 'Waiting for another process (parallel workers, replication, …)' },
   { key: 'Client', label: 'Client', color: 'var(--s4)', hint: 'Waiting for the client to send a request or read a result' },
   { key: 'BufferPin', label: 'Buffer pin', color: 'var(--s-other)', hint: 'Waiting for exclusive access to a data buffer' },
-  { key: 'Timeout', label: 'Timeout', color: 'var(--s6)', hint: 'Sleeping until a timeout: pg_sleep, vacuum or commit delays, recovery pauses' },
+  { key: 'Timeout', label: 'Timeout', color: 'var(--ink-2)', hint: 'Sleeping until a timeout: pg_sleep, vacuum or commit delays, recovery pauses' },
   { key: 'Activity', label: 'Activity', color: 'var(--s-other)', hint: 'A background process waiting for work (usually not client load)' },
   { key: 'Extension', label: 'Extension', color: 'var(--s-other)', hint: 'Waiting inside an extension' },
   { key: 'IdleTx', label: 'Idle in transaction', color: 'var(--s-other)', hint: 'Not running anything but holding a transaction open (not counted as load)' },

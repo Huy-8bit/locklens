@@ -146,7 +146,7 @@ export default function QueriesPage() {
                     <tbody>
                       {d.items.map((it) => (
                         <tr key={it.identity_id} className={trCls}>
-                          <td className={tdCls}>
+                          <td className={`${tdCls} max-w-0`}>
                             <Link to={`/queries/${id}/${it.identity_id}`} className="block hover:underline">
                               {it.query_text ? <SqlText sql={it.query_text} clamp /> : <span className="font-mono text-xs">queryid {it.queryid}</span>}
                             </Link>

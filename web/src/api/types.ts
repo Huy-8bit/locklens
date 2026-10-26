@@ -682,6 +682,19 @@ export interface LoadResponse {
 }
 
 /** Incident notifications. Destinations are write-only: the API returns only `display`. */
+/** How the monitoring store keeps history (GET /api/v1/storage). */
+export interface StoreTimescale {
+  enabled: boolean
+  version?: string
+  license?: string
+  compression: boolean
+  compress_after_seconds?: number
+  reason?: string
+  hypertables?: string[]
+}
+
+export interface StoreTable { table: string; bytes: number; estimated_rows: number; compressed_before_bytes?: number; compressed_after_bytes?: number }
+
 export type ChannelKind = 'webhook' | 'slack' | 'email'
 
 export interface NotificationChannel {
