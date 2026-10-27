@@ -66,13 +66,15 @@ describe('PerformancePage', () => {
     const table = await screen.findByRole('table', { name: /Statement anomalies/ })
     const rows = within(table).getAllByRole('row').slice(1)
     expect(rows).toHaveLength(2)
-    expect(within(rows[0]!).getByText('72')).toBeInTheDocument()
-    expect(within(rows[0]!).getByRole('link', { name: /SELECT \* FROM orders/ })).toHaveAttribute('href', '/queries/1/9')
+    const [top] = rows
+    if (!top) throw new Error('no anomaly rows')
+    expect(within(top).getByText('72')).toBeInTheDocument()
+    expect(within(top).getByRole('link', { name: /SELECT \* FROM orders/ })).toHaveAttribute('href', '/queries/1/9')
     expect(screen.getByText(/legacy-db: pg_stat_statements is not available/)).toBeInTheDocument()
     expect(screen.getByText('9 / 12')).toBeInTheDocument()
 
     const user = userEvent.setup()
-    await user.click(within(rows[0]!).getByRole('button', { name: /slower per call/ }))
+    await user.click(within(top).getByRole('button', { name: /slower per call/ }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('50.0% of all statement execution time in the window')).toBeInTheDocument()
     expect(within(dialog).getByText(/it is not a probability/)).toBeInTheDocument()
