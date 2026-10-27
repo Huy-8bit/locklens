@@ -8,7 +8,7 @@ happened at 03:12?" after the fact, from evidence rather than memory.
 ## When an incident opens
 
 After each activity collection the recorder evaluates the rules
-([rules.md](rules.md)). An incident opens when one of the five **trigger
+([rules.md](rules.md)). An incident opens when one of the six **trigger
 rules** has an active finding:
 
 | Rule | Typical situation |
@@ -16,8 +16,15 @@ rules** has an active finding:
 | `blocking.long_chain` | Sessions blocked behind the same root for 30 s and 3 samples |
 | `blocking.idle_in_tx_blocker` | An idle-in-transaction session blocks others |
 | `connections.pressure` | Connection usage at 80% of available slots or more |
-| `queries.mean_regression` | A query became at least 2× slower per call between two windows |
+| `queries.mean_regression` | A query became at least 2× slower per call than its baseline (or the previous window while the baseline is learning) |
+| `queries.long_running` | A statement has been running beyond the critical slow-query threshold (critical findings only) |
 | `replication.slot_retained_wal` | A replication slot retains more WAL than the threshold |
+
+For statement incidents the incident page also shows **possible root
+causes**: the evidence around the trigger correlated into ranked hypotheses
+(`GET /api/v1/incidents/{id}/investigation`, see
+[query-intelligence.md](query-intelligence.md#correlation-and-hypotheses)).
+They are hypotheses to check, never confirmed causes.
 
 There is at most one open incident per target and trigger rule. Other active
 findings during the incident are added to its timeline ("Also observed").

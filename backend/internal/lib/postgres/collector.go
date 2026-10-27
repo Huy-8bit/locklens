@@ -379,7 +379,7 @@ func readSessions(ctx context.Context, tx pgx.Tx, own, involved []int32, opts Op
 	_, err = pgx.ForEachRow(rows, []any{
 		&s.PID, &s.LeaderPID, &s.Database, &s.User, &s.ApplicationName, &s.ClientAddr, &s.BackendType,
 		&s.State, &s.WaitEventType, &s.WaitEvent, &s.BackendStart, &s.XactStart, &s.QueryStart,
-		&s.StateChange, &s.BackendXID, &s.Query, &queryTruncated, &s.DetailsVisible, &s.ParallelWorkers,
+		&s.StateChange, &s.BackendXID, &s.Query, &queryTruncated, &s.DetailsVisible, &s.ParallelWorkers, &s.QueryID,
 	}, func() error {
 		sess := s
 		sess.BackendStart = utcPtr(sess.BackendStart)

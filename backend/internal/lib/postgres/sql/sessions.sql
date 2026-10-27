@@ -52,7 +52,10 @@ SELECT a.pid,
            WHEN NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.oid = a.usesysid) THEN false
            ELSE pg_catalog.pg_has_role(a.usesysid, 'USAGE')
        END                                      AS details_visible,
-       COALESCE(w.n, 0)::int                    AS parallel_workers
+       COALESCE(w.n, 0)::int                    AS parallel_workers,
+       -- The top-level statement's pg_stat_statements queryid (PostgreSQL
+       -- 14+, computed with compute_query_id); NULL when not computed.
+       a.query_id
 FROM pg_catalog.pg_stat_activity AS a
 LEFT JOIN workers AS w ON w.leader_pid = a.pid
 WHERE a.pid <> ALL ($1::int[])

@@ -20,6 +20,8 @@ external service.
 | `next_checks` | What a person should look at next |
 | `limitations` | Why the inference may be wrong or incomplete (sampling, non-atomic snapshots, restricted visibility, evictions, resets, …) |
 | `first_seen`, `last_seen`, `resolved_at` | Lifecycle, kept in the store |
+| `confidence` | Statement rules: `high`, `medium`, or `low`, with reasons (about the data: history, calls, coverage; not about a cause) |
+| `metrics` | Statement rules: the measurements behind the finding in machine-readable form (used for impact ranking) |
 
 **Missing data never makes a rule pass.** When the inputs are not available
 (no collection yet, extension missing, too little coverage, unreadable
@@ -69,19 +71,60 @@ Client backends whose transaction has been open ≥
 `long_transaction_critical_seconds` = 1800 s (600 s). At most five, oldest
 first. Long transactions hold back vacuum and may hold locks.
 
+### `queries.long_running` — a statement running for long (trigger)
+
+From the latest activity snapshot: active client backends (not parallel
+workers) whose current statement has run ≥ `slow_query_warn_seconds` = 30 s
+(10 s), critical at ≥ `slow_query_critical_seconds` = 300 s (60 s). Also a
+warning at ≥ `slow_query_expected_factor` = 20 × the statement's usual time
+per call from its baseline (matched by `pg_stat_activity.query_id`), not
+before `slow_query_expected_min_seconds` = 5 s. One finding per execution;
+only critical findings open incidents. Top five, longest first.
+
 ### `queries.mean_regression` — slower per call (trigger)
 
-Compares two consecutive windows of `workload_window_seconds` = 900 s (120 s)
-from `pg_stat_statements` deltas. Fires for identities with ≥
-`regression_min_calls` = 50 (30) calls in both windows whose mean execution
-time grew by a factor ≥ `regression_mean_ratio` = 2 and by ≥
-`regression_min_delta_ms` = 5 ms. Needs ≥ `workload_min_coverage` = 80%
-coverage of both windows. Top five. See [query-analysis.md](query-analysis.md).
+Compares the current `workload_window_seconds` = 900 s (120 s) window of
+`pg_stat_statements` deltas with the statement's **baseline** (median and
+MAD of its own history, same hour of day when available): fires when time per
+call is ≥ `anomaly_sensitivity` = 4 robust deviations above the usual value,
+≥ `regression_mean_ratio` = 2 times it, and ≥ `regression_min_delta_ms` = 5 ms
+more, with ≥ `regression_min_calls` = 50 (30) calls. Critical at ≥
+`regression_critical_ratio` = 5 times. While the baseline is still learning
+(fewer than `baseline_warmup_points` points) it compares with the previous
+equal window instead, as in version 1. Needs ≥ `workload_min_coverage` = 80%
+coverage. Top five. See [query-intelligence.md](query-intelligence.md).
 
 ### `queries.call_volume_increase` — more calls
 
-Same windows; info when calls grew by a factor ≥ `volume_calls_ratio` = 3
-with ≥ `volume_min_calls` = 500 (200) calls in the current window.
+Calls per second ≥ `volume_calls_ratio` = 3 times the baseline (or the
+previous window while learning) with ≥ `volume_min_calls` = 500 (200) calls:
+info, or a **query storm** warning at ≥ 9 times.
+
+### `queries.load_increase` — more execution time
+
+Execution time per second ≥ `load_ratio` = 3 times the usual value and ≥
+`load_min_added_ms_per_s` = 50 (5) ms/s more. Warning.
+
+### `queries.io_regression` — more I/O per call
+
+Shared blocks read per call ≥ `io_ratio` = 3 times usual and ≥
+`io_min_reads_per_call` = 100 (10), or temporary blocks written per call ≥ 3
+times usual. Baseline only. Warning.
+
+### `queries.pattern_change` — different rows per call
+
+Rows per call ≥ `pattern_rows_ratio` = 5 times above or below usual. Baseline
+only. Info.
+
+### `queries.possible_n_plus_one` — possible N+1 pattern
+
+A parameterised SELECT at ≥ `n_plus_one_min_calls_per_s` = 50 (5) calls/s,
+≤ `n_plus_one_max_mean_ms` = 1 ms and ≤ `n_plus_one_max_rows_per_call` = 1
+row per call. Info with low confidence: PostgreSQL alone cannot tell an N+1
+loop from a hot key lookup.
+
+Statement findings carry `confidence` (high/medium/low with reasons) and
+`metrics`; see [query-intelligence.md](query-intelligence.md#confidence).
 
 ### `temp_files.increase` — temporary-file writes increased
 

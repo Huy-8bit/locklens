@@ -89,13 +89,15 @@ A regression (each call is slower) is shown separately from a volume increase
 
 ## Rules built on the workload
 
-`queries.mean_regression` (an incident trigger) and
-`queries.call_volume_increase` compare two consecutive windows of
-`workload_window_seconds` (900 s; 120 s in demo mode) from the in-memory
-history. They require at least `workload_min_coverage` = 80% coverage of each
-window, otherwise they report insufficient data with the measured coverage.
-At most five queries per rule are reported, strongest first. See
-[rules.md](rules.md).
+Six statement rules (`queries.mean_regression` is an incident trigger)
+compare the current `workload_window_seconds` window (900 s; 120 s in demo
+mode) with each statement's **baseline**, its own history summarised by the
+median and MAD per hour of day, and fall back to the previous equal window
+while the baseline is learning. They require at least `workload_min_coverage`
+= 80% coverage of the window, otherwise they report insufficient data with
+the measured coverage. At most five queries per rule are reported, strongest
+first. `queries.long_running` watches statements while they run. See
+[query-intelligence.md](query-intelligence.md) and [rules.md](rules.md).
 
 ## Limitations
 

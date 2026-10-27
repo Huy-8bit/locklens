@@ -158,6 +158,7 @@ func (s *Store) SoftDeleteTarget(ctx context.Context, id int64) error {
 var purgeTables = []string{
 	"metric_points", "query_samples", "statement_collections", "activity_snapshots",
 	"table_stats", "index_stats", "state_snapshots", "collection_gaps", "findings",
+	"query_rollups", "statement_coverage", "query_plans",
 }
 
 // PurgeTarget permanently removes a target (active or soft-deleted) and its

@@ -26,6 +26,8 @@ recorded in `schema_migrations`; `/readyz` reports the schema version.
 | `targets`, `target_status` | Targets with the **encrypted** DSN and display fields (host, port, database, user — no password); latest status | Soft-deleted targets are removed once their history and incidents are gone |
 | `metric_points` | `(target, metric, label, ts, value)`; `value` is NULL when unknown | History |
 | `query_identities`, `query_samples`, `statement_collections` | Query identities (text only with opt-in), per-collection statement deltas, collection metadata (interval, reset, evictions) | History |
+| `query_rollups`, `statement_coverage` | Five-minute statement rollups and collection coverage per bucket (with resets), the source of query baselines | Baselines |
+| `query_plans` | Execution plans saved on request (EXPLAIN output, shape fingerprint, cost, who and how) | Incidents |
 | `activity_snapshots` | Full activity snapshots (sessions, blocking edges, waiting locks) | History |
 | `table_stats`, `index_stats`, `state_snapshots` | Table/index statistics, replication and other state | History |
 | `collection_gaps` | Missing-data intervals with reasons | Findings |
@@ -37,7 +39,9 @@ recorded in `schema_migrations`; `/readyz` reports the schema version.
 
 With TimescaleDB, the history tables (`metric_points`, `query_samples`,
 `statement_collections`, `activity_snapshots`, `table_stats`, `index_stats`,
-`state_snapshots`, `load_samples`, `load_buckets`) are **hypertables**:
+`state_snapshots`, `load_samples`, `load_buckets`) and the baseline rollups
+(`query_rollups`, weekly chunks; `statement_coverage`, 30-day chunks) are
+**hypertables**:
 
 - **Partitioned by time** into daily chunks (weekly for the small tables), so
   a chart reads only the chunks of its time range.
@@ -110,6 +114,10 @@ which shows each table's size and compression ratio.
 | History (metrics, statements, snapshots, table stats, state) | `LOCKLENS_RETENTION` | 7 days |
 | Resolved incidents and their events | `LOCKLENS_INCIDENT_RETENTION` | 90 days |
 | Resolved findings, collection gaps | `LOCKLENS_FINDING_RETENTION` | 30 days |
+| Statement rollups and coverage (baselines) | `LOCKLENS_BASELINE_RETENTION` (never shorter than history) | 15 days |
+| Saved execution plans | `LOCKLENS_INCIDENT_RETENTION` | 90 days |
+
+Query identities stay while samples, rollups, or saved plans refer to them.
 
 Incidents contain their own copy of the evidence, so expiring raw history
 never changes an incident. Open incidents are never deleted.

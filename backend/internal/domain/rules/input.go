@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/locklens/locklens/internal/domain/baseline"
 	"github.com/locklens/locklens/internal/domain/collector"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/observe"
@@ -118,6 +119,9 @@ type Input struct {
 	View     collector.View
 	// History holds activity samples, oldest first; the last is the current one.
 	History []ActivitySample
+	// Baselines of the target's recently active statements (may be empty:
+	// rules then compare with the previous window, or report nothing).
+	Baselines map[observe.QueryKey]baseline.Baseline
 }
 
 // latest returns the current sample if it is fresh enough to evaluate.

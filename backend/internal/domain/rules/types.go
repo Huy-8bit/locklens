@@ -75,6 +75,35 @@ type Thresholds struct {
 	ReplicaLagMinSamples  int     `json:"replica_lag_min_samples"`
 	SlotRetainedBytes     float64 `json:"slot_retained_bytes"`
 	ArchiverWindowSeconds float64 `json:"archiver_window_seconds"`
+
+	// Running statements (queries.long_running): absolute limits, and a
+	// limit relative to the statement's usual time per call.
+	SlowQueryWarnSeconds        float64 `json:"slow_query_warn_seconds"`
+	SlowQueryCriticalSeconds    float64 `json:"slow_query_critical_seconds"`
+	SlowQueryExpectedFactor     float64 `json:"slow_query_expected_factor"`
+	SlowQueryExpectedMinSeconds float64 `json:"slow_query_expected_min_seconds"`
+
+	// Query baselines: history used, size of a point, points needed before
+	// a baseline is trusted (warm-up), and calls a point needs for per-call
+	// measures.
+	BaselineDays             float64 `json:"baseline_days"`
+	BaselinePointSeconds     float64 `json:"baseline_point_seconds"`
+	BaselineWarmupPoints     int     `json:"baseline_warmup_points"`
+	BaselineMinCallsPerPoint int64   `json:"baseline_min_calls_per_point"`
+	// AnomalySensitivity is the robust z-score (deviations from the median,
+	// estimated with the MAD) a value must reach to be unusual.
+	AnomalySensitivity float64 `json:"anomaly_sensitivity"`
+
+	// Statement anomalies compared with the baseline.
+	RegressionCriticalRatio float64 `json:"regression_critical_ratio"`
+	LoadRatio               float64 `json:"load_ratio"`
+	LoadMinAddedMSPerSec    float64 `json:"load_min_added_ms_per_s"`
+	IORatio                 float64 `json:"io_ratio"`
+	IOMinReadsPerCall       float64 `json:"io_min_reads_per_call"`
+	PatternRowsRatio        float64 `json:"pattern_rows_ratio"`
+	NPlusOneMinCallsPerSec  float64 `json:"n_plus_one_min_calls_per_s"`
+	NPlusOneMaxMeanMS       float64 `json:"n_plus_one_max_mean_ms"`
+	NPlusOneMaxRowsPerCall  float64 `json:"n_plus_one_max_rows_per_call"`
 }
 
 // Defaults returns the default thresholds.
@@ -95,6 +124,14 @@ func Defaults() Thresholds {
 		ReplicaLagBytes: 64 << 20, ReplicaLagMinSamples: 2,
 		SlotRetainedBytes:     1 << 30,
 		ArchiverWindowSeconds: 900,
+		SlowQueryWarnSeconds:  30, SlowQueryCriticalSeconds: 300, SlowQueryExpectedFactor: 20, SlowQueryExpectedMinSeconds: 5,
+		BaselineDays: 7, BaselinePointSeconds: 3600, BaselineWarmupPoints: 24, BaselineMinCallsPerPoint: 20,
+		AnomalySensitivity:      4,
+		RegressionCriticalRatio: 5,
+		LoadRatio:               3, LoadMinAddedMSPerSec: 50,
+		IORatio: 3, IOMinReadsPerCall: 100,
+		PatternRowsRatio:       5,
+		NPlusOneMinCallsPerSec: 50, NPlusOneMaxMeanMS: 1, NPlusOneMaxRowsPerCall: 1,
 	}
 }
 
@@ -115,6 +152,14 @@ func DemoDefaults() Thresholds {
 	t.ReplicaLagBytes = 16 << 20
 	t.SlotRetainedBytes = 32 << 20
 	t.ArchiverWindowSeconds = 300
+	t.SlowQueryWarnSeconds = 10
+	t.SlowQueryCriticalSeconds = 60
+	t.BaselinePointSeconds = 300
+	t.BaselineWarmupPoints = 6
+	t.BaselineMinCallsPerPoint = 5
+	t.LoadMinAddedMSPerSec = 5
+	t.IOMinReadsPerCall = 10
+	t.NPlusOneMinCallsPerSec = 5
 	return t
 }
 
@@ -188,6 +233,36 @@ func (t Thresholds) Validate() error {
 	if t.ArchiverWindowSeconds < 60 {
 		errs = append(errs, errors.New("archiver_window_seconds must be at least 60"))
 	}
+	pos("slow_query_warn_seconds", t.SlowQueryWarnSeconds)
+	if t.SlowQueryCriticalSeconds < t.SlowQueryWarnSeconds {
+		errs = append(errs, errors.New("slow_query_critical_seconds must be at least slow_query_warn_seconds"))
+	}
+	if t.SlowQueryExpectedFactor < 2 {
+		errs = append(errs, errors.New("slow_query_expected_factor must be at least 2"))
+	}
+	pos("slow_query_expected_min_seconds", t.SlowQueryExpectedMinSeconds)
+	if t.BaselineDays < 1 || t.BaselineDays > 30 {
+		errs = append(errs, errors.New("baseline_days must be between 1 and 30"))
+	}
+	if t.BaselinePointSeconds < 300 || t.BaselinePointSeconds > 86400 || int64(t.BaselinePointSeconds)%300 != 0 {
+		errs = append(errs, errors.New("baseline_point_seconds must be a multiple of 300 between 300 and 86400"))
+	}
+	atLeast("baseline_warmup_points", int64(t.BaselineWarmupPoints), 3)
+	atLeast("baseline_min_calls_per_point", t.BaselineMinCallsPerPoint, 1)
+	if t.AnomalySensitivity < 2 {
+		errs = append(errs, errors.New("anomaly_sensitivity must be at least 2"))
+	}
+	for name, v := range map[string]float64{"regression_critical_ratio": t.RegressionCriticalRatio, "load_ratio": t.LoadRatio,
+		"io_ratio": t.IORatio, "pattern_rows_ratio": t.PatternRowsRatio} {
+		if v <= 1 {
+			errs = append(errs, fmt.Errorf("%s must be greater than 1", name))
+		}
+	}
+	pos("load_min_added_ms_per_s", t.LoadMinAddedMSPerSec)
+	pos("io_min_reads_per_call", t.IOMinReadsPerCall)
+	pos("n_plus_one_min_calls_per_s", t.NPlusOneMinCallsPerSec)
+	pos("n_plus_one_max_mean_ms", t.NPlusOneMaxMeanMS)
+	pos("n_plus_one_max_rows_per_call", t.NPlusOneMaxRowsPerCall)
 	return errors.Join(errs...)
 }
 
@@ -206,14 +281,24 @@ const (
 	RuleReplicaLag       = "replication.replica_lag"
 	RuleSlotRetainedWAL  = "replication.slot_retained_wal"
 	RuleArchiverFailures = "wal.archiver_failures"
+	RuleLongRunning      = "queries.long_running"
+	RuleLoadIncrease     = "queries.load_increase"
+	RuleIORegression     = "queries.io_regression"
+	RulePatternChange    = "queries.pattern_change"
+	RuleNPlusOne         = "queries.possible_n_plus_one"
 )
 
 // Versions of the rules above.
 var Versions = map[string]int{
 	RuleBlockingChain: 1, RuleIdleBlocker: 1, RuleConnections: 1, RuleLongTransaction: 1,
-	RuleMeanRegression: 1, RuleCallVolume: 1, RuleTempFiles: 1, RuleDeadlocks: 1,
+	// Version 2: compared with the statement's own baseline when it has one.
+	RuleMeanRegression: 2, RuleCallVolume: 2, RuleTempFiles: 1, RuleDeadlocks: 1,
 	RuleDeadTuples: 1, RuleXIDAge: 1, RuleReplicaLag: 1, RuleSlotRetainedWAL: 1, RuleArchiverFailures: 1,
+	RuleLongRunning: 1, RuleLoadIncrease: 1, RuleIORegression: 1, RulePatternChange: 1, RuleNPlusOne: 1,
 }
 
+// StatementRules report on one statement (their key names its identity).
+var StatementRules = []string{RuleMeanRegression, RuleCallVolume, RuleLoadIncrease, RuleIORegression, RulePatternChange, RuleNPlusOne}
+
 // TriggerRules may open incidents.
-var TriggerRules = []string{RuleBlockingChain, RuleIdleBlocker, RuleConnections, RuleMeanRegression, RuleSlotRetainedWAL}
+var TriggerRules = []string{RuleBlockingChain, RuleIdleBlocker, RuleConnections, RuleMeanRegression, RuleSlotRetainedWAL, RuleLongRunning}

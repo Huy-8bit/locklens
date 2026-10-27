@@ -5,6 +5,7 @@ import { useAcknowledge, useIncident, useIncidentEvents } from '../api/hooks'
 import { useCan } from '../auth'
 import type { Finding, IncidentEvent, QueryRef, WorkloadEntry } from '../api/types'
 import { FindingCard } from '../components/FindingCard'
+import { IncidentRootCause } from '../components/InsightParts'
 import { BlockingCard, ContextCharts, IncidentBrief, LoadSummaryCard, SessionsCard, StatementCard, Timeline, WorkloadCard } from '../components/IncidentParts'
 import { LoadPanel } from '../components/LoadPanel'
 import { IncidentNotifications } from '../components/NotificationsCard'
@@ -84,6 +85,7 @@ export default function IncidentPage() {
             <div className="mt-3 grid gap-3 xl:grid-cols-3">
               <div className="min-w-0 space-y-3 xl:col-span-2">
                 <IncidentBrief incident={i} trigger={lead} share={share} />
+                {info.focus === 'statement' && <IncidentRootCause incidentId={i.id} />}
                 {events.error ? (
                   <ErrorBox error={events.error} title="Could not load the recorded evidence" />
                 ) : !events.data ? (

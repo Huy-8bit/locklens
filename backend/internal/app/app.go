@@ -14,8 +14,10 @@ import (
 
 	"github.com/locklens/locklens/internal/config"
 	"github.com/locklens/locklens/internal/domain/auth"
+	"github.com/locklens/locklens/internal/domain/baseline"
 	"github.com/locklens/locklens/internal/domain/collector"
 	"github.com/locklens/locklens/internal/domain/incidents"
+	"github.com/locklens/locklens/internal/domain/insight"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/notify"
 	"github.com/locklens/locklens/internal/domain/onboard"
@@ -65,6 +67,8 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	if err := recorder.Recover(ctx); err != nil {
 		return fmt.Errorf("recover open incidents: %w", err)
 	}
+	baselines := baseline.NewService(store, func() baseline.Params { return insight.BaselineParams(st.Thresholds()) }, log)
+	recorder.SetBaselines(baselines)
 	manager.SetAnalyzer(recorder)
 	tsvc := targets.NewService(store, box, manager, version)
 	ws := workspace.New(store, box)
@@ -79,7 +83,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	handler := httpapi.New(httpapi.Deps{Workspace: ws, Store: store, Auth: auth.NewService(store, cfg.SessionIdle, cfg.CookieSecure), Targets: tsvc,
 		Onboard: onboard.New(store, box, tsvc, ws),
 		Manager: manager, Settings: st, Notify: notifier, Hub: hub, Metrics: metrics, Log: log, Tool: tool, TrustedProxies: cfg.TrustedProxies, TrustedProxyHosts: cfg.TrustedProxyHosts,
-		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode})
+		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode, Baselines: baselines, Insight: insight.NewService(store, cfg.LoadSampling)})
 
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 64 << 10}
@@ -89,13 +93,14 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	}
 
 	bg, cancelBG := context.WithCancel(context.WithoutCancel(ctx))
-	done := make(chan struct{}, 4)
+	done := make(chan struct{}, 5)
 	go func() { writer.Run(bg); done <- struct{}{} }()
 	go func() { notifier.Run(bg); done <- struct{}{} }()
 	go func() { manager.Run(bg); done <- struct{}{} }()
+	go func() { baselines.Run(bg, baselineRefresh(cfg)); done <- struct{}{} }()
 	go func() {
 		retention.Run(bg, store, repository.RetentionPolicy{History: cfg.HistoryRetention, Incidents: cfg.IncidentRetention,
-			Findings: cfg.FindingRetention}, time.Hour, log)
+			Findings: cfg.FindingRetention, Rollups: cfg.BaselineRetention}, time.Hour, log)
 		done <- struct{}{}
 	}()
 
@@ -117,7 +122,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	defer cancel()
 	_ = srv.Shutdown(sctx)
 	cancelBG()
-	for range 4 {
+	for range 5 {
 		select {
 		case <-done:
 		case <-sctx.Done():
@@ -138,6 +143,14 @@ func statementsInterval(cfg config.Config) time.Duration {
 		return 15 * time.Second
 	}
 	return 60 * time.Second
+}
+
+// baselineRefresh is how often rollups and baselines are brought up to date.
+func baselineRefresh(cfg config.Config) time.Duration {
+	if cfg.DemoMode {
+		return time.Minute
+	}
+	return 5 * time.Minute
 }
 
 // loadInterval is the active session sampling interval, or 0 when sampling

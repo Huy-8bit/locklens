@@ -77,6 +77,7 @@ describes the JSON they produce.
 | `backend_xid` | string | yes | Top-level transaction ID |
 | `query` | string | omitted | Only with `include_query: true` and when visible; at most `query_max_length` runes |
 | `query_truncated` | boolean | omitted | Present and `true` when `query` was cut |
+| `query_id` | string (64-bit integer) | omitted | `pg_stat_activity.query_id` (PostgreSQL 14+): the top-level statement's `pg_stat_statements` queryid, when PostgreSQL computes it (`compute_query_id`). Identifies the statement without its text. Older snapshots do not have it |
 | `details_visible` | boolean | no | `false` when PostgreSQL hides this session's details from the observer |
 | `parallel_workers` | integer | no | Parallel workers led by this session |
 | `waiting_locks` | array | no | Ungranted lock requests, below |

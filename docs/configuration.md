@@ -28,6 +28,7 @@ All problems are reported at once.
 | `LOCKLENS_STORE_COMPRESS_AFTER` | `24h` | Compress history chunks older than this (TimescaleDB Community edition); `0` turns compression off (minimum `1h`). |
 | `LOCKLENS_RETENTION` | `168h` (7 days) | History retention: metric points, statement samples and collections, activity snapshots, table and index statistics, state snapshots (minimum `1h`). |
 | `LOCKLENS_INCIDENT_RETENTION` | `2160h` (90 days) | Incidents and their events are kept this long after they resolve (minimum `24h`). Open incidents are never deleted. |
+| `LOCKLENS_BASELINE_RETENTION` | `360h` (15 days) | Five-minute statement rollups and statement coverage, the source of query baselines (minimum `24h`; never shorter than `LOCKLENS_RETENTION`). See [query-intelligence.md](query-intelligence.md). |
 | `LOCKLENS_FINDING_RETENTION` | `720h` (30 days) | Resolved findings and collection-gap records (minimum `1h`). Incidents keep their own copy of the evidence, so this never changes an incident. |
 | `LOCKLENS_MAX_CONCURRENT_COLLECTIONS` | `4` | Global cap on collector runs executing at the same time across all targets (1–64). Each target also runs its own collectors one at a time. |
 | `LOCKLENS_LOAD_SAMPLING` | `true` | Active session sampling (database load): read `pg_stat_activity` every `LOCKLENS_LOAD_SAMPLE_INTERVAL` on each target (PostgreSQL 14+). |

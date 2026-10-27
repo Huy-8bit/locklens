@@ -26,6 +26,9 @@ type Config struct {
 	HistoryRetention  time.Duration
 	IncidentRetention time.Duration
 	FindingRetention  time.Duration
+	// BaselineRetention keeps statement rollups (query baselines) at least
+	// this long, beyond the history retention.
+	BaselineRetention time.Duration
 	MaxConcurrent     int
 	WriteQueue        int
 	MetricsEnabled    bool
@@ -105,6 +108,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	c.HistoryRetention = dur("LOCKLENS_RETENTION", 7*24*time.Hour, time.Hour)
 	c.IncidentRetention = dur("LOCKLENS_INCIDENT_RETENTION", 90*24*time.Hour, 24*time.Hour)
 	c.FindingRetention = dur("LOCKLENS_FINDING_RETENTION", 30*24*time.Hour, time.Hour)
+	c.BaselineRetention = dur("LOCKLENS_BASELINE_RETENTION", 15*24*time.Hour, 24*time.Hour)
 	c.ShutdownTimeout = dur("LOCKLENS_SHUTDOWN_TIMEOUT", 10*time.Second, time.Second)
 	c.MaxConcurrent = num("LOCKLENS_MAX_CONCURRENT_COLLECTIONS", 4, 1, 64)
 	c.WriteQueue = num("LOCKLENS_WRITE_QUEUE", 2048, 16, 100000)

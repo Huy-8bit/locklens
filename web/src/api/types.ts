@@ -159,7 +159,13 @@ export interface Finding {
   next_checks: string[]
   limitations: string
   trigger?: boolean
+  /** How strongly the data supports the finding (statement rules). */
+  confidence?: Confidence
+  /** Machine-readable measurements behind the finding. */
+  metrics?: Record<string, number>
 }
+
+export interface Confidence { level: 'high' | 'medium' | 'low'; reasons: string[] }
 
 export interface FindingRow {
   id: number
@@ -762,4 +768,108 @@ export interface Silence {
   reason: string
   created_by: string
   created_at: string
+}
+
+// Query performance intelligence
+
+export interface ImpactComponent { name: string; points: number; max: number; detail: string }
+export interface Impact { score: number; components: ImpactComponent[]; confidence_factor: number }
+
+/** A current statement finding ranked by impact. */
+export interface PerfItem {
+  target_id: number
+  target_name: string
+  finding_id: number
+  first_seen: string
+  last_seen: string
+  finding: Finding
+  impact: Impact
+  statement: QueryRef | null
+}
+
+export interface PercentilesNote { available: false; reason: string }
+
+export interface PerformanceResponse {
+  generated_at: string
+  anomalies: PerfItem[]
+  running: PerfItem[]
+  unavailable: { target_id: number; target_name: string; reason: string }[]
+  insufficient: { target_id: number; target_name: string; rule_id: string; reason: string }[]
+  baselines: { target_id: number; target_name: string; statements: number; warm: number }[]
+  baseline_config: { days: number; point_seconds: number; warmup_points: number; sensitivity: number }
+  percentiles: PercentilesNote
+}
+
+export interface BaselineStat { median: number; mad: number; n: number }
+export interface BaselineProfile { points: number; stats: Partial<Record<string, BaselineStat>> }
+export interface BandPoint { t: string; median: number; low: number; high: number; basis: string }
+
+export interface Hypothesis {
+  id: string
+  title: string
+  score: number
+  strength: 'strong' | 'moderate' | 'weak'
+  supporting: string[]
+  contradicting: string[]
+  next_steps: string[]
+}
+
+export interface Investigation {
+  at: string
+  since: string
+  summary: string
+  hypotheses: Hypothesis[]
+  timeline: { at: string; kind: 'anomaly' | 'finding' | 'gap'; rule_id?: string; summary: string }[]
+  missing_evidence: string[]
+  disclaimer: string
+}
+
+export interface QueryInsightResponse {
+  baseline: {
+    from: string
+    to: string
+    point_seconds: number
+    points: number
+    days: number
+    warm: boolean
+    warmup_points: number
+    all: BaselineProfile
+    current: BaselineProfile
+    current_basis: string
+    sensitivity: number
+  }
+  bands: { mean_ms: BandPoint[]; calls_per_s: BandPoint[]; load_ms_per_s: BandPoint[] }
+  step_seconds: number
+  percentiles: PercentilesNote
+  anomalies: PerfItem[]
+  history: PerfItem[]
+  investigation?: Investigation
+  plans: number
+}
+
+export interface IncidentInvestigationResponse { available: boolean; reason?: string; investigation?: Investigation }
+
+export interface PlanRow {
+  id: number
+  identity_id: number
+  captured_at: string
+  captured_by: string
+  source: 'workspace_explain' | 'generic_plan' | 'manual'
+  format: 'json' | 'text'
+  plan?: string
+  fingerprint: string
+  total_cost: number | null
+  note: string
+}
+
+export interface PlanNode { depth: number; node_type: string; relation?: string; index?: string; join_type?: string; strategy?: string; total_cost: number; plan_rows: number; filter?: string; cond?: string; actual_total_time?: number }
+export interface ParsedPlan { format: 'json' | 'text'; nodes: PlanNode[]; total_cost: number | null; fingerprint: string; analyzed: boolean }
+export interface IndexHint { relation: string; columns: string[]; reason: string }
+export interface PlanDetailResponse { plan: PlanRow; parsed: ParsedPlan; index_hints: IndexHint[]; index_hints_note: string }
+export interface PlanCompareResponse {
+  a: PlanRow
+  b: PlanRow
+  parsed_a: ParsedPlan
+  parsed_b: ParsedPlan
+  comparison: { same_shape: boolean; cost_ratio: number | null; changes: { kind: string; detail: string }[] }
 }

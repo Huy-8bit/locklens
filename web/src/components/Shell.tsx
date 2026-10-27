@@ -8,6 +8,7 @@ import {
   CircleCheck,
   Database,
   FolderTree,
+  Gauge,
   LayoutDashboard,
   Lock,
   LogOut,
@@ -258,6 +259,7 @@ export function Shell() {
       label: 'Workload',
       items: [
         <NavItem key="q" to="/queries" icon={<ScrollText />}>Queries</NavItem>,
+        <NavItem key="p" to="/performance" icon={<Gauge />}>Performance</NavItem>,
         <NavItem key="s" to="/sessions" icon={<Users />}>Sessions</NavItem>,
         <NavItem key="b" to="/blocking" icon={<Lock />}>Blocking</NavItem>,
         <NavItem key="c" to="/connections" icon={<Cable />}>Connections</NavItem>,

@@ -158,12 +158,33 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     await expect(page.getByRole('heading', { name: /UPDATE statement/ })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'SQL' })).toBeVisible()
     await expect(page.locator('code').filter({ hasText: 'shop.orders' }).first()).toBeVisible()
+    // The statement against its own history: the baseline is still learning
+    // in a fresh stack, and percentiles are never invented.
+    await expect(page.getByRole('heading', { name: 'Performance analysis' })).toBeVisible()
+    await expect(page.getByText(/learning: \d+ of \d+ points|\d+ points/).first()).toBeVisible()
+    await expect(page.getByText(/latency percentiles cannot be derived/).first()).toBeVisible()
+    // Save a plan by pasting EXPLAIN output and read it back.
+    await page.getByLabel('Or paste EXPLAIN output (JSON or text)').fill(
+      '[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "orders", "Schema": "shop", "Total Cost": 120.5, "Plan Rows": 3, "Filter": "(status = $1)"}}]',
+    )
+    await page.getByRole('button', { name: 'Save plan' }).click()
+    await page.getByRole('region', { name: 'Execution plans' }).getByRole('button', { name: 'View', exact: true }).click()
+    await expect(page.getByText('Index candidates (hypotheses)')).toBeVisible()
+    await expect(page.getByText('shop.orders (status)')).toBeVisible()
     await expectAccessible(page, 'query detail')
 
     // The same statements ranked across instances.
     await page.goto('/queries?command=update')
     await expect(page.getByRole('table', { name: 'Queries across instances' }).locator('code').filter({ hasText: 'shop.orders' }).first()).toBeVisible()
     await expectAccessible(page, 'queries across instances')
+
+    // Fleet performance: anomalies and running queries ranked by impact.
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Performance' }).click()
+    await expect(page.getByRole('heading', { name: 'Performance', exact: true })).toBeVisible()
+    await expect(page.getByRole('tab', { name: /Anomalies/ })).toBeVisible()
+    await page.getByRole('tab', { name: /Running now/ }).click()
+    await expect(page).toHaveURL(/tab=running/)
+    await expectAccessible(page, 'performance')
   })
 
   await test.step('browse tables and rows', async () => {

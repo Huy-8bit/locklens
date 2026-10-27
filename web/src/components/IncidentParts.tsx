@@ -44,18 +44,34 @@ function KeyNumbers({ f, share }: { f: Finding; share: number | null }) {
   }
   switch (f.rule_id) {
     case 'queries.mean_regression': {
-      const pm = n('mean time (previous window)')
-      const cm = n('mean time (current window)')
+      const m = f.metrics ?? {}
+      const usual = evidence(f, 'compared with') === 'baseline'
+      const before = usual ? (m.baseline_mean_ms ?? null) : n('mean time (previous window)')
+      const after = n('mean time (current window)')
       const win = n('window length')
       return (
         <>
-          <Change label="Time per call" before={pm} after={cm} format={ms} sub={pm && cm ? `${num(cm / pm, 1)}× slower` : undefined} />
-          <Change label={`Calls per ${win ? seconds(win) : 'window'}`} before={n('calls (previous window)')} after={n('calls (current window)')} format={compact} />
-          <Change label="Total execution time" before={n('total time (previous window)')} after={n('total time (current window)')} format={ms} sub="all calls of this statement" />
-          <Stat label="Share of database time" value={pct(share, 0)} sub="of all statements, last window" />
+          <Change label="Time per call" before={before} after={after} format={ms} sub={before && after ? `${num(after / before, 1)}× slower than ${usual ? 'usual' : 'the previous window'}` : undefined} />
+          {usual ? (
+            <Change label="Calls per second" before={m.baseline_calls_per_s ?? null} after={m.calls_per_s ?? null} format={(v) => (v === null ? '—' : `${num(v, 2)}/s`)} sub="usual → now" />
+          ) : (
+            <Change label={`Calls per ${win ? seconds(win) : 'window'}`} before={n('calls (previous window)')} after={n('calls (current window)')} format={compact} />
+          )}
+          <Change label="Execution time per second" before={m.baseline_load_ms_per_s ?? m.previous_load_ms_per_s ?? null} after={m.load_ms_per_s ?? null} format={ms} sub="server time spent on this statement" />
+          <Stat label="Share of database time" value={pct(m.share_of_load ?? share, 0)} sub="of all statements, last window" />
         </>
       )
     }
+    case 'queries.long_running':
+      return (
+        <>
+          <Stat label="Running for" value={seconds(n('running for'))} sub={`pid ${s('pid')}`} tone="warn" />
+          <Stat label="Waiting on" value={s('wait event')} />
+          {n('usual time per call') !== null && <Stat label="Usual time per call" value={ms(n('usual time per call'))} sub="baseline median" />}
+          {evidence(f, 'blocked by') !== undefined && <Stat label="Blocked by" value={`pid ${s('blocked by')}`} tone="crit" />}
+          {n('sessions waiting behind it') !== null && <Stat label="Sessions waiting behind it" value={num(n('sessions waiting behind it'))} tone="warn" />}
+        </>
+      )
     case 'blocking.long_chain':
     case 'blocking.idle_in_tx_blocker':
       return (

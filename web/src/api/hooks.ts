@@ -36,6 +36,12 @@ import type {
   TestResult,
   Thresholds,
   WorkspacePolicy,
+  IncidentInvestigationResponse,
+  PerformanceResponse,
+  PlanCompareResponse,
+  PlanDetailResponse,
+  PlanRow,
+  QueryInsightResponse,
 } from './types'
 import { liveState, rangeQuery, type Range } from '../lib/scope'
 
@@ -485,5 +491,79 @@ export function useEndSilence() {
   return useMutation({
     mutationFn: (id: number) => api<undefined>(`/api/v1/notifications/silences/${id}`, { method: 'DELETE' }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['notify'] }),
+  })
+}
+
+export function usePerformance(env: string) {
+  return useQuery({
+    queryKey: ['fleet', 'performance', env],
+    queryFn: () => api<PerformanceResponse>(`/api/v1/performance${qs({ environment: env })}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: every(LIVE),
+  })
+}
+
+export function useQueryInsight(id: number, qid: number, range: Range) {
+  return useQuery({
+    queryKey: ['t', id, 'hist', 'query-insight', qid, range],
+    queryFn: () => api<QueryInsightResponse>(`/api/v1/targets/${id}/queries/${qid}/insight${qs({ ...rangeQuery(range) })}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: every(HIST),
+  })
+}
+
+export function useIncidentInvestigation(id: number, enabled: boolean) {
+  return useQuery({
+    queryKey: ['incidents', 'investigation', id],
+    queryFn: () => api<IncidentInvestigationResponse>(`/api/v1/incidents/${id}/investigation`),
+    enabled,
+  })
+}
+
+export function usePlans(id: number, qid: number) {
+  return useQuery({ queryKey: ['t', id, 'plans', qid], queryFn: () => api<{ plans: PlanRow[]; note: string }>(`/api/v1/targets/${id}/queries/${qid}/plans`) })
+}
+
+export function usePlan(id: number, pid: number | null) {
+  return useQuery({
+    queryKey: ['t', id, 'plan', pid],
+    queryFn: () => api<PlanDetailResponse>(`/api/v1/targets/${id}/plans/${pid}`),
+    enabled: pid !== null,
+    staleTime: Infinity,
+  })
+}
+
+export function usePlanCompare(id: number, a: number | null, b: number | null) {
+  return useQuery({
+    queryKey: ['t', id, 'plan-compare', a, b],
+    queryFn: () => api<PlanCompareResponse>(`/api/v1/targets/${id}/plans/compare${qs({ a, b })}`),
+    enabled: a !== null && b !== null && a !== b,
+    staleTime: Infinity,
+  })
+}
+
+export function useSavePlan(id: number, qid: number) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { plan: string; note: string; source?: 'manual' | 'workspace_explain' }) =>
+      api<{ plan: PlanRow }>(`/api/v1/targets/${id}/queries/${qid}/plans`, { method: 'POST', json: body }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['t', id] }),
+  })
+}
+
+export function useCapturePlan(id: number, qid: number) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (note: string) =>
+      api<{ plan: PlanRow }>(`/api/v1/targets/${id}/queries/${qid}/plans/capture`, { method: 'POST', json: { request_id: crypto.randomUUID(), note } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['t', id] }),
+  })
+}
+
+export function useDeletePlan(id: number) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (pid: number) => api<null>(`/api/v1/targets/${id}/plans/${pid}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['t', id] }),
   })
 }

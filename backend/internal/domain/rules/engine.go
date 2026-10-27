@@ -11,6 +11,7 @@ func Evaluate(in Input, th Thresholds) []Finding {
 	out = append(out, blockingRules(in, th)...)
 	out = append(out, connectionRule(in, th)...)
 	out = append(out, longTransactionRule(in, th)...)
+	out = append(out, longRunningRule(in, th)...)
 	out = append(out, workloadRules(in, th)...)
 	out = append(out, tempFilesRule(in, th)...)
 	out = append(out, deadlocksRule(in, th)...)

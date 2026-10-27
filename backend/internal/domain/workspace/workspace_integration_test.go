@@ -222,3 +222,61 @@ func TestWorkspacePolicyIsolation(t *testing.T) {
 		}
 	}
 }
+
+func TestExplainGenericPlan(t *testing.T) {
+	ctx := context.Background()
+	admin, err := pgx.Connect(ctx, os.Getenv("LOCKLENS_IT_ADMIN_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(ctx)
+	name := fmt.Sprintf("generic_%d", time.Now().UnixNano())
+	table := pgx.Identifier{"public", name}.Sanitize()
+	if _, err = admin.Exec(ctx, "CREATE TABLE "+table+" (id bigint PRIMARY KEY, v int); INSERT INTO "+table+" SELECT g, g FROM generate_series(1,100) g; GRANT SELECT, DELETE ON "+table+" TO locklens_limited"); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(ctx, "DROP TABLE "+table)
+	var version int
+	if err := admin.QueryRow(ctx, "SELECT current_setting('server_version_num')::int").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := pgx.ParseConfig(os.Getenv("LOCKLENS_IT_LIMITED_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	explain := func(sql string) (string, error) {
+		conn, err := connect(ctx, cfg.Copy())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close(ctx)
+		tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		return ExplainGeneric(ctx, tx, sql)
+	}
+	if _, err := explain("SELECT 1; SELECT 2"); err == nil {
+		t.Fatal("several statements must be refused")
+	}
+	plan, err := explain("DELETE FROM " + table + " WHERE id = $1")
+	if version < 160000 {
+		if err == nil {
+			t.Fatal("GENERIC_PLAN needs PostgreSQL 16")
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc []map[string]any
+	if err := json.Unmarshal([]byte(plan), &doc); err != nil || len(doc) != 1 || doc[0]["Plan"] == nil {
+		t.Fatalf("plan = %s (%v)", plan, err)
+	}
+	// Planned, never executed.
+	var n int
+	if err := admin.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil || n != 100 {
+		t.Fatalf("rows = %d %v", n, err)
+	}
+}

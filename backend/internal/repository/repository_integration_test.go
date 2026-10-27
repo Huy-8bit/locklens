@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/locklens/locklens/internal/domain/baseline"
 	"github.com/locklens/locklens/internal/domain/finding"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/repository"
@@ -516,11 +517,11 @@ func TestTimescaleHypertablesCompressionAndRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !st.Enabled || !st.Compression || st.License != "timescale" || len(st.Hypertables) != 9 {
+	if !st.Enabled || !st.Compression || st.License != "timescale" || len(st.Hypertables) != 11 {
 		t.Fatalf("status = %+v", st)
 	}
 	// Idempotent: a restart changes nothing.
-	if st2, err := s.SetupTimescale(ctx, repository.TimescaleAuto, time.Hour); err != nil || len(st2.Hypertables) != 9 {
+	if st2, err := s.SetupTimescale(ctx, repository.TimescaleAuto, time.Hour); err != nil || len(st2.Hypertables) != 11 {
 		t.Fatalf("second setup: %+v %v", st2, err)
 	}
 	var n int
@@ -589,5 +590,110 @@ func TestTimescaleModesOnPlainPostgreSQL(t *testing.T) {
 	// Retention still works with batched deletes.
 	if _, err := s.ApplyRetention(ctx, repository.RetentionPolicy{History: time.Hour, Incidents: time.Hour * 24, Findings: time.Hour}, time.Now()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRollupsBaselinesFindingsAndPlans(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+	tg := target(t, s, "rb")
+	cache := repository.IdentityCache{}
+	key := observe.QueryKey{ServerMajor: 17, DBID: 5, UserID: 10, TopLevel: true, QueryID: 77}
+	base := time.Now().UTC().Truncate(time.Hour).Add(-4 * time.Hour)
+	iv := 60.0
+	// Three hours of one-minute collections: 60 calls a minute at 2 ms.
+	for i := 1; i <= 180; i++ {
+		c := observe.StatementsCollection{At: base.Add(time.Duration(i) * time.Minute), Interval: &iv, Entries: 1,
+			Deltas: []observe.QueryDelta{{Key: key, DatName: "app", UserName: "u", Calls: 60, TotalMS: 120, Rows: 60, BlkRead: 600}}}
+		if i > 120 && i <= 130 {
+			c.Deltas = nil // ten quiet minutes: covered, no calls
+		}
+		if err := s.InsertStatements(ctx, tg.ID, c, false, cache); err != nil {
+			t.Fatal(err)
+		}
+	}
+	end := base.Add(4 * time.Hour)
+	for range 2 { // idempotent
+		if err := s.RollupStatements(ctx, tg.ID, base, end); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if wm, ok, err := s.RollupWatermark(ctx, tg.ID); err != nil || !ok || !wm.Equal(base.Add(3*time.Hour-5*time.Minute)) {
+		t.Fatalf("watermark %v %v %v", wm, ok, err)
+	}
+	active, err := s.ActiveStatements(ctx, tg.ID, base, 10)
+	if err != nil || len(active) != 1 || active[0].Key != key {
+		t.Fatalf("active %+v %v", active, err)
+	}
+	points, cov, err := s.BaselinePoints(ctx, tg.ID, []int64{active[0].IdentityID}, base, end, time.Hour)
+	if err != nil || len(points) != 3 || len(cov) != 3 {
+		t.Fatalf("points %+v cov %+v %v", points, cov, err)
+	}
+	if points[0].Calls != 3600 || points[0].TotalMS != 7200 || cov[0].Covered != 3600 || points[2].Calls != 3000 {
+		t.Errorf("point sums: %+v %+v", points, cov)
+	}
+	svc := baseline.NewService(s, nil, nil)
+	byID, err := svc.Load(ctx, tg.ID, []int64{active[0].IdentityID}, base, end, baseline.Params{Point: time.Hour, MinCalls: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := byID[active[0].IdentityID]
+	// The empty fourth hour has no coverage: unknown, not zero calls.
+	if b.All.Points != 3 || b.All.Stats[baseline.MeanMS].Median != 2 || b.All.Stats[baseline.ReadPerCall].Median != 10 {
+		t.Fatalf("baseline %+v", b.All)
+	}
+	if cps := b.All.Stats[baseline.CallsPerSec]; cps.Median != 1 || cps.N != 3 {
+		t.Fatalf("calls/s %+v", cps)
+	}
+
+	// Confidence and metrics survive storage.
+	now := time.Now().UTC()
+	f := finding.Finding{RuleID: "queries.mean_regression", RuleVersion: 2, Key: "q:17:5:10:true:77", Severity: finding.Warning, Title: "t",
+		Status: finding.Active, ObservedFrom: now, Observed: []string{}, Evidence: []finding.Evidence{},
+		Confidence: &finding.Confidence{Level: finding.ConfidenceHigh, Reasons: []string{"r"}}, Metrics: map[string]float64{"ratio": 4.5}}
+	if _, err := s.SyncFindings(ctx, tg.ID, now, []finding.Finding{f}); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := s.ListFindings(ctx, repository.FindingFilter{TargetID: tg.ID, Status: "current"})
+	if err != nil || len(cur) != 1 || cur[0].Finding.Confidence == nil || cur[0].Finding.Confidence.Level != "high" || cur[0].Finding.Metrics["ratio"] != 4.5 {
+		t.Fatalf("stored finding %+v %v", cur, err)
+	}
+
+	// Plans.
+	cost := 12.5
+	p, err := s.SavePlan(ctx, tg.ID, repository.PlanRow{IdentityID: active[0].IdentityID, CapturedBy: "admin", Source: "manual", Format: "json",
+		Plan: `[{"Plan":{"Node Type":"Seq Scan"}}]`, Fingerprint: "abc", TotalCost: &cost})
+	if err != nil || p.ID == 0 {
+		t.Fatalf("save %+v %v", p, err)
+	}
+	if _, err := s.SavePlan(ctx, tg.ID, repository.PlanRow{IdentityID: 999999, CapturedBy: "a", Source: "manual", Format: "text", Plan: "x", Fingerprint: "f"}); err != repository.ErrNotFound {
+		t.Fatalf("unknown identity: %v", err)
+	}
+	other := target(t, s, "other")
+	if _, err := s.GetPlan(ctx, other.ID, p.ID); err != repository.ErrNotFound {
+		t.Fatal("a plan must not be readable through another target")
+	}
+	list, _ := s.ListPlans(ctx, tg.ID, active[0].IdentityID)
+	if len(list) != 1 || list[0].Plan != "" || *list[0].TotalCost != 12.5 {
+		t.Fatalf("list %+v", list)
+	}
+	if got, err := s.GetPlan(ctx, tg.ID, p.ID); err != nil || got.Plan == "" {
+		t.Fatalf("get %+v %v", got, err)
+	}
+	if n, err := s.CountPlans(ctx, tg.ID, 77); err != nil || n != 1 {
+		t.Fatalf("count %d %v", n, err)
+	}
+	// Retention keeps identities that rollups or plans refer to.
+	if _, err := s.ApplyRetention(ctx, repository.RetentionPolicy{History: time.Minute, Incidents: 24 * time.Hour, Findings: 24 * time.Hour, Rollups: 30 * 24 * time.Hour}, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.CountPlans(ctx, tg.ID, 77); n != 1 {
+		t.Fatal("retention removed a plan or its identity")
+	}
+	if err := s.DeletePlan(ctx, tg.ID, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeletePlan(ctx, tg.ID, p.ID); err != repository.ErrNotFound {
+		t.Fatalf("second delete: %v", err)
 	}
 }

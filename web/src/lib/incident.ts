@@ -27,7 +27,12 @@ export const RULE_INFO: Record<string, { name: string; focus: IncidentFocus; wha
   'queries.mean_regression': {
     name: 'A statement became slower',
     focus: 'statement',
-    what: 'Each call of one statement takes much longer than in the window before. LockLens compares the average execution time per call over two equal windows of pg_stat_statements data; the statement may run as often as before, but every run now costs more.',
+    what: 'Each call of one statement takes much longer than usual. LockLens compares the average execution time per call from pg_stat_statements with the statement’s own baseline (same hour of the day when there is enough history), or with the previous window while the baseline is still learning. The statement may run as often as before, but every run now costs more.',
+  },
+  'queries.long_running': {
+    name: 'A query has been running for too long',
+    focus: 'statement',
+    what: 'A statement has been executing for longer than the critical threshold, seen in pg_stat_activity while it is still running. It holds its locks and snapshot until it finishes; its cost appears in pg_stat_statements only afterwards.',
   },
   'blocking.long_chain': {
     name: 'Sessions are stuck waiting for locks',

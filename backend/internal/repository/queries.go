@@ -330,3 +330,16 @@ FROM query_samples WHERE target_id = $1 AND identity_id = $2 AND ts > $3 AND ts 
 		Scan(&calls, &totalMS, &rows)
 	return calls, totalMS, rows, s.red.Error(err)
 }
+
+// IdentityKey returns the pg_stat_statements key of a stored identity.
+func (s *Store) IdentityKey(ctx context.Context, targetID, id int64) (observe.QueryKey, error) {
+	var k observe.QueryKey
+	var dbid, userid int64
+	err := s.pool.QueryRow(ctx, `SELECT server_major, dbid::bigint, userid::bigint, toplevel, queryid FROM query_identities WHERE target_id = $1 AND id = $2`,
+		targetID, id).Scan(&k.ServerMajor, &dbid, &userid, &k.TopLevel, &k.QueryID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return k, ErrNotFound
+	}
+	k.DBID, k.UserID = uint32(dbid), uint32(userid)
+	return k, s.red.Error(err)
+}

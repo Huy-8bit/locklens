@@ -53,4 +53,24 @@ type Finding struct {
 	Limitations          string     `json:"limitations"`
 	// Trigger marks findings that may open an incident.
 	Trigger bool `json:"trigger"`
+	// Confidence says how much the data supports the finding (statement
+	// rules), with the reasons.
+	Confidence *Confidence `json:"confidence,omitempty"`
+	// Metrics are the finding's measurements in machine-readable form (for
+	// impact scoring and charts); the same values are in Evidence for people.
+	Metrics map[string]float64 `json:"metrics,omitempty"`
+}
+
+// Confidence levels.
+const (
+	ConfidenceHigh   = "high"
+	ConfidenceMedium = "medium"
+	ConfidenceLow    = "low"
+)
+
+// Confidence is how strongly the available data supports a finding. It is
+// about the evidence (history, sample size, coverage), not about a cause.
+type Confidence struct {
+	Level   string   `json:"level"`
+	Reasons []string `json:"reasons"`
 }

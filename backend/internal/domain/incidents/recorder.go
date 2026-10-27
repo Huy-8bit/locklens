@@ -22,7 +22,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/locklens/locklens/internal/domain/baseline"
 	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/rules"
 	"github.com/locklens/locklens/internal/lib/obs"
 	"github.com/locklens/locklens/internal/repository"
@@ -124,6 +126,9 @@ type Recorder struct {
 	metrics *obs.Metrics
 	events  collector.EventSink
 	log     *slog.Logger
+	// baselines gives statement rules each target's query baselines; nil
+	// leaves them to compare with the previous window only.
+	baselines BaselineSource
 
 	mu      sync.Mutex
 	targets map[int64]*targetState
@@ -133,6 +138,14 @@ type Recorder struct {
 func NewRecorder(store *repository.Store, cfg Config, th ThresholdSource, metrics *obs.Metrics, events collector.EventSink, log *slog.Logger) *Recorder {
 	return &Recorder{store: store, cfg: cfg, th: th, metrics: metrics, events: events, log: log, targets: map[int64]*targetState{}}
 }
+
+// BaselineSource returns the query baselines of a target.
+type BaselineSource interface {
+	Get(targetID int64) map[observe.QueryKey]baseline.Baseline
+}
+
+// SetBaselines sets the source of query baselines; call it before Run.
+func (r *Recorder) SetBaselines(b BaselineSource) { r.baselines = b }
 
 func (r *Recorder) target(id int64) *targetState {
 	ts, ok := r.targets[id]
@@ -212,7 +225,7 @@ func (r *Recorder) analyze(ctx context.Context, t repository.Target, v collector
 	}
 	ts.lastAnalyze = now
 
-	findings := rules.Evaluate(rules.Input{Now: now, Interval: interval, View: v, History: ts.history}, th)
+	findings := rules.Evaluate(rules.Input{Now: now, Interval: interval, View: v, History: ts.history, Baselines: r.baselinesOf(t.ID)}, th)
 	ids, err := r.store.SyncFindings(ctx, t.ID, now, findings)
 	if err != nil {
 		return err
@@ -267,4 +280,11 @@ func (r *Recorder) publish(targetID, incidentID int64, kind string) {
 	if r.events != nil {
 		r.events.Publish(kind, map[string]any{"target_id": targetID, "incident_id": incidentID})
 	}
+}
+
+func (r *Recorder) baselinesOf(targetID int64) map[observe.QueryKey]baseline.Baseline {
+	if r.baselines == nil {
+		return nil
+	}
+	return r.baselines.Get(targetID)
 }

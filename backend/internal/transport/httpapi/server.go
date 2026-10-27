@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/auth"
+	"github.com/locklens/locklens/internal/domain/baseline"
 	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/insight"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/notify"
 	"github.com/locklens/locklens/internal/domain/onboard"
@@ -45,6 +47,8 @@ type Deps struct {
 	Manager   *collector.Manager
 	Settings  *settings.Service
 	Notify    *notify.Service
+	Baselines *baseline.Service
+	Insight   *insight.Service
 	Hub       *Hub
 	Metrics   *obs.Metrics
 	Log       *slog.Logger
@@ -108,6 +112,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/fleet/metrics", s.authed(s.fleetMetrics))
 	m.HandleFunc("GET /api/v1/fleet/queries", s.authed(s.fleetQueries))
 	m.HandleFunc("GET /api/v1/fleet/live", s.authed(s.fleetLive))
+	m.HandleFunc("GET /api/v1/performance", s.authed(s.performance))
 	m.HandleFunc("GET /api/v1/system", s.authed(s.system))
 	m.HandleFunc("GET /api/v1/topology", s.authed(s.topology))
 	m.HandleFunc("PUT /api/v1/topology", s.allow(auth.PermManageSettings, s.putTopology))
@@ -135,6 +140,13 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/targets/{id}/queries", s.authed(s.listQueries))
 	m.HandleFunc("GET /api/v1/targets/{id}/queries/commands", s.authed(s.queryCommands))
 	m.HandleFunc("GET /api/v1/targets/{id}/queries/{qid}", s.authed(s.getQuery))
+	m.HandleFunc("GET /api/v1/targets/{id}/queries/{qid}/insight", s.authed(s.queryInsight))
+	m.HandleFunc("GET /api/v1/targets/{id}/queries/{qid}/plans", s.authed(s.listPlans))
+	m.HandleFunc("POST /api/v1/targets/{id}/queries/{qid}/plans", s.allow(auth.PermAcknowledge, s.savePlan))
+	m.HandleFunc("POST /api/v1/targets/{id}/queries/{qid}/plans/capture", s.allow(auth.PermRunSQL, s.capturePlan))
+	m.HandleFunc("GET /api/v1/targets/{id}/plans/compare", s.authed(s.comparePlans))
+	m.HandleFunc("GET /api/v1/targets/{id}/plans/{pid}", s.authed(s.getPlan))
+	m.HandleFunc("DELETE /api/v1/targets/{id}/plans/{pid}", s.allow(auth.PermAcknowledge, s.deletePlan))
 	m.HandleFunc("GET /api/v1/targets/{id}/tables", s.authed(s.targetTables))
 	m.HandleFunc("GET /api/v1/targets/{id}/replication", s.authed(s.targetReplication))
 	m.HandleFunc("GET /api/v1/targets/{id}/host", s.authed(s.targetHost))
@@ -145,6 +157,7 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/incidents/import", s.allow(auth.PermManageSettings, s.importIncident))
 	m.HandleFunc("GET /api/v1/incidents/{id}", s.authed(s.getIncident))
 	m.HandleFunc("GET /api/v1/incidents/{id}/events", s.authed(s.incidentEvents))
+	m.HandleFunc("GET /api/v1/incidents/{id}/investigation", s.authed(s.incidentInvestigation))
 	m.HandleFunc("POST /api/v1/incidents/{id}/acknowledge", s.allow(auth.PermAcknowledge, s.acknowledgeIncident))
 	m.HandleFunc("GET /api/v1/incidents/{id}/export", s.authed(s.exportIncident))
 

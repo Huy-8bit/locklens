@@ -105,6 +105,10 @@ type Session struct {
 	// observing role may see the text. It is truncated to QueryMaxLength runes.
 	Query          *string `json:"query,omitempty"`
 	QueryTruncated bool    `json:"query_truncated,omitempty"`
+	// QueryID is pg_stat_activity.query_id: the top-level statement's
+	// pg_stat_statements queryid, when PostgreSQL computes it. It identifies
+	// the statement without its text.
+	QueryID *int64 `json:"query_id,omitempty,string"`
 	// DetailsVisible is false when PostgreSQL hides this session's details
 	// from the observing role; most fields are then NULL.
 	DetailsVisible bool `json:"details_visible"`

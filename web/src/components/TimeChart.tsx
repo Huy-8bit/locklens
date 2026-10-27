@@ -33,6 +33,17 @@ export interface GapRange {
   to: number
 }
 
+/** A shaded range behind the lines, for example a statement's usual range. */
+export interface ChartBand {
+  label: string
+  /** A CSS color or var(--token). */
+  color: string
+  /** [epoch ms, low, high]. */
+  points: [number, number, number][]
+}
+
+const BAND_BASE = '\u200bband-base'
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
 }
@@ -63,6 +74,8 @@ interface TimeChartProps {
   zoomable?: boolean
   /** A shaded window, for example an incident from opening to resolution. */
   highlight?: GapRange
+  /** A shaded value range behind the series (listed in the tooltip, not the legend). */
+  band?: ChartBand
 }
 
 /**
@@ -73,7 +86,7 @@ interface TimeChartProps {
  * open a larger view. Hovering shows a crosshair synchronised across charts.
  */
 export function TimeChart(props: TimeChartProps) {
-  const { series, format, height = 220, stacked = false, area = false, from, to, gaps = [], label, emptyText = 'No samples in this time range', legend = true, compactAxis = false, axisWidth, integer = false, expandable = true, zoomable = true, highlight } = props
+  const { series, format, height = 220, stacked = false, area = false, from, to, gaps = [], label, emptyText = 'No samples in this time range', legend = true, compactAxis = false, axisWidth, integer = false, expandable = true, zoomable = true, highlight, band } = props
   const el = useRef<HTMLDivElement>(null)
   const chart = useRef<echarts.ECharts | null>(null)
   const themeVersion = useThemeVersion()
@@ -94,6 +107,26 @@ export function TimeChart(props: TimeChartProps) {
     const mark = cssVar('var(--crit-mark)')
     const span = to - from
     const colors = new Map(series.map((s) => [s.label, cssVar(s.color)]))
+    const bandColor = band ? cssVar(band.color) : ''
+    const bandAt = new Map(band?.points.map((p) => [p[0], p]) ?? [])
+    if (band) colors.set(band.label, bandColor)
+    const bandSeries = band
+      ? [
+          { name: BAND_BASE, type: 'line', data: band.points.map((p) => [p[0], p[1]]), stack: 'band', silent: true, showSymbol: false, lineStyle: { opacity: 0 }, itemStyle: { opacity: 0 }, z: 1 },
+          {
+            name: band.label,
+            type: 'line',
+            data: band.points.map((p) => [p[0], p[2] - p[1]]),
+            stack: 'band',
+            silent: true,
+            showSymbol: false,
+            lineStyle: { opacity: 0 },
+            itemStyle: { color: bandColor },
+            areaStyle: { color: bandColor, opacity: 0.16 },
+            z: 1,
+          },
+        ]
+      : []
     return {
       animation: false,
       grid: axisWidth ? { left: axisWidth, right: 12, top: 10, bottom: compactAxis ? 8 : 24 } : { left: 8, right: 12, top: 10, bottom: compactAxis ? 0 : 4, containLabel: true },
@@ -109,7 +142,8 @@ export function TimeChart(props: TimeChartProps) {
         formatter: (items: { axisValue: number; seriesName: string; value: [number, number | null] }[]) => {
           const first = items[0]
           if (!first) return ''
-          const rows = [...items].sort((a, b) => (b.value[1] ?? -Infinity) - (a.value[1] ?? -Infinity))
+          const rows = items.filter((i) => i.seriesName !== BAND_BASE && i.seriesName !== band?.label).sort((a, b) => (b.value[1] ?? -Infinity) - (a.value[1] ?? -Infinity))
+          const usual = bandAt.get(first.axisValue)
           const total = rows.reduce((n, i) => n + (i.value[1] ?? 0), 0)
           const known = rows.some((i) => i.value[1] !== null && i.value[1] !== undefined)
           const row = (name: string, color: string | null, value: string, cls = '') =>
@@ -117,7 +151,8 @@ export function TimeChart(props: TimeChartProps) {
           return (
             `<div class="ll-tt-time">${escapeHtml(fmtTime(new Date(first.axisValue).toISOString(), { date: span > 86_400_000 }))}</div>` +
             rows.map((i) => row(i.seriesName, colors.get(i.seriesName) ?? null, i.value[1] === null || i.value[1] === undefined ? UNKNOWN : format(i.value[1]))).join('') +
-            (stacked && rows.length > 1 && known ? row('Total', null, format(total), 'll-tt-total') : '')
+            (stacked && rows.length > 1 && known ? row('Total', null, format(total), 'll-tt-total') : '') +
+            (band && usual ? row(band.label, bandColor, `${format(usual[1])} – ${format(usual[2])}`) : '')
           )
         },
       },
@@ -144,7 +179,7 @@ export function TimeChart(props: TimeChartProps) {
         axisLabel: { color: muted, fontSize: 11, formatter: (v: number) => format(v) },
         splitLine: { lineStyle: { color: grid, width: 1 } },
       },
-      series: visible.map((s, i) => {
+      series: [...bandSeries, ...visible.map((s, i) => {
         const color = cssVar(s.color)
         if (s.bars) {
           return { name: s.label, type: 'bar', data: s.points, barMaxWidth: 8, itemStyle: { color, borderRadius: [2, 2, 0, 0] }, emphasis: { focus: 'series' } }
@@ -173,9 +208,9 @@ export function TimeChart(props: TimeChartProps) {
                 }
               : undefined,
         }
-      }),
+      })],
     }
-  }, [series, visible, format, stacked, area, compactAxis, axisWidth, integer, from, to, gaps, highlight, themeVersion])
+  }, [series, visible, format, stacked, area, compactAxis, axisWidth, integer, from, to, gaps, highlight, band, themeVersion])
 
   useEffect(() => {
     if (!el.current || !hasData) return

@@ -1,14 +1,16 @@
 import { useMemo } from 'react'
 import { Link, useParams } from 'react-router'
 import { ArrowLeft } from 'lucide-react'
-import { useQueryDetail } from '../api/hooks'
+import { useQueryDetail, useQueryInsight } from '../api/hooks'
 import { slot } from '../components/MetricCard'
+import { PerformanceAnalysis, PlansCard } from '../components/QueryInsight'
 import { PageHeader, useNumParam } from '../components/Shell'
 import { CopyButton, formatSql, SqlText } from '../components/SqlText'
 import { TimeChart } from '../components/TimeChart'
-import { Badge, Card, KeyValue, Load, Notice, Stat } from '../components/ui'
+import { Badge, Card, ErrorBox, KeyValue, Load, Notice, Spinner, Stat } from '../components/ui'
 import { commandColor, COMMAND_LABEL } from '../lib/commands'
 import { compact, ms, num, rate, time } from '../lib/format'
+import { bandPoints } from '../lib/insight'
 import { useRange } from '../lib/scope'
 import { bucketSeries } from '../lib/statements'
 
@@ -17,7 +19,12 @@ export default function QueryDetailPage() {
   const qid = Number(useParams().qid)
   const [range] = useRange()
   const q = useQueryDetail(id, qid, range)
+  const insight = useQueryInsight(id, qid, range)
   const series = useMemo(() => (q.data ? bucketSeries(q.data) : null), [q.data])
+  const bands = useMemo(
+    () => ({ mean: bandPoints(insight.data?.bands.mean_ms), calls: bandPoints(insight.data?.bands.calls_per_s) }),
+    [insight.data],
+  )
 
   return (
     <>
@@ -66,13 +73,36 @@ export default function QueryDetailPage() {
               {series && (
                 <div className="mt-3 grid gap-3 lg:grid-cols-2">
                   <Card title="Calls per second">
-                    <TimeChart label="Calls per second" series={[{ key: 'calls', label: 'Calls/s', color: slot(0), points: series.calls }]} format={(n) => rate(n)} from={from} to={to} height={200} />
+                    <TimeChart
+                      label="Calls per second"
+                      series={[{ key: 'calls', label: 'Calls/s', color: slot(0), points: series.calls }]}
+                      band={bands.calls.length ? { label: 'Usual range', color: 'var(--muted)', points: bands.calls } : undefined}
+                      format={(n) => rate(n)}
+                      from={from}
+                      to={to}
+                      height={200}
+                    />
                   </Card>
                   <Card title="Average time per call">
-                    <TimeChart label="Average time per call" series={[{ key: 'mean', label: 'Avg time', color: slot(1), points: series.mean }]} format={(n) => ms(n)} from={from} to={to} height={200} />
+                    <TimeChart
+                      label="Average time per call"
+                      series={[{ key: 'mean', label: 'Avg time', color: slot(1), points: series.mean }]}
+                      band={bands.mean.length ? { label: 'Usual range', color: 'var(--muted)', points: bands.mean } : undefined}
+                      format={(n) => ms(n)}
+                      from={from}
+                      to={to}
+                      height={200}
+                    />
                   </Card>
                 </div>
               )}
+              {(bands.mean.length > 0 || bands.calls.length > 0) && <p className="mt-1 text-xs text-muted">The shaded area is the statement’s usual range from its baseline.</p>}
+              <div className="mt-3">
+                {insight.error ? <ErrorBox error={insight.error} title="Could not load the performance analysis" /> : insight.data ? <PerformanceAnalysis insight={insight.data} /> : <Spinner label="Loading the performance analysis" />}
+              </div>
+              <div className="mt-3">
+                <PlansCard targetId={id} qid={qid} serverMajor={it.server_major} hasText={d.query_text_enabled} />
+              </div>
               <Card className="mt-3" title="Details">
                 <KeyValue
                   items={[
@@ -84,7 +114,7 @@ export default function QueryDetailPage() {
                     ['Previous period', `${time(prev.from, { date: true })} – ${time(prev.to, { date: true })}`],
                   ]}
                 />
-                <p className="mt-3 text-xs text-muted">Averages compare equal-length windows. A slower average does not identify the cause: plans, lock waits, I/O, and larger results all count. LockLens never runs EXPLAIN automatically.</p>
+                <p className="mt-3 text-xs text-muted">Averages compare equal-length windows. A slower average does not identify the cause: plans, lock waits, I/O, and larger results all count. LockLens never runs EXPLAIN automatically, and shows no latency percentiles: pg_stat_statements has no per-execution data.</p>
               </Card>
             </>
           )

@@ -97,6 +97,9 @@ flowchart LR
 | `backend/internal/domain/observe` | Shared types for collected data (capabilities, points, statement deltas, replication, table health) |
 | `backend/internal/lib/hostmetrics` | node_exporter scraping and parsing (size-limited) |
 | `backend/internal/domain/rules`, `backend/internal/domain/finding` | Deterministic rules, thresholds, findings with evidence |
+| `backend/internal/domain/baseline` | Statement baselines: robust statistics (median, MAD) per measure and hour of day from five-minute rollups; a service that keeps rollups current and holds the baselines of active statements in memory |
+| `backend/internal/domain/insight` | Explainable impact scores and the deterministic correlation of an anomaly's evidence into ranked hypotheses; gathers signals from the store |
+| `backend/internal/domain/plans` | Parsing saved EXPLAIN output (JSON or text), plan-shape fingerprints, plan comparison, index candidates |
 | `backend/internal/domain/incidents` | Incident recorder: pre-trigger buffer, lifecycle, limits, recovery |
 | `backend/internal/domain/settings` | Rule thresholds persisted in the store (demo defaults in demo mode) |
 | `backend/internal/domain/export` | Incident JSON (versioned) and standalone HTML reports; import validation |

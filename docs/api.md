@@ -128,6 +128,13 @@ A target's `status` holds `state` (`pending`, `healthy`, `degraded`,
 | `GET /api/v1/targets/{id}/queries` | 1h | Workload from pg_stat_statements; see below. |
 | `GET /api/v1/targets/{id}/queries/commands` | 1h | Workload by statement command class (select, insert, update, delete, merge, copy, ddl, transaction, maintenance, utility, other): window totals per class (`calls`, `total_exec_ms`, `rows`, `statements`, `mean_exec_ms`), per-bucket sums per class (`buckets`), the statement-collection time per bucket (`coverage_buckets`; a covered bucket without rows had no statements, a missing one is unknown), and overall `coverage`. `include_monitoring=true` includes the monitoring role. |
 | `GET /api/v1/targets/{id}/queries/{identity_id}` | 1h | One query identity: buckets over time, current vs. previous equal window, comparison, coverage. |
+| `GET /api/v1/targets/{id}/queries/{identity_id}/insight` | 1h | The statement against its baseline: `baseline` (window, points, days, `warm`, all-hours and current profiles with median/MAD/n per measure), `bands` (usual range per chart bucket for `mean_ms`, `calls_per_s`, `load_ms_per_s`), current `anomalies` and resolved `history` with impact, `investigation` (when an anomaly is active), saved `plans` count, and `percentiles` (always unavailable, with the reason). |
+| `GET /api/v1/targets/{id}/queries/{identity_id}/plans` | | Saved plans of the statement (without bodies). |
+| `POST /api/v1/targets/{id}/queries/{identity_id}/plans` | | Save EXPLAIN output: `{"plan", "note", "source": "manual" \| "workspace_explain"}` (JSON or text format, ≤ 512 KiB). Operators and administrators. |
+| `POST /api/v1/targets/{id}/queries/{identity_id}/plans/capture` | | Capture the generic plan (PostgreSQL 16+, `{"request_id", "note"}`) through the investigation workspace: `EXPLAIN (FORMAT JSON, GENERIC_PLAN)` of the normalised text in a read-only transaction, never executed. Needs the SQL permission and a workspace policy that allows SQL. |
+| `GET /api/v1/targets/{id}/plans/{plan_id}` | | One plan with its parsed nodes, fingerprint, and index candidates (hypotheses). |
+| `GET /api/v1/targets/{id}/plans/compare?a=&b=` | | Differences between two plans: same shape, cost ratio, scan and join changes. |
+| `DELETE /api/v1/targets/{id}/plans/{plan_id}` | | Remove a saved plan (operators and administrators). |
 | `GET /api/v1/targets/{id}/tables` | | Table/vacuum health, vacuum progress, long transactions (live or last stored). |
 | `GET /api/v1/targets/{id}/replication` | | Role, replicas with LSN lags and time-lag fields, slots with retained WAL, standby receiver state, archiver. |
 | `GET /api/v1/targets/{id}/host` | | node_exporter metrics: `configured`, `available`, `host`, `error`. |
@@ -155,6 +162,14 @@ samples, number of collections, resets, evicted entries), `available` and
 are strings (64-bit values do not fit JavaScript numbers). See
 [query-analysis.md](query-analysis.md).
 
+## Query performance
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/v1/performance` | Current statement anomalies (`anomalies`) and statements running for long (`running`) across the fleet (`environment` filter), each with its finding, `impact` (score 0–100 with explained `components` and the `confidence_factor`), and the resolved `statement` identity. Also `unavailable` targets (no pg_stat_statements), `insufficient` rule results, warm `baselines` per target, `baseline_config`, and `percentiles` (always unavailable). |
+
+See [query-intelligence.md](query-intelligence.md) for baselines, rules, impact, and correlation.
+
 ## Incidents
 
 | Method and path | Description |
@@ -166,6 +181,7 @@ are strings (64-bit values do not fit JavaScript numbers). See
 | `GET /api/v1/notifications/deliveries` | Recent deliveries; `incident` filters one incident (any role), without it administrators only. |
 | `GET /api/v1/notifications/silences` · `POST` · `DELETE /{id}` | Current silences (`all=true` includes ended ones); create (`target_id`, `rule_id`, `minutes` or `ends_at`, `reason`) and end silences (operators and administrators). |
 | `GET /api/v1/targets/{id}/load` | Database load from active session sampling: `range` or `from`/`to`; `by` = `class` (default), `event`, `query`, `user`, `database`, `application`, or `backend`; optional `class` (wait class) and `queryid` filters; `top` (1–20, default 8) series. Returns AAS series per step (`null` where no sample was taken), the top groups with share and AAS by wait class, `statements` resolved for `by=query`, and the collector status. |
+| `GET /api/v1/incidents/{id}/investigation` | Correlated evidence of a statement incident as of its trigger: ranked `hypotheses` (strength, supporting and contradicting evidence, next steps), `timeline`, `missing_evidence`, `summary`, `disclaimer`. `available: false` with a reason for other incidents. |
 | `GET /api/v1/incidents/{id}/events` | Evidence timeline; `after` (event ID) and `limit` (at most 2,000) for incremental loading. `statements` resolves the statements named by statement findings and workload events to stored identities (`identity_id` for `/queries/{qid}`, command, database, user, and `query_text` when the instance collects SQL text). |
 | `POST /api/v1/incidents/{id}/acknowledge` | Body `{"note"}` (optional). Adds metadata only; evidence is never changed. |
 | `GET /api/v1/incidents/{id}/export?format=json\|html` | Download. Query text is removed unless `include_query=true` (and only text that the target collected exists at all). |

@@ -14,12 +14,17 @@ type RetentionPolicy struct {
 	Incidents time.Duration
 	// Resolved findings and collection gaps.
 	Findings time.Duration
+	// Statement rollups (query baselines); at least History.
+	Rollups time.Duration
 }
 
 // RetentionResult reports deleted rows per table.
 type RetentionResult map[string]int64
 
 // historyTables are pruned by their ts column.
+// rollupTables are kept for the rollup retention (query baselines).
+var rollupTables = []string{"query_rollups", "statement_coverage"}
+
 var historyTables = []string{"metric_points", "query_samples", "statement_collections", "activity_snapshots",
 	"table_stats", "index_stats", "state_snapshots", "load_samples", "load_buckets"}
 
@@ -51,7 +56,26 @@ func (s *Store) ApplyRetention(ctx context.Context, p RetentionPolicy, now time.
 			return res, err
 		}
 	}
-	if err := run("query_identities", "last_seen < $1 AND NOT EXISTS (SELECT 1 FROM query_samples q WHERE q.identity_id = query_identities.id)", cutoff); err != nil {
+	rcut := now.Add(-max(p.Rollups, p.History)).UTC()
+	for _, t := range rollupTables {
+		if s.isHypertable(t) {
+			var n int64
+			if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM drop_chunks($1::regclass, older_than => $2::timestamptz)", t, rcut).Scan(&n); err != nil {
+				return res, s.red.Error(err)
+			}
+			res[t+" (chunks)"] += n
+			continue
+		}
+		if err := run(t, "ts < $1", rcut); err != nil {
+			return res, err
+		}
+	}
+	// Identities stay while rollups or saved plans refer to them (baselines
+	// and plans outlive samples). Plans are kept as long as incidents.
+	if err := run("query_plans", "captured_at < $1", now.Add(-p.Incidents).UTC()); err != nil {
+		return res, err
+	}
+	if err := run("query_identities", "NOT EXISTS (SELECT 1 FROM query_rollups r WHERE r.identity_id = query_identities.id) AND NOT EXISTS (SELECT 1 FROM query_plans p WHERE p.identity_id = query_identities.id) AND last_seen < $1 AND NOT EXISTS (SELECT 1 FROM query_samples q WHERE q.identity_id = query_identities.id)", cutoff); err != nil {
 		return res, err
 	}
 	icut := now.Add(-p.Incidents).UTC()

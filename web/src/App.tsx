@@ -17,6 +17,7 @@ const LoadPage = lazy(() => import('./pages/LoadPage'))
 const AlertsPage = lazy(() => import('./pages/AlertsPage'))
 const TopologyPage = lazy(() => import('./pages/TopologyPage'))
 const FleetQueriesPage = lazy(() => import('./pages/FleetQueriesPage'))
+const PerformancePage = lazy(() => import('./pages/PerformancePage'))
 const QueryDetailPage = lazy(() => import('./pages/QueryDetailPage'))
 const SessionsPage = lazy(() => import('./pages/SessionsPage'))
 const BlockingPage = lazy(() => import('./pages/BlockingPage'))
@@ -78,6 +79,7 @@ export function App() {
           </Route>
           <Route path="topology" element={<TopologyPage />} />
           <Route path="queries" element={<FleetQueriesPage />} />
+          <Route path="performance" element={<PerformancePage />} />
           <Route path="queries/:targetId/:qid" element={<QueryDetailPage />} />
           <Route path="sessions" element={<SessionsPage />} />
           <Route path="blocking" element={<BlockingPage />} />

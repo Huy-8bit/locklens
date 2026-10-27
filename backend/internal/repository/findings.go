@@ -34,19 +34,26 @@ func (s *Store) SyncFindings(ctx context.Context, targetID int64, now time.Time,
 			evidence, _ := json.Marshal(f.Evidence)
 			poss, _ := json.Marshal(f.PossibleExplanations)
 			next, _ := json.Marshal(f.NextChecks)
+			var conf, metrics []byte
+			if f.Confidence != nil {
+				conf, _ = json.Marshal(f.Confidence)
+			}
+			if len(f.Metrics) > 0 {
+				metrics, _ = json.Marshal(f.Metrics)
+			}
 			var id int64
 			err := tx.QueryRow(ctx, `
 INSERT INTO findings (target_id, rule_id, rule_version, finding_key, severity, title, status, first_seen, last_seen,
-    observed, evidence, explanation, possible_explanations, next_checks, limitations)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+    observed, evidence, explanation, possible_explanations, next_checks, limitations, confidence, metrics)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 ON CONFLICT (target_id, rule_id, finding_key) WHERE status <> 'resolved' DO UPDATE SET
     rule_version = EXCLUDED.rule_version, severity = EXCLUDED.severity, title = EXCLUDED.title,
     status = EXCLUDED.status, last_seen = EXCLUDED.last_seen, observed = EXCLUDED.observed,
     evidence = EXCLUDED.evidence, explanation = EXCLUDED.explanation,
     possible_explanations = EXCLUDED.possible_explanations, next_checks = EXCLUDED.next_checks,
-    limitations = EXCLUDED.limitations
+    limitations = EXCLUDED.limitations, confidence = EXCLUDED.confidence, metrics = EXCLUDED.metrics
 RETURNING id`, targetID, f.RuleID, f.RuleVersion, f.Key, string(f.Severity), f.Title, string(f.Status),
-				f.ObservedFrom, now.UTC(), observed, evidence, f.Explanation, poss, next, f.Limitations).Scan(&id)
+				f.ObservedFrom, now.UTC(), observed, evidence, f.Explanation, poss, next, f.Limitations, conf, metrics).Scan(&id)
 			if err != nil {
 				return err
 			}
@@ -89,7 +96,7 @@ func (s *Store) ListFindings(ctx context.Context, f FindingFilter) ([]FindingRow
 	}
 	rows, err := s.pool.Query(ctx, `
 SELECT id, target_id, incident_id, rule_id, rule_version, finding_key, severity, title, status, first_seen, last_seen,
-       resolved_at, observed, evidence, explanation, possible_explanations, next_checks, limitations
+       resolved_at, observed, evidence, explanation, possible_explanations, next_checks, limitations, confidence, metrics
 FROM findings
 WHERE ($1 = 0 OR target_id = $1) AND ($2 = 0 OR incident_id = $2)
   AND ($3 = '' OR ($3 = 'current' AND status <> 'resolved') OR ($3 = 'resolved' AND status = 'resolved'))
@@ -108,10 +115,10 @@ LIMIT $4`, f.TargetID, f.IncidentID, f.Status, f.Limit)
 func scanFinding(r pgx.CollectableRow) (FindingRow, error) {
 	var fr FindingRow
 	var sev, status string
-	var observed, evidence, poss, next []byte
+	var observed, evidence, poss, next, conf, metrics []byte
 	err := r.Scan(&fr.ID, &fr.TargetID, &fr.IncidentID, &fr.Finding.RuleID, &fr.Finding.RuleVersion, &fr.Finding.Key, &sev,
 		&fr.Finding.Title, &status, &fr.FirstSeen, &fr.LastSeen, &fr.ResolvedAt, &observed, &evidence,
-		&fr.Finding.Explanation, &poss, &next, &fr.Finding.Limitations)
+		&fr.Finding.Explanation, &poss, &next, &fr.Finding.Limitations, &conf, &metrics)
 	if err != nil {
 		return fr, err
 	}
@@ -120,6 +127,16 @@ func scanFinding(r pgx.CollectableRow) (FindingRow, error) {
 	if err := errors.Join(json.Unmarshal(observed, &fr.Finding.Observed), json.Unmarshal(evidence, &fr.Finding.Evidence),
 		json.Unmarshal(poss, &fr.Finding.PossibleExplanations), json.Unmarshal(next, &fr.Finding.NextChecks)); err != nil {
 		return fr, err
+	}
+	if conf != nil {
+		if err := json.Unmarshal(conf, &fr.Finding.Confidence); err != nil {
+			return fr, err
+		}
+	}
+	if metrics != nil {
+		if err := json.Unmarshal(metrics, &fr.Finding.Metrics); err != nil {
+			return fr, err
+		}
 	}
 	return fr, nil
 }

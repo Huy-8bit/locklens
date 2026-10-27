@@ -756,3 +756,184 @@ func TestMetricsTimeRangeAPI(t *testing.T) {
 		inst.do(t, "GET", u.String(), nil, 400, nil)
 	}
 }
+
+// TestQueryPerformanceIntelligence drives a real long-running statement
+// through detection, an incident, and its correlated investigation, and
+// checks the baseline, insight, and plan APIs of a statement.
+func TestQueryPerformanceIntelligence(t *testing.T) {
+	ctx := context.Background()
+	inst := start(t, storeDSN(t), freePort(t))
+	tv := inst.addTarget(t, "perf", pgssObserverDSN, nil)
+	waitFor(t, 60*time.Second, "pg_stat_statements detected", func() bool {
+		c := inst.target(t, tv.ID).Status.Capabilities
+		return c != nil && c.StatStatements
+	})
+	conn, err := pgx.Connect(ctx, pgssDemoDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, "CREATE TABLE IF NOT EXISTS srv_perf (id int PRIMARY KEY, v int); INSERT INTO srv_perf SELECT g, g FROM generate_series(1, 1000) g ON CONFLICT DO NOTHING"); err != nil {
+		t.Fatal(err)
+	}
+	// A statement that runs longer than the demo critical threshold (60 s).
+	sleeper, err := pgx.Connect(ctx, pgssDemoDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sleeper.Close(context.Background())
+	sleepCtx, stopSleep := context.WithCancel(ctx)
+	defer stopSleep()
+	go func() { _, _ = sleeper.Exec(sleepCtx, "SELECT pg_sleep(90)") }()
+
+	type perfItem struct {
+		FindingID int64 `json:"finding_id"`
+		Finding   struct {
+			RuleID     string             `json:"rule_id"`
+			Severity   string             `json:"severity"`
+			Key        string             `json:"key"`
+			Metrics    map[string]float64 `json:"metrics"`
+			Confidence *struct {
+				Level string `json:"level"`
+			} `json:"confidence"`
+		} `json:"finding"`
+		Impact struct {
+			Score      float64 `json:"score"`
+			Components []struct {
+				Name   string  `json:"name"`
+				Points float64 `json:"points"`
+			} `json:"components"`
+		} `json:"impact"`
+	}
+	var perf struct {
+		Running     []perfItem `json:"running"`
+		Percentiles struct {
+			Available bool `json:"available"`
+		} `json:"percentiles"`
+	}
+	waitFor(t, 60*time.Second, "running statement reported", func() bool {
+		inst.do(t, "GET", "/api/v1/performance", nil, 200, &perf)
+		return len(perf.Running) > 0
+	})
+	r := perf.Running[0]
+	if r.Finding.RuleID != "queries.long_running" || !strings.HasPrefix(r.Finding.Key, "pid:") || r.Finding.Metrics["running_seconds"] < 10 ||
+		r.Impact.Score <= 0 || len(r.Impact.Components) == 0 || r.Finding.Confidence == nil || perf.Percentiles.Available {
+		t.Fatalf("running item: %+v (percentiles %+v)", r, perf.Percentiles)
+	}
+	var inc incident
+	waitFor(t, 90*time.Second, "long-running incident opened", func() bool {
+		for _, in := range inst.incidents(t, tv.ID) {
+			if in.RuleID == "queries.long_running" {
+				inc = in
+				return true
+			}
+		}
+		return false
+	})
+	var inv struct {
+		Available     bool `json:"available"`
+		Investigation struct {
+			Summary    string `json:"summary"`
+			Disclaimer string `json:"disclaimer"`
+			Hypotheses []struct {
+				ID string `json:"id"`
+			} `json:"hypotheses"`
+			Missing []string `json:"missing_evidence"`
+		} `json:"investigation"`
+	}
+	inst.do(t, "GET", fmt.Sprintf("/api/v1/incidents/%d/investigation", inc.ID), nil, 200, &inv)
+	if !inv.Available || inv.Investigation.Disclaimer == "" || len(inv.Investigation.Missing) == 0 {
+		t.Fatalf("investigation: %+v", inv)
+	}
+	ids := map[string]bool{}
+	for _, h := range inv.Investigation.Hypotheses {
+		ids[h.ID] = true
+	}
+	if !ids["heavy_execution"] {
+		t.Errorf("an unblocked sleeping statement should suggest one heavy execution: %+v", inv.Investigation)
+	}
+	stopSleep()
+
+	// Statement insight: no warm baseline yet, never percentiles.
+	var list struct {
+		Items []struct {
+			IdentityID int64   `json:"identity_id"`
+			User       string  `json:"username"`
+			Text       *string `json:"query_text"`
+		} `json:"items"`
+	}
+	var qid int64
+	waitFor(t, 60*time.Second, "srv_perf statement collected", func() bool {
+		for i := 0; i < 50; i++ {
+			var v int
+			_ = conn.QueryRow(ctx, "SELECT v FROM srv_perf WHERE id = $1", i+1).Scan(&v)
+		}
+		inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/queries?range=15m", tv.ID), nil, 200, &list)
+		for _, it := range list.Items {
+			if it.User == "demo_app" && it.Text != nil && strings.Contains(*it.Text, "srv_perf WHERE") {
+				qid = it.IdentityID
+				return true
+			}
+		}
+		return false
+	})
+	var ins struct {
+		Baseline struct {
+			Warm         bool `json:"warm"`
+			WarmupPoints int  `json:"warmup_points"`
+		} `json:"baseline"`
+		Bands struct {
+			Mean []any `json:"mean_ms"`
+		} `json:"bands"`
+		Percentiles struct {
+			Available bool   `json:"available"`
+			Reason    string `json:"reason"`
+		} `json:"percentiles"`
+		Anomalies []any `json:"anomalies"`
+		Plans     int   `json:"plans"`
+	}
+	inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/queries/%d/insight?range=15m", tv.ID, qid), nil, 200, &ins)
+	if ins.Baseline.Warm || ins.Baseline.WarmupPoints == 0 || ins.Percentiles.Available || ins.Percentiles.Reason == "" || ins.Bands.Mean == nil || ins.Plans != 0 {
+		t.Fatalf("insight: %+v", ins)
+	}
+	inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/queries/999999/insight", tv.ID), nil, 404, nil)
+
+	// Plans: paste two, compare, read hints, delete.
+	seq := `[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "srv_perf", "Schema": "public", "Total Cost": 18.5, "Plan Rows": 1, "Filter": "(id = $1)"}}]`
+	idx := `[{"Plan": {"Node Type": "Index Scan", "Relation Name": "srv_perf", "Schema": "public", "Index Name": "srv_perf_pkey", "Total Cost": 8.3, "Plan Rows": 1, "Index Cond": "(id = $1)"}}]`
+	var a, b struct {
+		Plan struct {
+			ID int64 `json:"id"`
+		} `json:"plan"`
+	}
+	inst.do(t, "POST", fmt.Sprintf("/api/v1/targets/%d/queries/%d/plans", tv.ID, qid), map[string]any{"plan": idx, "note": "before"}, 201, &a)
+	inst.do(t, "POST", fmt.Sprintf("/api/v1/targets/%d/queries/%d/plans", tv.ID, qid), map[string]any{"plan": seq, "note": "after"}, 201, &b)
+	inst.do(t, "POST", fmt.Sprintf("/api/v1/targets/%d/queries/%d/plans", tv.ID, qid), map[string]any{"plan": "{}"}, 400, nil)
+	var cmp struct {
+		Comparison struct {
+			SameShape bool `json:"same_shape"`
+			Changes   []struct {
+				Kind string `json:"kind"`
+			} `json:"changes"`
+		} `json:"comparison"`
+	}
+	inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/plans/compare?a=%d&b=%d", tv.ID, a.Plan.ID, b.Plan.ID), nil, 200, &cmp)
+	if cmp.Comparison.SameShape || len(cmp.Comparison.Changes) == 0 {
+		t.Errorf("compare: %+v", cmp)
+	}
+	var detail struct {
+		Hints []struct {
+			Columns []string `json:"columns"`
+		} `json:"index_hints"`
+	}
+	inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/plans/%d", tv.ID, b.Plan.ID), nil, 200, &detail)
+	if len(detail.Hints) != 1 || detail.Hints[0].Columns[0] != "id" {
+		t.Errorf("hints: %+v", detail)
+	}
+	inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/queries/%d/insight?range=15m", tv.ID, qid), nil, 200, &ins)
+	if ins.Plans != 2 {
+		t.Errorf("plans = %d", ins.Plans)
+	}
+	inst.do(t, "DELETE", fmt.Sprintf("/api/v1/targets/%d/plans/%d", tv.ID, a.Plan.ID), nil, 204, nil)
+	inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/plans/%d", tv.ID, a.Plan.ID), nil, 404, nil)
+}

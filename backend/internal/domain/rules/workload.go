@@ -2,7 +2,6 @@ package rules
 
 import (
 	"cmp"
-	"fmt"
 	"slices"
 	"time"
 
@@ -17,6 +16,9 @@ type WindowAgg struct {
 	Calls   int64   `json:"calls"`
 	TotalMS float64 `json:"total_exec_ms"`
 	Rows    int64   `json:"rows"`
+	BlkRead int64   `json:"shared_blks_read"`
+	BlkHit  int64   `json:"shared_blks_hit"`
+	TempW   int64   `json:"temp_blks_written"`
 }
 
 // MeanMS returns the window mean, or nil without calls.
@@ -106,109 +108,14 @@ func aggregate(colls []observe.StatementsCollection, from, to time.Time) windowS
 			a.Calls += d.Calls
 			a.TotalMS += d.TotalMS
 			a.Rows += d.Rows
+			a.BlkRead += d.BlkRead
+			a.BlkHit += d.BlkHit
+			a.TempW += d.TempW
 			w.aggs[d.Key] = a
 			w.meta[d.Key] = d
 		}
 	}
 	return w
-}
-
-func workloadRules(in Input, th Thresholds) []Finding {
-	caps := in.View.Capabilities
-	if caps == nil || !caps.StatStatements {
-		why := "pg_stat_statements is not available for this target."
-		if caps != nil && caps.StatementsReason != "" {
-			why = "pg_stat_statements is not available: " + caps.StatementsReason + "."
-		}
-		return []Finding{insufficient(RuleMeanRegression, in.Now, why), insufficient(RuleCallVolume, in.Now, why)}
-	}
-	win := time.Duration(th.WorkloadWindowSeconds * float64(time.Second))
-	cur := aggregate(in.View.Statements, in.Now.Add(-win), in.Now)
-	prev := aggregate(in.View.Statements, in.Now.Add(-2*win), in.Now.Add(-win))
-	need := th.WorkloadMinCoverage * win.Seconds()
-	if cur.covered < need || prev.covered < need {
-		why := fmt.Sprintf("Comparing two %s windows needs %.0f%% coverage of each; observed %.0f%% (current) and %.0f%% (previous). Collection may have started recently or had gaps.",
-			fmtDuration(win.Seconds()), th.WorkloadMinCoverage*100, 100*cur.covered/win.Seconds(), 100*prev.covered/win.Seconds())
-		return []Finding{insufficient(RuleMeanRegression, in.Now, why), insufficient(RuleCallVolume, in.Now, why)}
-	}
-	limitations := "Based on pg_stat_statements deltas between collections: there are no per-execution samples, so only window means (not percentiles) are compared. queryid is normalised per database, user, and top-level flag, and is not stable across major versions."
-	if cur.dealloc+prev.dealloc > 0 {
-		limitations += fmt.Sprintf(" %d entries were evicted (pg_stat_statements.max) during the windows, so some activity is missing.", cur.dealloc+prev.dealloc)
-	}
-	if cur.resets+prev.resets > 0 {
-		limitations += " Statistics were reset during the windows."
-	}
-	if cur.truncated+prev.truncated > 0 {
-		limitations += " Some low-impact entries were not stored because of the per-collection cap."
-	}
-
-	type hit struct {
-		key  observe.QueryKey
-		c    Comparison
-		p, n WindowAgg
-	}
-	var regs, vols []hit
-	for k, n := range cur.aggs {
-		p := prev.aggs[k]
-		c := Compare(p, n, th)
-		if c.MeanRegression {
-			regs = append(regs, hit{k, c, p, n})
-		}
-		if c.VolumeIncrease {
-			vols = append(vols, hit{k, c, p, n})
-		}
-	}
-	slices.SortFunc(regs, func(a, b hit) int { return cmp.Compare(*b.c.MeanRatio, *a.c.MeanRatio) })
-	slices.SortFunc(vols, func(a, b hit) int { return cmp.Compare(*b.c.CallsRatio, *a.c.CallsRatio) })
-	if len(regs) > 5 {
-		regs = regs[:5]
-	}
-	if len(vols) > 5 {
-		vols = vols[:5]
-	}
-	from, to := in.Now.Add(-2*win), in.Now
-	keyOf := func(k observe.QueryKey) string {
-		return fmt.Sprintf("q:%d:%d:%d:%t:%d", k.ServerMajor, k.DBID, k.UserID, k.TopLevel, k.QueryID)
-	}
-	common := func(f *Finding, h hit) {
-		m := cur.meta[h.key]
-		f.Evidence = append(f.Evidence,
-			ev("queryid", fmt.Sprint(h.key.QueryID), "", "pg_stat_statements"),
-			ev("database", m.DatName, "", "pg_stat_statements.dbid"),
-			ev("user", m.UserName, "", "pg_stat_statements.userid"),
-			ev("top level", h.key.TopLevel, "", "pg_stat_statements.toplevel"),
-			ev("calls (previous window)", h.p.Calls, "", "pg_stat_statements deltas"),
-			ev("calls (current window)", h.n.Calls, "", "pg_stat_statements deltas"),
-			ev("mean time (previous window)", deref(h.p.MeanMS(), 0), "ms", "pg_stat_statements deltas"),
-			ev("mean time (current window)", deref(h.n.MeanMS(), 0), "ms", "pg_stat_statements deltas"),
-			ev("total time (previous window)", h.p.TotalMS, "ms", "pg_stat_statements deltas"),
-			ev("total time (current window)", h.n.TotalMS, "ms", "pg_stat_statements deltas"),
-			ev("window length", win.Seconds(), "s", "rule configuration"))
-		f.Limitations = limitations
-		f.NextChecks = []string{"Open the query in the workload view and compare the windows.", "Check for blocking, temporary-file activity, or a plan change around the time it started (EXPLAIN is not run automatically)."}
-	}
-	var out []Finding
-	for _, h := range regs {
-		f := newFinding(RuleMeanRegression, keyOf(h.key), Warning,
-			fmt.Sprintf("Query %d is %.1fx slower per call", h.key.QueryID, *h.c.MeanRatio), from, to)
-		f.Trigger = true
-		f.Observed = append(f.Observed, fmt.Sprintf("Mean execution time rose from %.2f ms to %.2f ms per call between two %s windows, with %d and %d calls.",
-			*h.p.MeanMS(), *h.n.MeanMS(), fmtDuration(win.Seconds()), h.p.Calls, h.n.Calls))
-		f.Explanation = "Each execution of this statement takes longer than before; this is different from the statement simply running more often."
-		f.PossibleExplanations = []string{"A different execution plan (for example after statistics changed or an index was dropped).", "Lock waits or I/O contention during execution.", "More data processed per call (larger result sets: compare rows)."}
-		common(&f, h)
-		out = append(out, f)
-	}
-	for _, h := range vols {
-		f := newFinding(RuleCallVolume, keyOf(h.key), Info,
-			fmt.Sprintf("Query %d runs %.1fx more often", h.key.QueryID, *h.c.CallsRatio), from, to)
-		f.Observed = append(f.Observed, fmt.Sprintf("Calls rose from %d to %d between two %s windows.", h.p.Calls, h.n.Calls, fmtDuration(win.Seconds())))
-		f.Explanation = "The statement is executed much more often; its total load can grow even when each call is as fast as before."
-		f.PossibleExplanations = []string{"More application traffic.", "A retry loop or an N+1 query pattern.", "A cache in front of the database stopped working."}
-		common(&f, h)
-		out = append(out, f)
-	}
-	return out
 }
 
 // TopQuery is one entry of a workload summary.
