@@ -89,6 +89,18 @@ Opening a cell shows its full value (valid JSON pretty-printed) with a copy butt
 No background data polling occurs. The UI queues workspace requests so that at most two
 run per target, matching the server limit, and retries a busy (429) answer with backoff.
 
+## Generic plans for statements
+
+The statement page can **capture the generic plan** of a statement
+(PostgreSQL 16+): `POST /api/v1/targets/{id}/queries/{qid}/plans/capture`
+runs `EXPLAIN (FORMAT JSON, GENERIC_PLAN)` on the statement's normalised
+`pg_stat_statements` text through this workspace, with the same policy (SQL
+allowed), permission (`workspace.sql`), credentials, read-only transaction,
+limits, and audit entry (`explain`) as the SQL Editor. Only one SELECT,
+INSERT, UPDATE, DELETE, or MERGE statement in the workspace's database is
+accepted, and it is planned, never executed. The plan is saved in the store
+for comparison (see [query-intelligence.md](query-intelligence.md#execution-plans)).
+
 ## SQL execution and limits
 
 `POST /api/v1/targets/{id}/workspace/run` with `action: "sql"` (or `"explain"`)

@@ -171,6 +171,7 @@ DSNs of the run.
 | `TestTargetLifecycleBlockingIncidentAndExport` | DSN validation does not echo the password; healthy and unreachable targets side by side (isolation); `pg_stat_statements` reported unavailable with a reason; connection test; a real A → B → C chain in live activity, with SQL text (collected by default); a blocking incident opens; restart while it is open keeps history and records `recorder_restarted`; releasing the chain resolves it; acknowledging does not change evidence; JSON export without query text, standalone HTML without scripts or URLs; import round trip; soft delete keeps incidents |
 | `TestRestrictedRoleAndQueryTextOptIn` | a role without `pg_read_all_stats` gives a `degraded` target with a `restricted_visibility` warning; query text appears only for the opted-in target and disappears when the option is turned off |
 | `TestPgStatStatementsAvailable` | extension detected; `demo_app` statements appear with call counts, normalised SQL text by default and command class `select`; `include_text=false` omits text; `/queries/commands` reports select totals and coverage buckets; unknown command classes are rejected; query IDs are decimal strings |
+| `TestQueryPerformanceIntelligence` | a real `pg_sleep(90)` appears under `/performance` as `queries.long_running` with metrics, impact components, and confidence; at the critical threshold it opens an incident whose investigation is available, lists missing evidence, and suggests one heavy execution; statement insight reports a learning baseline, bands, and percentiles as unavailable; pasted plans are saved, compared (shape changed), give an index candidate, and are deleted; an invalid plan is rejected |
 | `TestPrimaryAndStandby` | standby detected; primary lists the replica and slot; standby reports a streaming WAL receiver |
 | `TestOutageAndRecovery` | the database container (target and store) paused for 25 s; the target becomes healthy again and a collection gap is recorded |
 
@@ -192,6 +193,9 @@ Tests render with real React Router and TanStack Query and a stubbed `fetch`:
 - the queries page offers only the statement types present and filters by type;
 - the data explorer asks for separate credentials and confirms row access
   before saving;
+- the Performance page ranks anomalies by impact, explains the score in its
+  drawer, lists running queries separately, and says when nothing is
+  anomalous; hypotheses show evidence for and against and missing evidence;
 - axe-core finds no serious or critical violations on the rendered pages.
 
 ## Browser end-to-end
@@ -210,7 +214,9 @@ the API. The test:
    queries-by-type chart;
 4. starts the `shop` lab scenario and waits until the instance's Queries tab
    shows SELECT, INSERT, UPDATE, and DELETE in the breakdown; filters by UPDATE,
-   opens a statement with its SQL, and finds it in Queries across instances;
+   opens a statement with its SQL and performance analysis (learning baseline,
+   no percentiles), saves a pasted plan and reads its index candidate, finds
+   the statement in Queries across instances, and opens Performance;
 5. browses `shop.orders` in the Explorer: rows, a filter (`status = paid`,
    every row checked), a cell panel, the Schema and Triggers tabs, and the
    functions of the schema;
@@ -269,6 +275,19 @@ always reported as a cycle and never as a confirmed deadlock.
   `PGPASSWORD`, wrapped errors, four malformed DSNs.
 - Text: multi-byte and emoji truncation, invalid UTF-8, ESC/OSC/CSI, C1, DEL,
   bidi overrides.
+- Baselines: median and MAD, the zero-variance floor, quiet covered periods
+  counted as zero, reset periods skipped, hour-of-day profiles.
+- Statement rules: latency regression against the baseline (critical ratio,
+  confidence, evidence basis), a slow hour of day that is usual, warm-up
+  falling back to the previous window, too few calls, query storm, load, I/O,
+  rows-per-call pattern, possible N+1 (only parameterised SELECTs), long-running
+  thresholds and baseline-based expectation, idle sessions and parallel
+  workers ignored, one key per execution.
+- Insight: impact components bounded and explained, missing measurements add
+  nothing; correlation ranks lock contention, plan change, traffic, and shared
+  pressure from their evidence, is deterministic, and says when nothing points
+  to an explanation. Plans: JSON and text parsing, fingerprints ignore costs,
+  comparison of scan changes, index candidates.
 - CLI: invalid invocations, connection refused, doctor JSON on failure,
   `snapshot save` refusing an existing file before connecting, bad snapshot
   files (including a directory), `watch` retrying a closed port and exiting 0
@@ -326,7 +345,9 @@ runs its browser flows against another isolated stack.
 `backend/internal/domain/workspace` adds unit and integration coverage for safe error messages,
 session-owned cancellation, policy isolation/revocation, bounded concurrency, cursor
 query grammar, read-only rejection, keyset pagination, parameterized filtering,
-NULL/empty values, serialized JSON/protocol limits and catalogs. The integration harness
+NULL/empty values, serialized JSON/protocol limits, catalogs, and generic plans
+(`TestExplainGenericPlan`: one statement only, refused before PostgreSQL 16, planned
+without deleting a row on 16+). The integration harness
 includes this package on both default PostgreSQL versions.
 
 The browser suite covers catalog and row browsing through the data explorer

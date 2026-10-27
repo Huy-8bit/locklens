@@ -77,6 +77,11 @@ the detailed explanation.
   their counts are lost), and `queryid` is not stable across major versions.
   The first collection after a start is a baseline, so short windows right
   after a start have little coverage.
+- **Query baselines and anomalies** need history: until a statement has
+  `baseline_warmup_points` covered points, rules compare with the previous
+  window only. Correlated root causes are ranked hypotheses from collected
+  evidence, never confirmed causes; deployments and configuration changes are
+  not recorded. See [query-intelligence.md](query-intelligence.md#limitations).
 - **Table statistics** cover only the database LockLens connects to and only
   the 200 largest tables; tuple counts are estimates, and a dead-tuple ratio is
   not measured bloat.
