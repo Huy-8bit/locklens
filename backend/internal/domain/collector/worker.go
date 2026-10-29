@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -22,6 +23,10 @@ const (
 	CollectorTables      = "tables"
 	CollectorHost        = "host"
 	CollectorLoad        = "load"
+	// CollectorTableActivity reads table counters every minute.
+	CollectorTableActivity = "table_activity"
+	// CollectorCatalog reads the schema for the query optimizer.
+	CollectorCatalog = "catalog"
 )
 
 // AllCollectors lists collectors in display order.
@@ -35,7 +40,16 @@ const (
 )
 
 type job struct {
-	name    string
+	name string
+	// base is the configured interval, burst the shorter one used while the
+	// target is collected faster (0: no change), and slow the factor applied
+	// when the collector exceeds its time budget. every is the interval in
+	// effect.
+	base    time.Duration
+	burst   time.Duration
+	slow    int
+	over    int // consecutive runs over budget
+	under   int // consecutive runs well under budget
 	every   time.Duration
 	timeout time.Duration
 	next    time.Time
@@ -53,9 +67,13 @@ type worker struct {
 	obs  *postgres.Collector
 	caps *observe.Capabilities
 
-	prevDB   *CounterSample
-	prevStmt *statementsState
-	prevHost *hostmetrics.Scrape
+	prevDB    *CounterSample
+	prevStmt  *statementsState
+	stmtCache stmtCache
+	prevHost  *hostmetrics.Scrape
+	// prevTables holds the table counters of the last table activity
+	// collection.
+	prevTables *tableActivityState
 
 	load *loadAgg
 
@@ -74,9 +92,9 @@ func newWorker(m *Manager, t repository.Target, st *State) *worker {
 	iv := time.Duration(t.IntervalSeconds) * time.Second
 	now := time.Now()
 	w.jobs = []*job{
-		{name: CollectorActivity, every: iv, timeout: min(iv, 15*time.Second), run: w.collectActivity},
-		{name: CollectorDatabase, every: max(iv, 15*time.Second), timeout: 15 * time.Second, run: w.collectDatabase},
-		{name: CollectorStatements, every: max(iv, m.stmtEvery), timeout: 30 * time.Second, run: w.collectStatements,
+		{name: CollectorActivity, every: iv, burst: 3 * time.Second, timeout: min(iv, 15*time.Second), run: w.collectActivity},
+		{name: CollectorDatabase, every: max(iv, 15*time.Second), burst: 5 * time.Second, timeout: 15 * time.Second, run: w.collectDatabase},
+		{name: CollectorStatements, every: max(iv, m.stmtEvery), burst: 5 * time.Second, timeout: 30 * time.Second, run: w.collectStatements,
 			enabled: func() (bool, string) {
 				if w.caps == nil {
 					return false, "waiting for capability detection"
@@ -86,8 +104,10 @@ func newWorker(m *Manager, t repository.Target, st *State) *worker {
 				}
 				return true, ""
 			}},
-		{name: CollectorReplication, every: max(iv, 30*time.Second), timeout: 15 * time.Second, run: w.collectReplication},
+		{name: CollectorReplication, every: max(iv, 30*time.Second), burst: 10 * time.Second, timeout: 15 * time.Second, run: w.collectReplication},
 		{name: CollectorTables, every: 5 * time.Minute, timeout: 60 * time.Second, run: w.collectTables},
+		{name: CollectorCatalog, every: 15 * time.Minute, timeout: 60 * time.Second, run: w.collectCatalog},
+		{name: CollectorTableActivity, every: max(iv, time.Minute), burst: 15 * time.Second, timeout: 15 * time.Second, run: w.collectTableActivity},
 		{name: CollectorLoad, every: max(m.loadEvery, time.Second), timeout: 5 * time.Second, run: w.collectLoad,
 			enabled: func() (bool, string) {
 				switch {
@@ -100,7 +120,7 @@ func newWorker(m *Manager, t repository.Target, st *State) *worker {
 				}
 				return true, ""
 			}},
-		{name: CollectorHost, every: max(iv, 15*time.Second), timeout: 10 * time.Second, run: w.collectHost,
+		{name: CollectorHost, every: max(iv, 15*time.Second), burst: 5 * time.Second, timeout: 10 * time.Second, run: w.collectHost,
 			enabled: func() (bool, string) {
 				if w.target.NodeExporterURL == nil || *w.target.NodeExporterURL == "" {
 					return false, "no node_exporter URL configured (host metrics are optional)"
@@ -112,7 +132,8 @@ func newWorker(m *Manager, t repository.Target, st *State) *worker {
 		// Stagger the first runs slightly so one target does not fire every
 		// collector at once.
 		j.next = now.Add(time.Duration(i) * 300 * time.Millisecond)
-		j.status = CollectorStatus{Name: j.name, IntervalSeconds: j.every.Seconds(), Enabled: true}
+		j.base, j.slow = j.every, 1
+		j.status = CollectorStatus{Name: j.name, IntervalSeconds: j.every.Seconds(), BaseIntervalSeconds: j.base.Seconds(), Enabled: true}
 	}
 	w.refreshEnabled()
 	return w
@@ -144,6 +165,19 @@ func (w *worker) run(ctx context.Context) {
 			case <-ctx.Done():
 				timer.Stop()
 				return
+			case <-w.state.wake:
+				// A burst started or a collector was asked for: bring them
+				// forward.
+				timer.Stop()
+				if _, ok := w.state.burst(time.Now()); ok {
+					w.applyBurst()
+				}
+				for name := range w.state.takeRunSoon() {
+					if j := w.jobByName(name); j != nil {
+						j.next = time.Now()
+					}
+				}
+				continue
 			case <-timer.C:
 			}
 		}
@@ -240,6 +274,7 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 	}
 	w.state.setCollector(j.status)
 
+	w.pace(j, dur)
 	next := start.Add(j.every)
 	if next.Before(time.Now()) {
 		next = time.Now().Add(j.every / 2)
@@ -263,6 +298,71 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 	}
 	w.saveStatus(ctx)
 	w.m.events.Publish("target.collected", map[string]any{"target_id": w.target.ID, "collector": j.name, "at": now, "ok": err == nil})
+}
+
+// maxSlow bounds how much a collector over its budget is slowed down.
+const maxSlow = 8
+
+// pace sets a job's next interval: faster during a burst, slower while its
+// runs take more than the time budget (a share of the interval), and back
+// to normal once they are well under it again. It protects the target from
+// LockLens itself: a collector that is expensive on this server runs less
+// often, and the status says so.
+func (w *worker) pace(j *job, took time.Duration) {
+	limit := time.Duration(float64(j.every) * w.m.budget)
+	switch {
+	case took > limit:
+		j.over, j.under = j.over+1, 0
+	case took < limit/2:
+		j.under, j.over = j.under+1, 0
+	default:
+		j.over, j.under = 0, 0
+	}
+	if j.over >= 3 && j.slow < maxSlow {
+		j.slow *= 2
+		j.over = 0
+		j.status.ThrottleReason = fmt.Sprintf("runs %d× less often: collections took %d ms, more than %.0f%% of the interval",
+			j.slow, took.Milliseconds(), w.m.budget*100)
+		w.m.log.Warn("collector slowed down", "target_id", w.target.ID, "collector", j.name, "factor", j.slow, "took_ms", took.Milliseconds())
+	}
+	if j.under >= 20 && j.slow > 1 {
+		j.slow /= 2
+		j.under = 0
+		if j.slow == 1 {
+			j.status.ThrottleReason = ""
+		}
+	}
+	j.every = w.interval(j, time.Now())
+	j.status.IntervalSeconds = j.every.Seconds()
+	_, burst := w.state.burst(time.Now())
+	j.status.Burst = burst && j.burst > 0
+	w.state.setCollector(j.status)
+}
+
+// interval is a job's interval in effect at now.
+func (w *worker) interval(j *job, now time.Time) time.Duration {
+	e := j.base
+	if _, ok := w.state.burst(now); ok && j.burst > 0 && j.burst < e {
+		e = j.burst
+	}
+	return e * time.Duration(max(j.slow, 1))
+}
+
+// applyBurst shortens the intervals of the collectors that run faster
+// during a burst and runs them soon.
+func (w *worker) applyBurst() {
+	now := time.Now()
+	for _, j := range w.jobs {
+		if j.burst <= 0 {
+			continue
+		}
+		j.every = w.interval(j, now)
+		if j.next.After(now.Add(j.every)) {
+			j.next = now.Add(j.every)
+		}
+		j.status.IntervalSeconds, j.status.Burst = j.every.Seconds(), true
+		w.state.setCollector(j.status)
+	}
 }
 
 // saveStatus writes the target status row.

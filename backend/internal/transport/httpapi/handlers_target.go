@@ -148,6 +148,8 @@ func (s *Server) targetMetrics(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	// Coarse steps and ranges beyond raw history are read from rollups.
+	step = s.d.Store.SeriesStep(from, step)
 	series, err := s.d.Store.QuerySeries(r.Context(), t.ID, metrics, from, to, step)
 	if errors.Is(err, repository.ErrSeriesLimit) {
 		writeError(w, r, http.StatusUnprocessableEntity, "series_limit", err.Error())
@@ -213,6 +215,7 @@ func (s *Server) targetTables(w http.ResponseWriter, r *http.Request) {
 	var h *observe.TableHealth
 	if v, ok := s.view(t.ID); ok {
 		h = v.Tables
+		resp["activity"] = v.TableActivity
 		if v.Activity != nil {
 			resp["vacuum_progress"] = v.Activity.Vacuum
 			resp["vacuum_progress_at"] = v.Activity.At
@@ -315,6 +318,12 @@ func (s *Server) targetGaps(w http.ResponseWriter, r *http.Request) {
 // each metric: the target's interval, or the slower interval of the
 // collector behind a metric. A shorter bucket would alternate between a
 // value and a gap.
+// statementsStep is the finest step of statement charts: the statements
+// collection interval.
+func (s *Server) statementsStep(t targets.View) time.Duration {
+	return s.collectionStep(t, []string{"statements.calls.per_s"})
+}
+
 func (s *Server) collectionStep(t targets.View, metrics []string) time.Duration {
 	collectors := t.Status.Collectors
 	if v, ok := s.view(t.ID); ok {
@@ -323,7 +332,10 @@ func (s *Server) collectionStep(t targets.View, metrics []string) time.Duration 
 	step := time.Duration(t.IntervalSeconds) * time.Second
 	for _, m := range metrics {
 		if status, ok := collectors[repository.MetricCollector(m)]; ok {
-			step = max(step, time.Duration(status.IntervalSeconds*float64(time.Second)))
+			// A burst shortens the interval for a few minutes only; the
+			// configured interval decides the step (a slowed-down collector
+			// the longer one).
+			step = max(step, time.Duration(max(status.IntervalSeconds, status.BaseIntervalSeconds)*float64(time.Second)))
 		}
 	}
 	return step

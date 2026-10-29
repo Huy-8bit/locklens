@@ -61,6 +61,8 @@ var hypertables = []hypertable{
 	{"load_buckets", 7 * 24 * time.Hour, "target_id"},
 	{"query_rollups", 7 * 24 * time.Hour, "target_id, identity_id"},
 	{"statement_coverage", 30 * 24 * time.Hour, "target_id"},
+	{"metric_rollups_1m", 7 * 24 * time.Hour, "target_id, metric, label"},
+	{"metric_rollups_1h", 30 * 24 * time.Hour, "target_id, metric, label"},
 }
 
 // timescaleLockKey serialises setup between LockLens instances sharing a store.

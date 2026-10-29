@@ -21,7 +21,9 @@ import (
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/notify"
 	"github.com/locklens/locklens/internal/domain/onboard"
+	"github.com/locklens/locklens/internal/domain/optimizer"
 	"github.com/locklens/locklens/internal/domain/retention"
+	"github.com/locklens/locklens/internal/domain/rollup"
 	"github.com/locklens/locklens/internal/domain/settings"
 	"github.com/locklens/locklens/internal/domain/targets"
 	"github.com/locklens/locklens/internal/domain/workspace"
@@ -52,6 +54,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 		return err
 	}
 
+	store.SetRawRetention(cfg.HistoryRetention)
 	metrics := obs.NewMetrics()
 	hub := httpapi.NewHub(100, func(n int) { metrics.SSEClients.Set(float64(n)) })
 	st, err := settings.Load(ctx, store, cfg.DemoMode)
@@ -60,7 +63,8 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	}
 	writer := collector.NewWriter(store, cfg.WriteQueue, metrics, log)
 	manager := collector.NewManager(store, box, writer, nil, hub, st, metrics, log,
-		collector.Config{MaxConcurrent: cfg.MaxConcurrent, Version: version, StatementsInterval: statementsInterval(cfg), LoadInterval: loadInterval(cfg)})
+		collector.Config{MaxConcurrent: cfg.MaxConcurrent, Version: version, StatementsInterval: statementsInterval(cfg), LoadInterval: loadInterval(cfg),
+			BurstDuration: burstDuration(cfg), BudgetPercent: cfg.CollectorBudgetPercent})
 	notifier := notify.New(store, box, log, cfg.PublicURL, version)
 	// Incident events go to the browsers (SSE) and to notifications.
 	recorder := incidents.NewRecorder(store, incidents.DefaultConfig(), st, metrics, fanout{hub, notifier}, log)
@@ -69,9 +73,11 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	}
 	baselines := baseline.NewService(store, func() baseline.Params { return insight.BaselineParams(st.Thresholds()) }, log)
 	recorder.SetBaselines(baselines)
+	recorder.SetBurster(manager)
 	manager.SetAnalyzer(recorder)
 	tsvc := targets.NewService(store, box, manager, version)
 	ws := workspace.New(store, box)
+	opt := optimizer.NewService(store, ws, hub, log)
 
 	if cfg.BootstrapTargets != "" {
 		if err := bootstrapTargets(ctx, tsvc, ws, store, cfg.BootstrapTargets, log); err != nil {
@@ -83,7 +89,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	handler := httpapi.New(httpapi.Deps{Workspace: ws, Store: store, Auth: auth.NewService(store, cfg.SessionIdle, cfg.CookieSecure), Targets: tsvc,
 		Onboard: onboard.New(store, box, tsvc, ws),
 		Manager: manager, Settings: st, Notify: notifier, Hub: hub, Metrics: metrics, Log: log, Tool: tool, TrustedProxies: cfg.TrustedProxies, TrustedProxyHosts: cfg.TrustedProxyHosts,
-		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode, Baselines: baselines, Insight: insight.NewService(store, cfg.LoadSampling)})
+		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode, Baselines: baselines, Insight: insight.NewService(store, cfg.LoadSampling), Optimizer: opt})
 
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 64 << 10}
@@ -93,14 +99,17 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	}
 
 	bg, cancelBG := context.WithCancel(context.WithoutCancel(ctx))
-	done := make(chan struct{}, 5)
+	done := make(chan struct{}, 7)
 	go func() { writer.Run(bg); done <- struct{}{} }()
 	go func() { notifier.Run(bg); done <- struct{}{} }()
 	go func() { manager.Run(bg); done <- struct{}{} }()
 	go func() { baselines.Run(bg, baselineRefresh(cfg)); done <- struct{}{} }()
+	go func() { rollup.Run(bg, store, time.Minute, cfg.HistoryRetention, log); done <- struct{}{} }()
+	go func() { opt.Run(bg, optimizerEvery(cfg)); done <- struct{}{} }()
 	go func() {
 		retention.Run(bg, store, repository.RetentionPolicy{History: cfg.HistoryRetention, Incidents: cfg.IncidentRetention,
-			Findings: cfg.FindingRetention, Rollups: cfg.BaselineRetention}, time.Hour, log)
+			Findings: cfg.FindingRetention, Rollups: cfg.BaselineRetention,
+			MetricMinute: cfg.MinuteRollupRetention, MetricHour: cfg.HourRollupRetention}, time.Hour, log)
 		done <- struct{}{}
 	}()
 
@@ -122,7 +131,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	defer cancel()
 	_ = srv.Shutdown(sctx)
 	cancelBG()
-	for range 5 {
+	for range 7 {
 		select {
 		case <-done:
 		case <-sctx.Done():
@@ -136,13 +145,14 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	return serveErr
 }
 
-// statementsInterval is 60 s in production; the lab samples pg_stat_statements
-// every 15 s so the shorter demo windows have enough collections.
+// statementsInterval is LOCKLENS_STATEMENTS_INTERVAL (15 s by default); the
+// lab never samples pg_stat_statements less often than every 15 s so the
+// shorter demo windows have enough collections.
 func statementsInterval(cfg config.Config) time.Duration {
 	if cfg.DemoMode {
-		return 15 * time.Second
+		return min(cfg.StatementsInterval, 15*time.Second)
 	}
-	return 60 * time.Second
+	return cfg.StatementsInterval
 }
 
 // baselineRefresh is how often rollups and baselines are brought up to date.
@@ -151,6 +161,24 @@ func baselineRefresh(cfg config.Config) time.Duration {
 		return time.Minute
 	}
 	return 5 * time.Minute
+}
+
+// burstDuration is how long a target is collected faster during a problem,
+// or 0 when adaptive sampling is off.
+func burstDuration(cfg config.Config) time.Duration {
+	if !cfg.AdaptiveSampling {
+		return 0
+	}
+	return cfg.BurstDuration
+}
+
+// optimizerEvery is how often recommendations are derived (the catalog is
+// collected every 15 minutes).
+func optimizerEvery(cfg config.Config) time.Duration {
+	if cfg.DemoMode {
+		return 2 * time.Minute
+	}
+	return 15 * time.Minute
 }
 
 // loadInterval is the active session sampling interval, or 0 when sampling

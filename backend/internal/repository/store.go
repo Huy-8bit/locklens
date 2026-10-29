@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -39,6 +40,9 @@ type Store struct {
 	red  *config.Redactor
 	// timescale is set once by SetupTimescale, before the store is shared.
 	timescale TimescaleStatus
+	// rawRetention is how long raw metric points are kept (see
+	// SetRawRetention); 0 means unknown.
+	rawRetention atomic.Int64
 }
 
 // Options configure the store pool.

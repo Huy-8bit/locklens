@@ -167,6 +167,22 @@ type TableHealth struct {
 	Warnings []string          `json:"warnings"`
 }
 
+// TableActivity is what one table did between two collections of
+// pg_stat_user_tables (rates per second).
+type TableActivity struct {
+	RelID           uint32  `json:"relid"`
+	Schema          string  `json:"schema"`
+	Name            string  `json:"name"`
+	SeqScansPerSec  float64 `json:"seq_scans_per_s"`
+	SeqRowsPerSec   float64 `json:"seq_rows_per_s"`
+	IdxScansPerSec  float64 `json:"idx_scans_per_s"`
+	IdxRowsPerSec   float64 `json:"idx_rows_per_s"`
+	WritesPerSec    float64 `json:"writes_per_s"`
+	DeadRows        int64   `json:"dead_rows"`
+	LiveRows        int64   `json:"live_rows"`
+	IntervalSeconds float64 `json:"interval_seconds"`
+}
+
 // VacuumProgress is one row of pg_stat_progress_vacuum.
 type VacuumProgress struct {
 	PID     int     `json:"pid"`

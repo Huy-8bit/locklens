@@ -3,21 +3,22 @@
 #
 #   docker build -t locklens-backend backend/
 
-# Go cross-compiles on the build machine's architecture (no emulation).
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+# The server embeds PostgreSQL's SQL parser (libpg_query, C code), so it is
+# built with cgo and linked statically against musl. cgo does not
+# cross-compile without a cross toolchain, so the build stage runs on the
+# target platform (emulated in multi-platform builds).
+FROM golang:1.26-alpine AS build
+RUN apk add --no-cache build-base
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
 ARG COMMIT=""
-ARG TARGETOS=linux
-ARG TARGETARCH
-RUN export GOOS=$TARGETOS GOARCH=$TARGETARCH CGO_ENABLED=0; \
-    go build -trimpath \
-      -ldflags "-s -w -X github.com/locklens/locklens/internal/lib/buildinfo.Version=${VERSION} -X github.com/locklens/locklens/internal/lib/buildinfo.Commit=${COMMIT}" \
+RUN CGO_ENABLED=1 go build -trimpath \
+      -ldflags "-s -w -linkmode external -extldflags -static -X github.com/locklens/locklens/internal/lib/buildinfo.Version=${VERSION} -X github.com/locklens/locklens/internal/lib/buildinfo.Commit=${COMMIT}" \
       -o /out/locklens ./cmd/locklens \
- && go build -trimpath -ldflags "-s -w" -o /out/locklens-lab ./cmd/locklens-lab
+ && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/locklens-lab ./cmd/locklens-lab
 
 FROM alpine:3.22
 RUN adduser -D -H -u 10001 locklens

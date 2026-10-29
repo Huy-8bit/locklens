@@ -6,6 +6,9 @@ Requirements:
 
 - Go 1.26 or later. With an older local Go and the default `GOTOOLCHAIN=auto`,
   the go command downloads the toolchain required by `backend/go.mod`.
+- A C compiler (gcc or clang) for cgo: the server embeds PostgreSQL's SQL
+  parser (libpg_query). Without one, build with `CGO_ENABLED=0`; the query
+  optimizer then makes catalog-based recommendations only.
 - Node.js 24.15+ (or 22.22.2+) with npm, for the web UI (CI uses Node.js 24).
 - Docker with Docker Compose v2 for the lab, integration tests, and E2E tests.
 - GNU or BSD `make`, Bash, Python 3, and curl for the development/test scripts.

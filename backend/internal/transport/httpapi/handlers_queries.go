@@ -145,11 +145,12 @@ func (s *Server) getQuery(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	step, err := metricStep(r, from, to, time.Minute)
+	step, err := metricStep(r, from, to, s.statementsStep(t))
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	step = s.d.Store.QueryStep(from, step)
 	buckets, err := s.d.Store.QueryBuckets(r.Context(), t.ID, qid, from, to, step)
 	if err != nil {
 		s.internal(w, r, err)
@@ -203,7 +204,7 @@ func (s *Server) queryCommands(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("include_monitoring") == "true" {
 		exclude = ""
 	}
-	step := stepFor(from, to, time.Minute)
+	step := stepFor(from, to, s.statementsStep(t))
 	totals, buckets, coverage, err := s.d.Store.CommandBreakdown(r.Context(), t.ID, from, to, step, exclude)
 	if err != nil {
 		s.internal(w, r, err)

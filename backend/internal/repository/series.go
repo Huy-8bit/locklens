@@ -53,6 +53,9 @@ func MetricCollector(metric string) string {
 	if strings.HasPrefix(metric, "db.") {
 		return "tables"
 	}
+	if strings.HasPrefix(metric, "table.") {
+		return "table_activity"
+	}
 	for _, p := range []string{"sessions.", "connections.", "blocking.", "transactions."} {
 		if strings.HasPrefix(metric, p) {
 			return "activity"
@@ -97,7 +100,8 @@ func (s *Store) QuerySeries(ctx context.Context, targetID int64, metrics []strin
 		case "time_weighted_mean":
 			expression = "CASE WHEN count(interval_seconds)=count(*) THEN sum(value * interval_seconds) / NULLIF(sum(interval_seconds),0) END"
 		}
-		rows, err := s.pool.Query(ctx, fmt.Sprintf(`
+		res := s.seriesSource(from, step, time.Now())
+		sql := fmt.Sprintf(`
 WITH buckets AS (
  SELECT label, date_bin($5::interval, ts - interval '1 microsecond', $3::timestamptz) AS bucket,
  CASE WHEN count(value)=count(*) THEN %s END AS value, count(*) AS samples, count(value) AS known, max(ts) AS last_sample
@@ -107,7 +111,17 @@ WITH buckets AS (
 SELECT label, bucket, value, samples, known, last_sample,
  EXISTS (SELECT 1 FROM collection_gaps g WHERE g.target_id=$1 AND g.collector=$6
  AND g.ended_at>bucket AND g.started_at<bucket+$5::interval) AS gap
-FROM buckets ORDER BY label, bucket LIMIT $7`, expression), targetID, m, from.UTC(), to.UTC(), step, collector, MaxSeriesPoints-total+1)
+FROM buckets ORDER BY label, bucket LIMIT $7`, expression)
+		args := []any{targetID, m, from.UTC(), to.UTC(), max(step, res), collector, MaxSeriesPoints - total + 1}
+		if res > 0 {
+			table := "metric_rollups_1m"
+			if res == HourRollup {
+				table = "metric_rollups_1h"
+			}
+			sql = rollupSeriesSQL(table, rollupExpression(agg))
+			args = append(args, res)
+		}
+		rows, err := s.pool.Query(ctx, sql, args...)
 		if err != nil {
 			return nil, s.red.Error(err)
 		}

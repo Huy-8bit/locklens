@@ -937,3 +937,199 @@ func TestQueryPerformanceIntelligence(t *testing.T) {
 	inst.do(t, "DELETE", fmt.Sprintf("/api/v1/targets/%d/plans/%d", tv.ID, a.Plan.ID), nil, 204, nil)
 	inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/plans/%d", tv.ID, a.Plan.ID), nil, 404, nil)
 }
+
+// TestQueryOptimizer derives recommendations from a real schema and workload,
+// records a decision, checks an index with HypoPG when available, and
+// detects the index once a person creates it.
+func TestQueryOptimizer(t *testing.T) {
+	ctx := context.Background()
+	inst := start(t, storeDSN(t), freePort(t))
+	conn, err := pgx.Connect(ctx, pgssDemoDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	for _, sql := range []string{
+		`DROP TABLE IF EXISTS opt_orders, opt_customers`,
+		`CREATE TABLE opt_customers (id int PRIMARY KEY, country text)`,
+		`INSERT INTO opt_customers SELECT g, 'c' || (g % 20) FROM generate_series(1, 2000) g`,
+		`CREATE TABLE opt_orders (id bigserial PRIMARY KEY, customer_id int REFERENCES opt_customers (id), region text, status text, total numeric)`,
+		`INSERT INTO opt_orders (customer_id, region, status, total) SELECT 1 + g % 2000, 'region-' || (g % 12), 'status-long-value-' || (g % 5), g FROM generate_series(1, 60000) g`,
+		`CREATE INDEX opt_orders_status_idx ON opt_orders (status)`,
+		`CREATE INDEX opt_orders_status_copy ON opt_orders (status)`,
+		`ANALYZE opt_orders, opt_customers`,
+	} {
+		if _, err := conn.Exec(ctx, sql); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	// A failed concurrent build leaves an invalid index behind.
+	if _, err := conn.Exec(ctx, `CREATE UNIQUE INDEX CONCURRENTLY opt_orders_region_uniq ON opt_orders (region)`); err == nil {
+		t.Fatal("the unique build on duplicate values should fail")
+	}
+	tv := inst.addTarget(t, "opt", pgssObserverDSN, nil)
+	waitFor(t, 60*time.Second, "pg_stat_statements detected", func() bool {
+		c := inst.target(t, tv.ID).Status.Capabilities
+		return c != nil && c.StatStatements
+	})
+	type rec struct {
+		ID         int64          `json:"id"`
+		Kind       string         `json:"kind"`
+		Key        string         `json:"key"`
+		Status     string         `json:"status"`
+		DDL        *string        `json:"ddl"`
+		AppliedHow *string        `json:"applied_how"`
+		Details    map[string]any `json:"details"`
+		Confidence struct {
+			Level string `json:"level"`
+		} `json:"confidence"`
+	}
+	var list struct {
+		Recommendations []rec `json:"recommendations"`
+	}
+	find := func(kind, key string) *rec {
+		for i, r := range list.Recommendations {
+			if r.Kind == kind && (key == "" || r.Key == key) {
+				return &list.Recommendations[i]
+			}
+		}
+		return nil
+	}
+	missingKey := "public.opt_orders(customer_id,region)"
+	refresh := fmt.Sprintf("/api/v1/targets/%d/optimizer/refresh", tv.ID)
+	waitFor(t, 150*time.Second, "recommendations derived from the workload", func() bool {
+		for i := 0; i < 60; i++ {
+			var n int
+			_ = conn.QueryRow(ctx, "SELECT count(*) FROM opt_orders WHERE customer_id = $1 AND region = $2", 1+i%2000, fmt.Sprintf("region-%d", i%12)).Scan(&n)
+		}
+		resp, err := inst.client.Do(func() *http.Request {
+			req, _ := http.NewRequest("POST", inst.base+refresh, nil)
+			req.Header.Set("X-CSRF-Token", inst.csrf)
+			return req
+		}())
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/recommendations", tv.ID), nil, 200, &list)
+		return find("missing_index", missingKey) != nil
+	})
+	if fk := find("fk_without_index", "public.opt_orders:opt_orders_customer_id_fkey"); fk == nil || fk.DDL == nil || *fk.DDL != "CREATE INDEX CONCURRENTLY ON public.opt_orders (customer_id);" {
+		t.Errorf("fk recommendation: %+v", fk)
+	}
+	if d := find("duplicate_index", "public.opt_orders_status_copy"); d == nil {
+		t.Errorf("duplicate index not found: %+v", list.Recommendations)
+	}
+	if v := find("invalid_index", "public.opt_orders_region_uniq"); v == nil {
+		t.Errorf("invalid index not found: %+v", list.Recommendations)
+	}
+	m := find("missing_index", missingKey)
+	if stmts, _ := m.Details["statements"].([]any); len(stmts) == 0 {
+		t.Fatalf("missing index without statements: %+v", m)
+	}
+
+	// A decision is metadata only.
+	var decided rec
+	inst.do(t, "POST", fmt.Sprintf("/api/v1/targets/%d/recommendations/%d/decision", tv.ID, m.ID), map[string]any{"status": "accepted", "note": "tonight"}, 200, &decided)
+	if decided.Status != "accepted" {
+		t.Fatalf("decision: %+v", decided)
+	}
+	inst.do(t, "POST", fmt.Sprintf("/api/v1/targets/%d/recommendations/%d/decision", tv.ID, m.ID), map[string]any{"status": "applied"}, 400, nil)
+
+	// What-if with a hypothetical index through the workspace.
+	inst.do(t, "PUT", fmt.Sprintf("/api/v1/targets/%d/workspace/policy", tv.ID), map[string]any{"dsn": pgssDemoDSN, "metadata_enabled": true,
+		"sql_enabled": true, "hypopg_enabled": true}, 200, nil)
+	whatif := fmt.Sprintf("/api/v1/targets/%d/recommendations/%d/whatif", tv.ID, m.ID)
+	var major int
+	fmt.Sscan(os.Getenv("LOCKLENS_IT_SERVER_VERSION"), &major)
+	switch {
+	case os.Getenv("LOCKLENS_IT_HYPOPG") != "1":
+		body := inst.do(t, "POST", whatif, map[string]any{"request_id": "whatif-request-1"}, 400, nil)
+		if !strings.Contains(string(body), "hypopg") {
+			t.Errorf("without hypopg: %s", body)
+		}
+		t.Log("hypopg is not installed in this run; the what-if success path was not exercised")
+	default:
+		var res struct {
+			WhatIf struct {
+				Summary    string `json:"summary"`
+				Statements []struct {
+					CostBefore float64 `json:"cost_before"`
+					CostAfter  float64 `json:"cost_after"`
+					UsesIndex  bool    `json:"uses_index"`
+					Error      string  `json:"error"`
+				} `json:"statements"`
+			} `json:"whatif"`
+			Recommendation rec `json:"recommendation"`
+		}
+		inst.do(t, "POST", whatif, map[string]any{"request_id": "whatif-request-1"}, 200, &res)
+		if len(res.WhatIf.Statements) == 0 {
+			t.Fatalf("whatif: %+v", res)
+		}
+		s := res.WhatIf.Statements[0]
+		if major >= 16 {
+			if s.Error != "" || !s.UsesIndex || s.CostAfter >= s.CostBefore || res.Recommendation.Confidence.Level != "high" {
+				t.Fatalf("whatif on %d: %+v %+v", major, res.WhatIf, res.Recommendation.Confidence)
+			}
+		} else if s.Error == "" {
+			t.Fatalf("generic plans need PostgreSQL 16: %+v", res.WhatIf)
+		}
+		// Hypothetical indexes never reach the catalog.
+		var n int
+		if err := conn.QueryRow(ctx, "SELECT count(*) FROM pg_indexes WHERE tablename = 'opt_orders' AND indexdef LIKE '%customer_id%'").Scan(&n); err != nil || n != 0 {
+			t.Fatalf("hypothetical index leaked: %d %v", n, err)
+		}
+	}
+
+	// The statement page shows the parser's view and the recommendation.
+	var ins struct {
+		Analysis struct {
+			Result struct {
+				Predicates []struct {
+					Column string `json:"column"`
+				} `json:"predicates"`
+			} `json:"result"`
+		} `json:"analysis"`
+		Recommendations []rec `json:"recommendations"`
+	}
+	stmt := m.Details["statements"].([]any)[0].(map[string]any)
+	inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/queries/%.0f/insight?range=15m", tv.ID, stmt["identity_id"].(float64)), nil, 200, &ins)
+	if len(ins.Analysis.Result.Predicates) != 2 || len(ins.Recommendations) == 0 {
+		t.Errorf("statement analysis: %+v", ins)
+	}
+
+	// A person creates the index: the recommendation becomes applied.
+	if _, err := conn.Exec(ctx, `CREATE INDEX opt_orders_customer_region ON opt_orders (customer_id, region)`); err != nil {
+		t.Fatal(err)
+	}
+	var last struct {
+		Fresh bool `json:"fresh_catalog"`
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		inst.do(t, "POST", refresh, nil, 200, &last)
+		inst.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/recommendations?status=all", tv.ID), nil, 200, &list)
+		r := find("missing_index", missingKey)
+		if r != nil && r.Status == "applied" && r.AppliedHow != nil && strings.Contains(*r.AppliedHow, "opt_orders_customer_region") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("index not detected: fresh catalog %v, recommendation %+v", last.Fresh, r)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if fk := find("fk_without_index", ""); fk == nil || fk.Status != "applied" {
+		t.Errorf("the new index also serves the foreign key: %+v", fk)
+	}
+	var fleet struct {
+		Targets []struct {
+			CatalogAt *time.Time `json:"catalog_at"`
+			HypoPG    bool       `json:"hypopg_enabled"`
+		} `json:"targets"`
+		Parser bool `json:"parser_available"`
+	}
+	inst.do(t, "GET", "/api/v1/optimizer?status=all", nil, 200, &fleet)
+	if len(fleet.Targets) != 1 || fleet.Targets[0].CatalogAt == nil || !fleet.Targets[0].HypoPG || !fleet.Parser {
+		t.Errorf("fleet: %+v", fleet)
+	}
+}

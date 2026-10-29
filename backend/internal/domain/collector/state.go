@@ -19,11 +19,18 @@ type CollectorStatus struct {
 	LastError           *string    `json:"last_error"`
 	LastDurationMS      *int64     `json:"last_duration_ms"`
 	ConsecutiveFailures int        `json:"consecutive_failures"`
+	// BaseIntervalSeconds is the configured interval; IntervalSeconds is the
+	// one in effect (shorter during a burst, longer when slowed down).
+	BaseIntervalSeconds float64 `json:"base_interval_seconds"`
+	// Burst is true while the target is collected faster (adaptive sampling).
+	Burst bool `json:"burst,omitempty"`
+	// ThrottleReason says why the collector runs less often than configured.
+	ThrottleReason string `json:"throttle_reason,omitempty"`
 }
 
 // maxStatementHistory bounds the in-memory statements history used by the
-// workload rules (about two hours at the default 60 s interval).
-const maxStatementHistory = 120
+// workload rules (two hours at the default 15 s interval).
+const maxStatementHistory = 480
 
 // maxPointHistory bounds per-metric in-memory history used by rules.
 const maxPointHistory = 360
@@ -37,25 +44,91 @@ type TimedValue struct {
 // State is the in-memory view of one target, updated by its worker and read
 // by the API and the analyzer. Access through Snapshot.
 type State struct {
-	mu           sync.RWMutex
-	caps         *observe.Capabilities
-	activity     *observe.Activity
-	report       *report.Report
-	replication  *observe.Replication
-	tables       *observe.TableHealth
-	host         *observe.HostMetrics
-	hostError    *string
-	statements   []observe.StatementsCollection
-	load         []observe.LoadBucket
-	points       map[string][]TimedValue
-	collectors   map[string]CollectorStatus
-	connected    bool
-	connectError *string
-	connectAt    *time.Time
+	mu          sync.RWMutex
+	caps        *observe.Capabilities
+	activity    *observe.Activity
+	report      *report.Report
+	replication *observe.Replication
+	tables      *observe.TableHealth
+	// tableActivity are the busiest tables of the last minute.
+	tableActivity []observe.TableActivity
+	host          *observe.HostMetrics
+	hostError     *string
+	statements    []observe.StatementsCollection
+	load          []observe.LoadBucket
+	points        map[string][]TimedValue
+	collectors    map[string]CollectorStatus
+	connected     bool
+	connectError  *string
+	connectAt     *time.Time
+
+	burstUntil  time.Time
+	burstReason string
+	// runSoon are collectors asked to run now (Manager.RunSoon).
+	runSoon map[string]bool
+	wake    chan struct{}
+}
+
+// requestRun asks the worker to run a collector as soon as possible.
+func (s *State) requestRun(name string) {
+	s.mu.Lock()
+	if s.runSoon == nil {
+		s.runSoon = map[string]bool{}
+	}
+	s.runSoon[name] = true
+	wake := s.wake
+	s.mu.Unlock()
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+// takeRunSoon returns and clears the collectors asked to run now.
+func (s *State) takeRunSoon() map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.runSoon
+	s.runSoon = nil
+	return r
+}
+
+// Burst is a period of faster collection.
+type Burst struct {
+	Until  time.Time `json:"until"`
+	Reason string    `json:"reason"`
+}
+
+// setBurst starts or extends faster collection until a time and wakes the
+// worker so the shorter intervals apply at once.
+func (s *State) setBurst(until time.Time, reason string) {
+	s.mu.Lock()
+	started := !s.burstUntil.After(time.Now())
+	if until.After(s.burstUntil) {
+		s.burstUntil, s.burstReason = until, reason
+	}
+	wake := s.wake
+	s.mu.Unlock()
+	if started && wake != nil {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// burst returns the current burst, if any.
+func (s *State) burst(now time.Time) (Burst, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !now.Before(s.burstUntil) {
+		return Burst{}, false
+	}
+	return Burst{Until: s.burstUntil, Reason: s.burstReason}, true
 }
 
 func newState() *State {
-	return &State{points: map[string][]TimedValue{}, collectors: map[string]CollectorStatus{}}
+	return &State{points: map[string][]TimedValue{}, collectors: map[string]CollectorStatus{}, wake: make(chan struct{}, 1)}
 }
 
 // View is an immutable copy of a target's state. Slices and maps must not
@@ -66,9 +139,12 @@ type View struct {
 	Report       *report.Report
 	Replication  *observe.Replication
 	Tables       *observe.TableHealth
-	Host         *observe.HostMetrics
-	HostError    *string
-	Statements   []observe.StatementsCollection
+	// TableActivity are the busiest tables between the last two table
+	// activity collections.
+	TableActivity []observe.TableActivity
+	Host          *observe.HostMetrics
+	HostError     *string
+	Statements    []observe.StatementsCollection
 	// Load holds the last finished active session sampling buckets.
 	Load         []observe.LoadBucket
 	Points       map[string][]TimedValue
@@ -76,6 +152,8 @@ type View struct {
 	Connected    bool
 	ConnectError *string
 	ConnectAt    *time.Time
+	// Burst is set while the target is collected faster.
+	Burst *Burst
 }
 
 // Snapshot returns a consistent copy.
@@ -92,9 +170,18 @@ func (s *State) Snapshot() View {
 	}
 	return View{
 		Capabilities: s.caps, Activity: s.activity, Report: s.report, Replication: s.replication,
-		Tables: s.tables, Host: s.host, HostError: s.hostError, Statements: s.statements, Load: s.load,
+		Tables: s.tables, TableActivity: s.tableActivity, Host: s.host, HostError: s.hostError, Statements: s.statements, Load: s.load,
 		Points: pts, Collectors: colls, Connected: s.connected, ConnectError: s.connectError, ConnectAt: s.connectAt,
+		Burst: s.burstView(),
 	}
+}
+
+// burstView is the current burst; the caller holds s.mu.
+func (s *State) burstView() *Burst {
+	if !time.Now().Before(s.burstUntil) {
+		return nil
+	}
+	return &Burst{Until: s.burstUntil, Reason: s.burstReason}
 }
 
 // Latest returns the most recent value of a metric.

@@ -517,11 +517,11 @@ func TestTimescaleHypertablesCompressionAndRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !st.Enabled || !st.Compression || st.License != "timescale" || len(st.Hypertables) != 11 {
+	if !st.Enabled || !st.Compression || st.License != "timescale" || len(st.Hypertables) != 13 {
 		t.Fatalf("status = %+v", st)
 	}
 	// Idempotent: a restart changes nothing.
-	if st2, err := s.SetupTimescale(ctx, repository.TimescaleAuto, time.Hour); err != nil || len(st2.Hypertables) != 11 {
+	if st2, err := s.SetupTimescale(ctx, repository.TimescaleAuto, time.Hour); err != nil || len(st2.Hypertables) != 13 {
 		t.Fatalf("second setup: %+v %v", st2, err)
 	}
 	var n int
@@ -535,7 +535,18 @@ func TestTimescaleHypertablesCompressionAndRetention(t *testing.T) {
 
 	// Compress the old chunks now (the policy would do it in the background),
 	// then write into one of them again and read it back.
-	if _, err := s.Pool().Exec(ctx, "SELECT compress_chunk(c, if_not_compressed => true) FROM show_chunks('metric_points', older_than => now() - interval '2 days') c"); err != nil {
+	// The compression policy job may compress a chunk at the same moment;
+	// that chunk is then already compressed, which is fine (duplicate_object).
+	if _, err := s.Pool().Exec(ctx, `DO $$
+DECLARE c regclass;
+BEGIN
+  FOR c IN SELECT show_chunks('metric_points', older_than => now() - interval '2 days') LOOP
+    BEGIN
+      PERFORM compress_chunk(c, if_not_compressed => true);
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END;
+  END LOOP;
+END $$`); err != nil {
 		t.Fatal(err)
 	}
 	old := now.Add(-100 * time.Hour)
@@ -695,5 +706,93 @@ func TestRollupsBaselinesFindingsAndPlans(t *testing.T) {
 	}
 	if err := s.DeletePlan(ctx, tg.ID, p.ID); err != repository.ErrNotFound {
 		t.Fatalf("second delete: %v", err)
+	}
+}
+
+// TestMetricRollupsMatchRawPoints checks that series read from rollups (fully
+// rolled up, partly rolled up, and not at all) equal those computed from raw
+// points, including unknown samples.
+func TestMetricRollupsMatchRawPoints(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+	tg := target(t, s, "mr")
+	base := time.Now().UTC().Truncate(time.Hour).Add(-3 * time.Hour)
+	iv := 10.0
+	for i := 1; i <= 2*360; i++ { // two hours, every 10 s
+		at := base.Add(time.Duration(i) * 10 * time.Second)
+		pts := []observe.Point{
+			{Metric: "sessions.active", Value: observe.F(float64(i % 7))},
+			{Metric: "xact.commit.per_s", IntervalSeconds: &iv, Value: observe.F(float64(i%11) * 1.5)},
+			{Metric: "deadlocks.delta", Value: observe.F(float64(i % 2))},
+			{Metric: "db.size_bytes", Label: "app", Value: observe.F(float64(1000 + i))},
+		}
+		if i == 400 { // one unknown sample: its buckets are unknown
+			pts[0].Value = nil
+		}
+		if err := s.InsertPoints(ctx, tg.ID, at, pts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names := []string{"sessions.active", "xact.commit.per_s", "deadlocks.delta", "db.size_bytes"}
+	from, to := base, base.Add(2*time.Hour)
+	read := func() []repository.Series {
+		t.Helper()
+		out, err := s.QuerySeries(ctx, tg.ID, names, from, to, 15*time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	rawSeries := read() // no rollups yet: computed from raw points
+	if len(rawSeries) != 4 || len(rawSeries[0].Points) != 8 {
+		t.Fatalf("raw series: %+v", rawSeries)
+	}
+	same := func(what string, got []repository.Series) {
+		t.Helper()
+		for i := range rawSeries {
+			if len(got[i].Points) != len(rawSeries[i].Points) {
+				t.Fatalf("%s %s: %d points, want %d", what, names[i], len(got[i].Points), len(rawSeries[i].Points))
+			}
+			for j, p := range got[i].Points {
+				w := rawSeries[i].Points[j]
+				if !p.T.Equal(w.T) || p.Samples != w.Samples || p.Known != w.Known || (p.V == nil) != (w.V == nil) ||
+					(p.V != nil && math.Abs(*p.V-*w.V) > 1e-9) {
+					t.Fatalf("%s %s bucket %d: %+v, want %+v", what, names[i], j, p, w)
+				}
+			}
+		}
+	}
+	// Partly rolled up: rollups for the first hour, raw points after.
+	if err := s.RollupMetrics(ctx, tg.ID, base, base.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	same("partial", read())
+	if err := s.RollupMetrics(ctx, tg.ID, base, base.Add(3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	same("full", read())
+	// The bucket with the unknown sample stays unknown; others are known.
+	unknown := 0
+	for _, p := range rawSeries[0].Points {
+		if p.V == nil {
+			unknown++
+		}
+	}
+	if unknown != 1 {
+		t.Fatalf("unknown buckets = %d", unknown)
+	}
+	// Hourly steps read the hourly rollups.
+	hourly, err := s.QuerySeries(ctx, tg.ID, []string{"deadlocks.delta"}, from, to, 3*time.Hour)
+	if err != nil || len(hourly[0].Points) != 1 || *hourly[0].Points[0].V != 360 {
+		t.Fatalf("hourly: %+v %v", hourly, err)
+	}
+	// Retention removes old minute rollups but keeps hourly ones longer.
+	if _, err := s.ApplyRetention(ctx, repository.RetentionPolicy{History: time.Hour, Incidents: 24 * time.Hour, Findings: time.Hour,
+		Rollups: time.Hour, MetricMinute: time.Hour, MetricHour: 30 * 24 * time.Hour}, time.Now().Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	hourly, err = s.QuerySeries(ctx, tg.ID, []string{"deadlocks.delta"}, from, to, 3*time.Hour)
+	if err != nil || len(hourly[0].Points) != 1 {
+		t.Fatalf("hourly after minute retention: %+v %v", hourly, err)
 	}
 }

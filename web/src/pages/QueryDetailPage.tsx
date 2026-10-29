@@ -4,6 +4,7 @@ import { ArrowLeft } from 'lucide-react'
 import { useQueryDetail, useQueryInsight } from '../api/hooks'
 import { slot } from '../components/MetricCard'
 import { PerformanceAnalysis, PlansCard } from '../components/QueryInsight'
+import { StatementOptimization } from '../components/RecommendationParts'
 import { PageHeader, useNumParam } from '../components/Shell'
 import { CopyButton, formatSql, SqlText } from '../components/SqlText'
 import { TimeChart } from '../components/TimeChart'
@@ -100,6 +101,11 @@ export default function QueryDetailPage() {
               <div className="mt-3">
                 {insight.error ? <ErrorBox error={insight.error} title="Could not load the performance analysis" /> : insight.data ? <PerformanceAnalysis insight={insight.data} /> : <Spinner label="Loading the performance analysis" />}
               </div>
+              {insight.data && (
+                <div className="mt-3">
+                  <StatementOptimization insight={insight.data} />
+                </div>
+              )}
               <div className="mt-3">
                 <PlansCard targetId={id} qid={qid} serverMajor={it.server_major} hasText={d.query_text_enabled} />
               </div>

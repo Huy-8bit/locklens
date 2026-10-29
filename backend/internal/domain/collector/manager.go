@@ -43,6 +43,12 @@ type Config struct {
 	// LoadInterval is the active session sampling interval; 0 turns
 	// sampling off.
 	LoadInterval time.Duration
+	// BurstDuration is how long a target is collected faster after Burst;
+	// 0 turns adaptive sampling off.
+	BurstDuration time.Duration
+	// BudgetPercent is the share of its interval a collector may spend
+	// before it is slowed down (default 10).
+	BudgetPercent int
 }
 
 // Manager owns all target workers.
@@ -59,6 +65,8 @@ type Manager struct {
 	syncEvery time.Duration
 	stmtEvery time.Duration
 	loadEvery time.Duration
+	burstDur  time.Duration
+	budget    float64
 
 	sem       chan struct{}
 	slotsBusy atomic.Int64
@@ -85,16 +93,42 @@ func NewManager(store *repository.Store, box *secret.Box, writer *Writer, analyz
 		cfg.SyncInterval = 15 * time.Second
 	}
 	if cfg.StatementsInterval <= 0 {
-		cfg.StatementsInterval = 60 * time.Second
+		cfg.StatementsInterval = 15 * time.Second
+	}
+	if cfg.BudgetPercent <= 0 {
+		cfg.BudgetPercent = 10
 	}
 	return &Manager{store: store, box: box, writer: writer, analyzer: analyzer, events: events, settings: settings,
 		metrics: metrics, log: log, version: cfg.Version, syncEvery: cfg.SyncInterval, stmtEvery: cfg.StatementsInterval, loadEvery: cfg.LoadInterval,
+		burstDur: cfg.BurstDuration, budget: float64(cfg.BudgetPercent) / 100,
 		sem: make(chan struct{}, cfg.MaxConcurrent), reload: make(chan struct{}, 1),
 		workers: map[int64]*running{}, states: map[int64]*State{}}
 }
 
 // SetAnalyzer sets the analyzer before Run.
 func (m *Manager) SetAnalyzer(a Analyzer) { m.analyzer = a }
+
+// Burst collects a target faster for the configured burst duration (from
+// now), for example while it has an open incident. Calling it again extends
+// the burst. It does nothing when adaptive sampling is off.
+func (m *Manager) Burst(targetID int64, reason string) {
+	if m.burstDur <= 0 {
+		return
+	}
+	if s, ok := m.State(targetID); ok {
+		s.setBurst(time.Now().Add(m.burstDur), reason)
+	}
+}
+
+// RunSoon asks a target's worker to run a collector now instead of at its
+// next turn; false when the target has no worker.
+func (m *Manager) RunSoon(targetID int64, collector string) bool {
+	s, ok := m.State(targetID)
+	if ok {
+		s.requestRun(collector)
+	}
+	return ok
+}
 
 // Reload asks the manager to re-read targets now (after a change via the API).
 func (m *Manager) Reload() {

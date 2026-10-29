@@ -42,10 +42,11 @@ and keep the evidence when something goes wrong.
 
 | | |
 | --- | --- |
-| **Monitor** | Fleet overview with environments (production, staging, …) · per-instance dashboards · sessions, transactions, cache, WAL, temp files, vacuum · replication topology with replay lag · host metrics from node_exporter |
+| **Monitor** | Fleet overview with environments (production, staging, …) · per-instance dashboards · sessions, transactions, cache, WAL, temp files, vacuum · hot tables · replication topology with replay lag · host metrics from node_exporter · statements every 15 s, faster collection while there is a problem, one-minute and hourly rollups for long ranges |
 | **Queries** | Every statement from `pg_stat_statements`, classified as SELECT, INSERT, UPDATE, DELETE, DDL, … · rate, time, and rows per type over time · top queries across instances · comparison with the previous period |
 | **Performance** | Each statement compared with its own baseline (median and MAD, by hour of day) · slower per call, more calls, more load, more I/O, different rows per call, possible N+1 · queries slow *while they run* · explainable impact score and confidence · evidence correlated into ranked hypotheses (never presented as confirmed causes) · execution plan history and comparison, without ever running `EXPLAIN ANALYZE` |
 | **Investigate** | Database load from active session sampling: average active sessions by wait class, wait event, statement, user, or application · blocking trees from `pg_blocking_pids()` with lock modes and wait times · idle-in-transaction blockers · 18 evidence-based rules · incident recorder with the statement involved, the sessions and load when it started, and a timeline |
+| **Optimize** | Recommendations from each database's schema and workload, analysed with PostgreSQL's own parser: missing and redundant indexes, foreign keys without an index, invalid indexes, stale statistics, row misestimates, spills to disk, statement shapes that perform badly · ranked by benefit with evidence and the SQL to apply (LockLens never changes the database) · optional what-if checks with hypothetical indexes (HypoPG) · applied changes detected and measured before and after |
 | **Explore** *(opt-in)* | Browse schemas, tables, views, functions, types, indexes, and triggers · preview rows · read-only SQL editor with an execution-plan graph — never with an administrative role |
 | **Team** | Users with roles: administrators manage everything, operators also preview rows and run read-only SQL, viewers only read · add an instance by pasting one connection string |
 | **Operate** | Incident notifications to Slack, webhooks, and email, with reminders and silences · TimescaleDB store: time-partitioned, compressed history (plain PostgreSQL works too) · incident export to JSON and standalone HTML · Prometheus `/metrics` · health and readiness probes · retention · bounded buffering when the store is down |
@@ -70,6 +71,16 @@ and keep the evidence when something goes wrong.
     <td align="center">Queries by type</td>
     <td align="center">Explorer</td>
     <td align="center">SQL editor and plan</td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="docs/images/optimize.png" alt="Optimize: recommendations ranked by benefit"></td>
+    <td width="33%"><img src="docs/images/optimize-detail.png" alt="A recommendation with its evidence, the SQL to apply, and the what-if check"></td>
+    <td width="33%"><img src="docs/images/hot-tables.png" alt="Hot tables: the busiest tables of the last minute"></td>
+  </tr>
+  <tr>
+    <td align="center">Optimize</td>
+    <td align="center">A recommendation and its SQL</td>
+    <td align="center">Hot tables</td>
   </tr>
 </table>
 
@@ -158,7 +169,7 @@ only those. Standbys reuse the roles of their primary.
 
 ### Build from source
 
-Requires Go 1.26+ and Node.js 24.15+ (or 22.22.2+).
+Requires Go 1.26+, a C compiler (cgo, for PostgreSQL's SQL parser; `CGO_ENABLED=0` builds without statement analysis), and Node.js 24.15+ (or 22.22.2+).
 
 ```sh
 make build                       # web/dist (the UI) and bin/locklens (API server and CLI)
@@ -230,7 +241,7 @@ Details in [security](docs/security.md). To report a vulnerability, see
 | | |
 | --- | --- |
 | **Getting started** | [Quickstart](docs/quickstart.md) · [Configuration](docs/configuration.md) · [UI guide](docs/ui-design.md) · [Troubleshooting](docs/troubleshooting.md) |
-| **Concepts** | [Architecture](docs/architecture.md) · [Collectors](docs/collectors.md) · [PostgreSQL observation](docs/postgresql-observation.md) · [Blocking graph](docs/blocking-graph.md) · [Query analysis](docs/query-analysis.md) · [Query performance intelligence](docs/query-intelligence.md) · [Rules](docs/rules.md) · [Incidents](docs/incidents.md) · [Notifications](docs/notifications.md) · [Explorer and SQL](docs/investigation-workspace.md) |
+| **Concepts** | [Architecture](docs/architecture.md) · [Collectors](docs/collectors.md) · [PostgreSQL observation](docs/postgresql-observation.md) · [Blocking graph](docs/blocking-graph.md) · [Query analysis](docs/query-analysis.md) · [Query performance intelligence](docs/query-intelligence.md) · [Query optimizer](docs/query-optimizer.md) · [Rules](docs/rules.md) · [Incidents](docs/incidents.md) · [Notifications](docs/notifications.md) · [Explorer and SQL](docs/investigation-workspace.md) |
 | **Operations** | [Deployment](docs/deployment.md) · [Storage and retention](docs/storage-and-retention.md) · [Security](docs/security.md) · [Limitations](docs/limitations.md) |
 | **Reference** | [HTTP API](docs/api.md) · [CLI](docs/cli-reference.md) · [Snapshot format](docs/snapshot-format.md) |
 | **Development** | [Development](docs/development.md) · [Testing](docs/testing.md) · [Test report](docs/test-report.md) |

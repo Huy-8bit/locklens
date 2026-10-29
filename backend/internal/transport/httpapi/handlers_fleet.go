@@ -101,7 +101,7 @@ func (s *Server) fleetMetrics(w http.ResponseWriter, r *http.Request) {
 	for _, t := range ts {
 		minStep = max(minStep, s.collectionStep(t, metrics))
 	}
-	step := stepFor(from, to, minStep)
+	step := s.d.Store.SeriesStep(from, stepFor(from, to, minStep))
 	type acc struct {
 		sum, max float64
 		n        int

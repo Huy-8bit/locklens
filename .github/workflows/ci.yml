@@ -41,6 +41,12 @@ jobs:
         run: go -C backend test -timeout 5m ./...
       - name: Unit tests with race detector
         run: go -C backend test -race -timeout 5m ./...
+      # The server embeds PostgreSQL's parser through cgo; a build without cgo
+      # must still compile and report the parser as unavailable.
+      - name: Build and parser tests without cgo
+        run: |
+          CGO_ENABLED=0 go -C backend build ./...
+          CGO_ENABLED=0 go -C backend test ./internal/lib/sqlparse ./internal/domain/optimizer
 
   web:
     name: Frontend typecheck, lint, unit tests, build

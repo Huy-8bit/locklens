@@ -42,6 +42,9 @@ import type {
   PlanDetailResponse,
   PlanRow,
   QueryInsightResponse,
+  OptimizerResponse,
+  Recommendation,
+  WhatIfResult,
 } from './types'
 import { liveState, rangeQuery, type Range } from '../lib/scope'
 
@@ -247,8 +250,8 @@ export function usePolicy(id: number) {
 export function useSavePolicy(id: number) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (p: { metadata_enabled: boolean; data_enabled: boolean; sql_enabled?: boolean; dsn?: string }) =>
-      api<WorkspacePolicy>(`/api/v1/targets/${id}/workspace/policy`, { method: 'PUT', json: { sql_enabled: false, ...p, history_enabled: false } }),
+    mutationFn: (p: { metadata_enabled: boolean; data_enabled: boolean; sql_enabled?: boolean; hypopg_enabled?: boolean; dsn?: string }) =>
+      api<WorkspacePolicy>(`/api/v1/targets/${id}/workspace/policy`, { method: 'PUT', json: { sql_enabled: false, hypopg_enabled: false, ...p, history_enabled: false } }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['t', id] }),
   })
 }
@@ -565,5 +568,49 @@ export function useDeletePlan(id: number) {
   return useMutation({
     mutationFn: (pid: number) => api<null>(`/api/v1/targets/${id}/plans/${pid}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['t', id] }),
+  })
+}
+
+export function useOptimizer(env: string, status: string, kind: string) {
+  return useQuery({
+    queryKey: ['optimizer', env, status, kind],
+    queryFn: () => api<OptimizerResponse>(`/api/v1/optimizer${qs({ environment: env, status, kind })}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: every(60_000),
+  })
+}
+
+export function useDecideRecommendation(targetId: number) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, status, note }: { id: number; status: 'accepted' | 'dismissed' | 'open'; note: string }) =>
+      api<Recommendation>(`/api/v1/targets/${targetId}/recommendations/${id}/decision`, { method: 'POST', json: { status, note } }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['optimizer'] })
+      void qc.invalidateQueries({ queryKey: ['t', targetId] })
+    },
+  })
+}
+
+export function useWhatIf(targetId: number) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) =>
+      api<{ whatif: WhatIfResult; recommendation: Recommendation }>(`/api/v1/targets/${targetId}/recommendations/${id}/whatif`, {
+        method: 'POST',
+        json: { request_id: crypto.randomUUID() },
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['optimizer'] })
+      void qc.invalidateQueries({ queryKey: ['t', targetId] })
+    },
+  })
+}
+
+export function useRefreshOptimizer(targetId: number) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api<{ derived: number }>(`/api/v1/targets/${targetId}/optimizer/refresh`, { method: 'POST' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['optimizer'] }),
   })
 }

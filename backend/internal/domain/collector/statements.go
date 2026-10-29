@@ -35,29 +35,49 @@ type statementsState struct {
 	entries    map[observe.QueryKey]statementCounters
 }
 
-// readStatements reads pg_stat_statements. The normalised text is always read
-// to classify each statement's command (select, insert, ...); it is kept only
-// when the target collects query text, otherwise it is dropped here and never
-// stored.
-func readStatements(ctx context.Context, tx pgx.Tx, caps observe.Capabilities, includeText bool) (map[observe.QueryKey]statementCounters, map[observe.QueryKey][4]*string, int, error) {
-	view := pgx.Identifier{caps.StatementsSchema, "pg_stat_statements"}.Sanitize()
+// stmtMeta is what a worker remembers about one entry between collections:
+// names, the statement class, and the normalised text when the target
+// collects it.
+type stmtMeta struct {
+	datname, user, command string
+	text                   *string
+}
+
+// stmtCache holds the meta of the entries seen in the last collection.
+// withText records whether texts were kept, so turning text collection on
+// fetches them again.
+type stmtCache struct {
+	withText bool
+	meta     map[observe.QueryKey]stmtMeta
+}
+
+// readStatements reads the counters of pg_stat_statements without the
+// statement texts (pg_stat_statements(false)): texts live in a file that the
+// extension reads in full whenever they are requested, the most expensive
+// part of a collection. Texts are read only for entries the cache does not
+// know (new statements, or every entry after text collection was turned on),
+// to classify their command; they are kept only when the target collects
+// query text.
+func readStatements(ctx context.Context, tx pgx.Tx, caps observe.Capabilities, includeText bool, cache *stmtCache) (map[observe.QueryKey]statementCounters, map[observe.QueryKey][4]*string, int, error) {
+	fn := pgx.Identifier{caps.StatementsSchema, "pg_stat_statements"}.Sanitize()
 	// Rows of other roles without pg_read_all_stats have a NULL queryid and
 	// are counted as hidden.
-	sql := `
+	rows, err := tx.Query(ctx, `
 SELECT s.userid, s.dbid, s.toplevel, s.queryid,
        coalesce(d.datname, s.dbid::text), coalesce(r.rolname, s.userid::text),
        s.calls, s.total_exec_time, s.rows, s.shared_blks_hit, s.shared_blks_read,
-       s.temp_blks_written, s.wal_bytes::float8,
-       s.query
-FROM ` + view + ` AS s
+       s.temp_blks_written, s.wal_bytes::float8
+FROM `+fn+`(false) AS s
 LEFT JOIN pg_catalog.pg_database AS d ON d.oid = s.dbid
-LEFT JOIN pg_catalog.pg_roles AS r ON r.oid = s.userid`
-	rows, err := tx.Query(ctx, sql)
+LEFT JOIN pg_catalog.pg_roles AS r ON r.oid = s.userid`)
 	if err != nil {
 		return nil, nil, 0, err
 	}
+	if cache.withText != includeText {
+		cache.meta, cache.withText = nil, includeText
+	}
 	entries := map[observe.QueryKey]statementCounters{}
-	meta := map[observe.QueryKey][4]*string{}
+	names := map[observe.QueryKey][2]string{}
 	hidden := 0
 	var (
 		userid, dbid uint32
@@ -65,35 +85,84 @@ LEFT JOIN pg_catalog.pg_roles AS r ON r.oid = s.userid`
 		queryid      *int64
 		datname, usr string
 		c            statementCounters
-		text         *string
 	)
 	major := caps.Major()
 	_, err = pgx.ForEachRow(rows, []any{&userid, &dbid, &toplevel, &queryid, &datname, &usr,
-		&c.calls, &c.totalMS, &c.rows, &c.hit, &c.read, &c.tempW, &c.wal, &text}, func() error {
+		&c.calls, &c.totalMS, &c.rows, &c.hit, &c.read, &c.tempW, &c.wal}, func() error {
 		if queryid == nil {
 			hidden++
 			return nil
 		}
 		k := observe.QueryKey{ServerMajor: major, DBID: dbid, UserID: userid, TopLevel: toplevel, QueryID: *queryid}
-		if prev, ok := entries[k]; ok {
-			// Duplicate keys should not happen; keep the larger counters.
-			if prev.calls >= c.calls {
-				return nil
-			}
+		if prev, ok := entries[k]; ok && prev.calls >= c.calls {
+			return nil // duplicate keys should not happen; keep the larger counters
 		}
 		entries[k] = c
-		d, u, cmd := datname, usr, observe.CommandOther
-		if text != nil {
-			cmd = observe.ClassifyCommand(*text)
-		}
-		kept := text
-		if !includeText {
-			kept = nil
-		}
-		meta[k] = [4]*string{&d, &u, kept, &cmd}
+		names[k] = [2]string{datname, usr}
 		return nil
 	})
-	return entries, meta, hidden, err
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	var missing []int64
+	for k := range entries {
+		if _, ok := cache.meta[k]; !ok {
+			missing = append(missing, k.QueryID)
+		}
+	}
+	texts := map[observe.QueryKey]string{}
+	if len(missing) > 0 {
+		if texts, err = readStatementTexts(ctx, tx, fn, major, missing); err != nil {
+			return nil, nil, 0, err
+		}
+	}
+	// Rebuild the cache from the current entries, so it never outgrows the
+	// extension's hash table.
+	next := make(map[observe.QueryKey]stmtMeta, len(entries))
+	meta := make(map[observe.QueryKey][4]*string, len(entries))
+	for k := range entries {
+		m, known := cache.meta[k]
+		if !known {
+			m.command = observe.CommandOther
+			if t, ok := texts[k]; ok {
+				m.command = observe.ClassifyCommand(t)
+				if includeText {
+					m.text = &t
+				}
+				known = true
+			}
+		}
+		n := names[k]
+		m.datname, m.user = n[0], n[1]
+		if known {
+			next[k] = m // an entry whose text was not found is asked again next time
+		}
+		meta[k] = [4]*string{&m.datname, &m.user, m.text, &m.command}
+	}
+	cache.meta = next
+	return entries, meta, hidden, nil
+}
+
+// readStatementTexts reads the normalised texts of some queryids.
+func readStatementTexts(ctx context.Context, tx pgx.Tx, fn string, major int, queryids []int64) (map[observe.QueryKey]string, error) {
+	rows, err := tx.Query(ctx, `SELECT userid, dbid, toplevel, queryid, query FROM `+fn+`(true) WHERE queryid = ANY($1)`, queryids)
+	if err != nil {
+		return nil, err
+	}
+	out := map[observe.QueryKey]string{}
+	var (
+		userid, dbid uint32
+		toplevel     bool
+		queryid      int64
+		text         *string
+	)
+	_, err = pgx.ForEachRow(rows, []any{&userid, &dbid, &toplevel, &queryid, &text}, func() error {
+		if text != nil {
+			out[observe.QueryKey{ServerMajor: major, DBID: dbid, UserID: userid, TopLevel: toplevel, QueryID: queryid}] = *text
+		}
+		return nil
+	})
+	return out, err
 }
 
 func readStatementsInfo(ctx context.Context, tx pgx.Tx, caps observe.Capabilities) (*int64, *time.Time, error) {
@@ -174,7 +243,7 @@ func (w *worker) collectStatements(ctx context.Context) error {
 	)
 	if err := w.obs.ReadOnly(ctx, func(ctx context.Context, tx pgx.Tx, _ []int32) error {
 		var err error
-		if entries, meta, hidden, err = readStatements(ctx, tx, *w.caps, w.target.QueryTextEnabled); err != nil {
+		if entries, meta, hidden, err = readStatements(ctx, tx, *w.caps, w.target.QueryTextEnabled, &w.stmtCache); err != nil {
 			return err
 		}
 		dealloc, reset, err = readStatementsInfo(ctx, tx, *w.caps)

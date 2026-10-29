@@ -38,6 +38,19 @@ type Config struct {
 	// the time between two samples of pg_stat_activity per target.
 	LoadSampling       bool
 	LoadSampleInterval time.Duration
+	// StatementsInterval is the pg_stat_statements collection interval.
+	StatementsInterval time.Duration
+	// AdaptiveSampling collects a target faster for BurstDuration while it
+	// has an open incident or a statement running for long.
+	AdaptiveSampling bool
+	BurstDuration    time.Duration
+	// CollectorBudgetPercent is the share of its interval a collector may
+	// spend; a collector that keeps exceeding it is slowed down.
+	CollectorBudgetPercent int
+	// MinuteRollupRetention and HourRollupRetention keep downsampled metric
+	// history beyond the raw history retention.
+	MinuteRollupRetention time.Duration
+	HourRollupRetention   time.Duration
 	// PublicURL is LockLens' address as users reach it, for links in
 	// notifications (for example https://locklens.example.com).
 	PublicURL string
@@ -121,6 +134,12 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		c.StoreTimescale = st
 	}
 	c.LoadSampleInterval = dur("LOCKLENS_LOAD_SAMPLE_INTERVAL", 2*time.Second, time.Second)
+	c.StatementsInterval = dur("LOCKLENS_STATEMENTS_INTERVAL", 15*time.Second, 5*time.Second)
+	c.AdaptiveSampling = boolean("LOCKLENS_ADAPTIVE_SAMPLING", true)
+	c.BurstDuration = dur("LOCKLENS_BURST_DURATION", 10*time.Minute, time.Minute)
+	c.CollectorBudgetPercent = num("LOCKLENS_COLLECTOR_BUDGET_PERCENT", 10, 1, 50)
+	c.MinuteRollupRetention = dur("LOCKLENS_MINUTE_ROLLUP_RETENTION", 14*24*time.Hour, 24*time.Hour)
+	c.HourRollupRetention = dur("LOCKLENS_HOUR_ROLLUP_RETENTION", 90*24*time.Hour, 24*time.Hour)
 	if v := strings.TrimRight(strings.TrimSpace(getenv("LOCKLENS_PUBLIC_URL")), "/"); v != "" {
 		u, err := url.Parse(v)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" {

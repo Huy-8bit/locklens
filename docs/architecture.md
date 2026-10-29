@@ -99,6 +99,9 @@ flowchart LR
 | `backend/internal/domain/rules`, `backend/internal/domain/finding` | Deterministic rules, thresholds, findings with evidence |
 | `backend/internal/domain/baseline` | Statement baselines: robust statistics (median, MAD) per measure and hour of day from five-minute rollups; a service that keeps rollups current and holds the baselines of active statements in memory |
 | `backend/internal/domain/insight` | Explainable impact scores and the deterministic correlation of an anomaly's evidence into ranked hypotheses; gathers signals from the store |
+| `backend/internal/domain/optimizer` | Query optimizer: recommendations from the catalog and workload, their life cycle (applied detection, before/after verification), HypoPG what-if checks through the workspace |
+| `backend/internal/domain/rollup` | One-minute and hourly metric rollups, kept current every minute |
+| `backend/internal/lib/sqlparse` | PostgreSQL's parser (libpg_query via pg_query_go, cgo): tables, predicates, sort order, and lints of a statement; a stub without cgo |
 | `backend/internal/domain/plans` | Parsing saved EXPLAIN output (JSON or text), plan-shape fingerprints, plan comparison, index candidates |
 | `backend/internal/domain/incidents` | Incident recorder: pre-trigger buffer, lifecycle, limits, recovery |
 | `backend/internal/domain/settings` | Rule thresholds persisted in the store (demo defaults in demo mode) |
@@ -271,6 +274,7 @@ returns DSNs. See [security.md](security.md).
 | `github.com/jackc/pgx/v5` | PostgreSQL driver and pool; context cancellation, libpq-compatible DSN and TLS handling |
 | `github.com/spf13/cobra` | Subcommands, help, and flag parsing |
 | `golang.org/x/crypto` | bcrypt for the administrator password |
+| `github.com/pganalyze/pg_query_go/v6` | PostgreSQL's own SQL parser (libpg_query) for statement analysis in the query optimizer. C code: the server is built with cgo; without cgo the parser is reported unavailable and only catalog-based recommendations are made |
 
 Everything else in Go (HTTP routing with `net/http`, logging with `log/slog`,
 AES-GCM, templates, embedding) uses the standard library. Frontend

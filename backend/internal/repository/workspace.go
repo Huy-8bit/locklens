@@ -8,11 +8,14 @@ import (
 )
 
 type WorkspacePolicy struct {
-	TargetID   int64     `json:"target_id"`
-	Metadata   bool      `json:"metadata_enabled"`
-	Data       bool      `json:"data_enabled"`
-	SQL        bool      `json:"sql_enabled"`
-	History    bool      `json:"history_enabled"`
+	TargetID int64 `json:"target_id"`
+	Metadata bool  `json:"metadata_enabled"`
+	Data     bool  `json:"data_enabled"`
+	SQL      bool  `json:"sql_enabled"`
+	History  bool  `json:"history_enabled"`
+	// HypoPG allows what-if checks of index recommendations with
+	// hypothetical indexes (the hypopg extension on the target).
+	HypoPG     bool      `json:"hypopg_enabled"`
 	Configured bool      `json:"configured"`
 	Ciphertext []byte    `json:"-"`
 	UpdatedAt  time.Time `json:"updated_at"`
@@ -20,7 +23,7 @@ type WorkspacePolicy struct {
 
 func (s *Store) WorkspacePolicy(ctx context.Context, id int64) (WorkspacePolicy, error) {
 	p := WorkspacePolicy{TargetID: id}
-	err := s.pool.QueryRow(ctx, `SELECT metadata_enabled,data_enabled,sql_enabled,history_enabled,dsn_ciphertext,updated_at FROM workspace_policies WHERE target_id=$1`, id).Scan(&p.Metadata, &p.Data, &p.SQL, &p.History, &p.Ciphertext, &p.UpdatedAt)
+	err := s.pool.QueryRow(ctx, `SELECT metadata_enabled,data_enabled,sql_enabled,history_enabled,hypopg_enabled,dsn_ciphertext,updated_at FROM workspace_policies WHERE target_id=$1`, id).Scan(&p.Metadata, &p.Data, &p.SQL, &p.History, &p.HypoPG, &p.Ciphertext, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, nil
 	}
@@ -28,7 +31,7 @@ func (s *Store) WorkspacePolicy(ctx context.Context, id int64) (WorkspacePolicy,
 	return p, err
 }
 func (s *Store) SetWorkspacePolicy(ctx context.Context, p WorkspacePolicy) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO workspace_policies(target_id,metadata_enabled,data_enabled,sql_enabled,history_enabled,dsn_ciphertext) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(target_id) DO UPDATE SET metadata_enabled=$2,data_enabled=$3,sql_enabled=$4,history_enabled=$5,dsn_ciphertext=$6,updated_at=now()`, p.TargetID, p.Metadata, p.Data, p.SQL, p.History, p.Ciphertext)
+	_, err := s.pool.Exec(ctx, `INSERT INTO workspace_policies(target_id,metadata_enabled,data_enabled,sql_enabled,history_enabled,hypopg_enabled,dsn_ciphertext) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(target_id) DO UPDATE SET metadata_enabled=$2,data_enabled=$3,sql_enabled=$4,history_enabled=$5,hypopg_enabled=$6,dsn_ciphertext=$7,updated_at=now()`, p.TargetID, p.Metadata, p.Data, p.SQL, p.History, p.HypoPG, p.Ciphertext)
 	return err
 }
 func (s *Store) AuditWorkspace(ctx context.Context, id int64, actor, action, status string, duration time.Duration, rows int) error {

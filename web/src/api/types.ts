@@ -28,6 +28,12 @@ export interface CollectorStatus {
   last_error: string | null
   last_duration_ms: number | null
   consecutive_failures: number
+  /** The configured interval; interval_seconds is the one in effect. */
+  base_interval_seconds?: number
+  /** Collected faster while the instance has a problem (adaptive sampling). */
+  burst?: boolean
+  /** Why the collector runs less often than configured (time budget). */
+  throttle_reason?: string
 }
 
 export interface TargetStatus {
@@ -477,9 +483,25 @@ export interface TableHealth {
   warnings: string[]
 }
 
+export interface TableActivity {
+  relid: number
+  schema: string
+  name: string
+  seq_scans_per_s: number
+  seq_rows_per_s: number
+  idx_scans_per_s: number
+  idx_rows_per_s: number
+  writes_per_s: number
+  dead_rows: number
+  live_rows: number
+  interval_seconds: number
+}
+
 export interface TablesResponse {
   source: 'live' | 'stored' | 'none'
   tables: TableHealth | null
+  /** The busiest tables of the last minute (live only). */
+  activity?: TableActivity[] | null
   vacuum_progress?: VacuumProgress[]
   vacuum_progress_at?: string
   long_transactions?: LongTransaction[]
@@ -607,6 +629,8 @@ export interface WorkspacePolicy {
   data_enabled: boolean
   sql_enabled: boolean
   history_enabled: boolean
+  /** What-if checks of index recommendations with hypothetical indexes (needs the hypopg extension). */
+  hypopg_enabled?: boolean
   configured: boolean
   updated_at: string
 }
@@ -845,6 +869,10 @@ export interface QueryInsightResponse {
   history: PerfItem[]
   investigation?: Investigation
   plans: number
+  /** The statement as PostgreSQL's parser sees it. */
+  analysis?: { available: boolean; result?: SqlAnalysis; error?: string }
+  /** Optimizer recommendations that name this statement. */
+  recommendations?: Recommendation[]
 }
 
 export interface IncidentInvestigationResponse { available: boolean; reason?: string; investigation?: Investigation }
@@ -873,3 +901,70 @@ export interface PlanCompareResponse {
   parsed_b: ParsedPlan
   comparison: { same_shape: boolean; cost_ratio: number | null; changes: { kind: string; detail: string }[] }
 }
+
+// Query optimizer
+
+export type RecommendationStatus = 'open' | 'accepted' | 'dismissed' | 'applied' | 'verified' | 'no_effect' | 'regressed' | 'resolved'
+export type RecommendationKind = 'missing_index' | 'fk_without_index' | 'unused_index' | 'duplicate_index' | 'invalid_index' | 'stale_statistics' | 'misestimate' | 'temp_spill' | 'query_shape'
+
+export interface RecStatement { identity_id: number; queryid: string; share_of_load: number; calls: number; mean_ms: number; text?: string }
+
+export interface WhatIfResult {
+  at: string
+  index: string
+  summary: string
+  statements: { identity_id: number; queryid: string; cost_before: number; cost_after: number; uses_index: boolean; error?: string }[]
+}
+
+export interface Recommendation {
+  id: number
+  target_id: number
+  kind: RecommendationKind
+  key: string
+  status: RecommendationStatus
+  severity: Severity
+  title: string
+  summary: string
+  /** Kind-specific evidence: table, columns, statements, sizes, … */
+  details: Record<string, unknown> & { statements?: RecStatement[]; statement?: RecStatement }
+  ddl: string | null
+  benefit: number
+  confidence: Confidence
+  first_seen: string
+  last_seen: string
+  decided_by: string | null
+  decided_at: string | null
+  note: string
+  applied_at: string | null
+  applied_how: string | null
+  before_ms: number | null
+  after_ms: number | null
+  verified_at: string | null
+  whatif: WhatIfResult | null
+  resolved_at: string | null
+  target_name?: string
+}
+
+export interface OptimizerTarget {
+  target_id: number
+  target_name: string
+  catalog_at: string | null
+  database: string
+  query_text_enabled: boolean
+  hypopg_enabled: boolean
+  hypopg_installed?: string
+  sql_enabled: boolean
+  warnings: string[]
+}
+
+export interface OptimizerResponse {
+  recommendations: Recommendation[]
+  targets: OptimizerTarget[]
+  counts: Partial<Record<RecommendationStatus, number>>
+  parser_available: boolean
+  note: string
+}
+
+export interface SqlPredicate { table: string; column: string; op: string; wrapped?: string; in_or?: boolean }
+export interface SqlLint { code: string; message: string; severity: 'info' | 'warning' }
+export interface SqlAnalysis { fingerprint: string; command: string; tables: { schema?: string; name: string; alias?: string }[]; predicates: SqlPredicate[]; order_by: { table: string; column: string; desc?: boolean }[]; has_limit: boolean; lints: SqlLint[] }

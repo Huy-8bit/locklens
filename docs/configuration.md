@@ -28,16 +28,22 @@ All problems are reported at once.
 | `LOCKLENS_STORE_COMPRESS_AFTER` | `24h` | Compress history chunks older than this (TimescaleDB Community edition); `0` turns compression off (minimum `1h`). |
 | `LOCKLENS_RETENTION` | `168h` (7 days) | History retention: metric points, statement samples and collections, activity snapshots, table and index statistics, state snapshots (minimum `1h`). |
 | `LOCKLENS_INCIDENT_RETENTION` | `2160h` (90 days) | Incidents and their events are kept this long after they resolve (minimum `24h`). Open incidents are never deleted. |
+| `LOCKLENS_MINUTE_ROLLUP_RETENTION` | `336h` (14 days) | One-minute metric rollups (minimum `24h`; never shorter than `LOCKLENS_RETENTION`). Charts of coarse steps and of ranges older than the raw history read them. |
+| `LOCKLENS_HOUR_ROLLUP_RETENTION` | `2160h` (90 days) | Hourly metric rollups (minimum `24h`; never shorter than the minute rollups). |
 | `LOCKLENS_BASELINE_RETENTION` | `360h` (15 days) | Five-minute statement rollups and statement coverage, the source of query baselines (minimum `24h`; never shorter than `LOCKLENS_RETENTION`). See [query-intelligence.md](query-intelligence.md). |
 | `LOCKLENS_FINDING_RETENTION` | `720h` (30 days) | Resolved findings and collection-gap records (minimum `1h`). Incidents keep their own copy of the evidence, so this never changes an incident. |
 | `LOCKLENS_MAX_CONCURRENT_COLLECTIONS` | `4` | Global cap on collector runs executing at the same time across all targets (1–64). Each target also runs its own collectors one at a time. |
 | `LOCKLENS_LOAD_SAMPLING` | `true` | Active session sampling (database load): read `pg_stat_activity` every `LOCKLENS_LOAD_SAMPLE_INTERVAL` on each target (PostgreSQL 14+). |
+| `LOCKLENS_STATEMENTS_INTERVAL` | `15s` | pg_stat_statements collection interval (minimum `5s`; never shorter than the target's interval). Texts are read only for new statements, so short intervals stay cheap. |
+| `LOCKLENS_ADAPTIVE_SAMPLING` | `true` | Collect a target faster while it has a problem (open incident, statement running for long, blocking, slower statement). See [collectors.md](collectors.md#adaptive-sampling). |
+| `LOCKLENS_BURST_DURATION` | `10m` | How long faster collection lasts after the last sign of a problem (minimum `1m`). |
+| `LOCKLENS_COLLECTOR_BUDGET_PERCENT` | `10` | Share of its interval a collector may spend (1–50) before it is slowed down. See [collectors.md](collectors.md#collector-time-budget). |
 | `LOCKLENS_LOAD_SAMPLE_INTERVAL` | `2s` | Time between two samples (`1s`–`1m`). Shorter catches shorter bursts and costs one more small query per target per interval. |
 | `LOCKLENS_PUBLIC_URL` | (none) | The address users open LockLens at (`http` or `https`, without a query string). Notifications link to incidents with it; without it they carry no link. |
 | `LOCKLENS_WRITE_QUEUE` | `2048` | Capacity of the in-memory queue of batches waiting to be written to the store (16–100000). When the store is unavailable and the queue is full, the oldest batch is dropped and a collection gap is recorded. |
 | `LOCKLENS_METRICS_ENABLED` | `true` | Serve Prometheus metrics at `/metrics` (unauthenticated, bounded labels, no query text). |
 | `LOCKLENS_BOOTSTRAP_TARGETS_FILE` | unset | JSON file of targets to create at startup. See [Bootstrap targets](#bootstrap-targets). |
-| `LOCKLENS_DEMO_MODE` | `false` | Lab mode: lower rule thresholds and shorter persistence so scenarios trigger within minutes, statements collected every 15 s instead of 60 s, and the Lab guide page enabled. Do not use in production. |
+| `LOCKLENS_DEMO_MODE` | `false` | Lab mode: lower rule thresholds and shorter persistence so scenarios trigger within minutes, statements collected at least every 15 s, the optimizer run every 2 minutes, and the Lab guide page enabled. Do not use in production. |
 | `LOCKLENS_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `LOCKLENS_LOG_FORMAT` | `text` | `text` or `json` (stderr). Logs never contain DSNs, passwords, or query text. |
 | `LOCKLENS_SHUTDOWN_TIMEOUT` | `10s` | Grace period for in-flight requests and collectors on SIGINT/SIGTERM. |

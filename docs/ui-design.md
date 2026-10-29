@@ -7,7 +7,7 @@ environment on one screen; every card leads to a page with the detail.
 ## Layout
 
 - **Sidebar**, grouped by task: Overview, Databases, Topology; **Workload**
-  (Queries, Performance, Sessions, Blocking, Connections); **Investigate** (Explorer, SQL
+  (Queries, Performance, Sessions, Blocking, Connections); **Investigate** (Optimize, Explorer, SQL
   Editor); **Respond** (Incidents, with the number of open incidents). Settings
   sits at the bottom with a one-line **system status** (monitoring, collectors,
   store) that expands into details, from `GET /api/v1/system`. Open incidents

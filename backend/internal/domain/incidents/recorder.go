@@ -129,6 +129,8 @@ type Recorder struct {
 	// baselines gives statement rules each target's query baselines; nil
 	// leaves them to compare with the previous window only.
 	baselines BaselineSource
+	// burster collects a target faster while it has a problem; nil: never.
+	burster Burster
 
 	mu      sync.Mutex
 	targets map[int64]*targetState
@@ -143,6 +145,15 @@ func NewRecorder(store *repository.Store, cfg Config, th ThresholdSource, metric
 type BaselineSource interface {
 	Get(targetID int64) map[observe.QueryKey]baseline.Baseline
 }
+
+// Burster starts or extends faster collection of a target.
+type Burster interface {
+	Burst(targetID int64, reason string)
+}
+
+// SetBurster sets who collects targets faster during problems; call it
+// before Run.
+func (r *Recorder) SetBurster(b Burster) { r.burster = b }
 
 // SetBaselines sets the source of query baselines; call it before Run.
 func (r *Recorder) SetBaselines(b BaselineSource) { r.baselines = b }
@@ -273,7 +284,35 @@ func (r *Recorder) analyze(ctx context.Context, t repository.Target, v collector
 		}
 	}
 	r.updateOpenGauge()
+	r.burstIfNeeded(t.ID, ts, findings)
 	return nil
+}
+
+// burstReasons are the active findings that make a target worth watching
+// closely even without an incident.
+var burstReasons = map[string]string{
+	rules.RuleLongRunning:    "a statement is running for long",
+	rules.RuleBlockingChain:  "sessions are blocked",
+	rules.RuleIdleBlocker:    "an idle transaction blocks sessions",
+	rules.RuleMeanRegression: "a statement became slower",
+}
+
+// burstIfNeeded asks for faster collection while the target has an open
+// incident or an active problem, so the evidence around it is denser.
+func (r *Recorder) burstIfNeeded(targetID int64, ts *targetState, findings []rules.Finding) {
+	if r.burster == nil {
+		return
+	}
+	for _, oi := range ts.open {
+		r.burster.Burst(targetID, "open incident: "+oi.title)
+		return
+	}
+	for _, f := range findings {
+		if why, ok := burstReasons[f.RuleID]; ok && f.Status == rules.Active {
+			r.burster.Burst(targetID, why)
+			return
+		}
+	}
 }
 
 func (r *Recorder) publish(targetID, incidentID int64, kind string) {

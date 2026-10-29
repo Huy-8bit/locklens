@@ -50,11 +50,14 @@ database-backed tests. For each PostgreSQL version it:
    (`pg_read_all_stats`), `locklens_limited` (no monitoring privileges), and
    `replicator`, plus a database `locklens_pgss` with the
    `pg_stat_statements` extension (the default test database has none, so
-   both the available and the unavailable case are covered);
+   both the available and the unavailable case are covered); builds
+   [HypoPG](https://github.com/HypoPG/hypopg) 1.4.4 from source into the
+   disposable server and creates it in `locklens_pgss` (best effort: without
+   network the HypoPG success path is skipped and the run says so);
 5. creates a temporary Go workspace containing `backend/` and `tests/e2e/`,
    then runs `go test -tags integration -race -p 1` from the repository root for `./tests/e2e/cli/...`,
    `./backend/internal/lib/postgres/...`, `./backend/internal/repository/...`,
-   `./backend/internal/domain/incidents/...`, and `./tests/e2e/server/...` with explicit DSNs in
+   `./backend/internal/domain/incidents/...`, `./backend/internal/domain/optimizer/...`, and `./tests/e2e/server/...` with explicit DSNs in
    the environment. Packages run one at a time because they share the
    database server;
 6. removes the project with `docker compose -p <project> down -v`, also when
@@ -172,6 +175,7 @@ DSNs of the run.
 | `TestRestrictedRoleAndQueryTextOptIn` | a role without `pg_read_all_stats` gives a `degraded` target with a `restricted_visibility` warning; query text appears only for the opted-in target and disappears when the option is turned off |
 | `TestPgStatStatementsAvailable` | extension detected; `demo_app` statements appear with call counts, normalised SQL text by default and command class `select`; `include_text=false` omits text; `/queries/commands` reports select totals and coverage buckets; unknown command classes are rejected; query IDs are decimal strings |
 | `TestQueryPerformanceIntelligence` | a real `pg_sleep(90)` appears under `/performance` as `queries.long_running` with metrics, impact components, and confidence; at the critical threshold it opens an incident whose investigation is available, lists missing evidence, and suggests one heavy execution; statement insight reports a learning baseline, bands, and percentiles as unavailable; pasted plans are saved, compared (shape changed), give an index candidate, and are deleted; an invalid plan is rejected |
+| `TestQueryOptimizer` | a schema with a foreign key without index, a duplicate index, and an invalid index (from a failed concurrent unique build) plus a real workload: "Analyse now" collects a fresh catalog and derives the foreign-key, duplicate, invalid, and missing-index recommendations with their statements and SQL; a decision is stored and an invalid one refused; the what-if check with HypoPG plans the statement with the hypothetical index (used, cheaper, confidence high on PostgreSQL 16+; refused without hypopg) and leaves no index behind; the statement page shows the parser's predicates and the recommendation; creating the index makes the missing-index and foreign-key recommendations applied |
 | `TestPrimaryAndStandby` | standby detected; primary lists the replica and slot; standby reports a streaming WAL receiver |
 | `TestOutageAndRecovery` | the database container (target and store) paused for 25 s; the target becomes healthy again and a collection gap is recorded |
 
@@ -193,6 +197,11 @@ Tests render with real React Router and TanStack Query and a stubbed `fetch`:
 - the queries page offers only the statement types present and filters by type;
 - the data explorer asks for separate credentials and confirms row access
   before saving;
+- the Optimize page lists recommendations by benefit, shows the evidence and
+  SQL in its drawer, hides the what-if check when HypoPG is off, records a
+  decision, and says what the optimizer cannot see (no catalog, no query
+  text, no parser); the statement page shows parser lints and its
+  recommendations;
 - the Performance page ranks anomalies by impact, explains the score in its
   drawer, lists running queries separately, and says when nothing is
   anomalous; hypotheses show evidence for and against and missing evidence;
@@ -216,14 +225,17 @@ the API. The test:
    shows SELECT, INSERT, UPDATE, and DELETE in the breakdown; filters by UPDATE,
    opens a statement with its SQL and performance analysis (learning baseline,
    no percentiles), saves a pasted plan and reads its index candidate, finds
-   the statement in Queries across instances, and opens Performance;
+   the statement in Queries across instances, opens Performance, and on
+   Optimize collects a fresh catalog ("Analyse now") and opens a
+   recommendation's evidence when there is one;
 5. browses `shop.orders` in the Explorer: rows, a filter (`status = paid`,
    every row checked), a cell panel, the Schema and Triggers tabs, and the
    functions of the schema;
 6. runs a SELECT in the SQL Editor (10 rows), draws its execution plan, and
    checks that an UPDATE is refused and changed nothing;
 7. starts the `chain` scenario, finds it under Blocking, opens a session panel
-   under Sessions, the blocking tree on the instance's Activity tab, then the
+   under Sessions, the blocking tree and the Hot tables (with `shop.*` tables)
+   on the instance's Activity tab, then the
    incident under Alerts and its stored blocking graph;
 8. exports the HTML report (no scripts or credentials) and opens it in an
    offline browser context with JavaScript disabled, checking it loads nothing;
@@ -275,6 +287,22 @@ always reported as a cycle and never as a confirmed deadlock.
   `PGPASSWORD`, wrapped errors, four malformed DSNs.
 - Text: multi-byte and emoji truncation, invalid UTF-8, ESC/OSC/CSI, C1, DEL,
   bidi overrides.
+- SQL parser (cgo): predicates with tables resolved through aliases, joins,
+  CTEs and subqueries, flipped comparisons, sort order, and every lint; the
+  stub without cgo reports the parser unavailable.
+- Optimizer: index proposals (column order by selectivity, merged across
+  statements, skipped when covered or for small tables), foreign keys without
+  index, unused (confidence by statistics age), redundant, and invalid
+  indexes, stale statistics, misestimates with extended statistics, spills
+  with `work_mem`, statement shapes, identifier quoting. Integration: applied
+  changes detected from the catalog and judged from the statement history
+  (improved and regressed), and no decision after a change.
+- Collection: pacing slows a collector over its time budget and recovers;
+  bursts shorten intervals at once and are extended without waking again;
+  table activity rates skip reset counters and keep the 20 busiest tables.
+  Repository: metric series from rollups equal those from raw points (fully,
+  partly, and not rolled up, with an unknown sample), hourly steps read hourly
+  rollups, and retention keeps hourly rollups after minute ones expire.
 - Baselines: median and MAD, the zero-variance floor, quiet covered periods
   counted as zero, reset periods skipped, hour-of-day profiles.
 - Statement rules: latency regression against the baseline (critical ratio,

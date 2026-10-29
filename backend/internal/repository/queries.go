@@ -297,8 +297,16 @@ type QueryBucket struct {
 	Interval float64   `json:"covered_seconds"`
 }
 
-// QueryBuckets returns downsampled activity of one identity.
+// QueryBuckets returns downsampled activity of one identity. Steps of five
+// minutes or more, and ranges older than the raw history, are read from the
+// five-minute rollups (completed with raw samples after the newest rolled-up
+// bucket); there a bucket's covered seconds are the target's collection
+// coverage.
 func (s *Store) QueryBuckets(ctx context.Context, targetID, id int64, from, to time.Time, step time.Duration) ([]QueryBucket, error) {
+	raw := time.Duration(s.rawRetention.Load())
+	if step >= RollupBucket || (raw > 0 && from.Before(time.Now().Add(-raw))) {
+		return s.queryRollupBuckets(ctx, targetID, id, from, to, max(step, RollupBucket))
+	}
 	rows, err := s.pool.Query(ctx, `
 WITH buckets AS (
  SELECT date_bin($5::interval, ts - interval '1 microsecond', $3::timestamptz) AS b, sum(calls) AS calls, sum(total_exec_ms) AS ms, sum(rows) AS rows, sum(interval_seconds) AS covered
@@ -320,6 +328,55 @@ FROM buckets ORDER BY b LIMIT 1001`, targetID, id, from.UTC(), to.UTC(), step)
 		out = []QueryBucket{}
 	}
 	return out, s.red.Error(err)
+}
+
+func (s *Store) queryRollupBuckets(ctx context.Context, targetID, id int64, from, to time.Time, step time.Duration) ([]QueryBucket, error) {
+	rows, err := s.pool.Query(ctx, `
+WITH cut AS (
+ SELECT coalesce(max(ts) + interval '5 minutes', date_bin('5 minutes', $3::timestamptz, 'epoch'::timestamptz)) AS c
+ FROM statement_coverage WHERE target_id = $1 AND ts >= $3::timestamptz - interval '5 minutes'
+), act AS (
+ SELECT r.ts AS b, r.calls, r.total_exec_ms AS ms, r.rows FROM query_rollups r, cut
+ WHERE r.target_id = $1 AND r.identity_id = $2 AND r.ts >= date_bin('5 minutes', $3::timestamptz, 'epoch'::timestamptz) AND r.ts < cut.c
+ UNION ALL
+ SELECT date_bin('5 minutes', ts - interval '1 microsecond', 'epoch'::timestamptz), sum(calls), sum(total_exec_ms), sum(rows)
+ FROM query_samples, cut WHERE target_id = $1 AND identity_id = $2 AND ts > greatest(cut.c, $3::timestamptz) AND ts <= $4 GROUP BY 1
+), cov AS (
+ SELECT c.ts AS b, c.covered_seconds AS covered FROM statement_coverage c, cut
+ WHERE c.target_id = $1 AND c.ts >= date_bin('5 minutes', $3::timestamptz, 'epoch'::timestamptz) AND c.ts < cut.c
+ UNION ALL
+ SELECT date_bin('5 minutes', ts - interval '1 microsecond', 'epoch'::timestamptz), least(sum(interval_seconds), 300)
+ FROM statement_collections, cut WHERE target_id = $1 AND interval_seconds IS NOT NULL AND ts > greatest(cut.c, $3::timestamptz) AND ts <= $4 GROUP BY 1
+), a AS (
+ SELECT date_bin($5::interval, b, $3::timestamptz) AS bucket, sum(calls)::bigint AS calls, sum(ms) AS ms, sum(rows)::bigint AS rows FROM act GROUP BY 1
+), c AS (
+ SELECT date_bin($5::interval, b, $3::timestamptz) AS bucket, sum(covered) AS covered FROM cov GROUP BY 1
+)
+SELECT a.bucket, a.calls, a.ms, a.rows, coalesce(c.covered, 0),
+ EXISTS (SELECT 1 FROM collection_gaps g WHERE g.target_id = $1 AND g.collector = 'statements' AND g.ended_at > a.bucket AND g.started_at < a.bucket + $5::interval)
+FROM a LEFT JOIN c USING (bucket) ORDER BY a.bucket LIMIT 1001`, targetID, id, from.UTC(), to.UTC(), step)
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (QueryBucket, error) {
+		var b QueryBucket
+		err := r.Scan(&b.T, &b.Calls, &b.TotalMS, &b.Rows, &b.Interval, &b.Gap)
+		b.T = b.T.UTC()
+		return b, err
+	})
+	if out == nil {
+		out = []QueryBucket{}
+	}
+	return out, s.red.Error(err)
+}
+
+// QueryStep is the step QueryBuckets returns for a request.
+func (s *Store) QueryStep(from time.Time, step time.Duration) time.Duration {
+	raw := time.Duration(s.rawRetention.Load())
+	if step >= RollupBucket || (raw > 0 && from.Before(time.Now().Add(-raw))) {
+		return max(step, RollupBucket)
+	}
+	return step
 }
 
 // WindowTotals aggregates one identity in a window.

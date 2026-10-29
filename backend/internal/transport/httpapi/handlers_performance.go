@@ -11,7 +11,9 @@ import (
 	"github.com/locklens/locklens/internal/domain/finding"
 	"github.com/locklens/locklens/internal/domain/insight"
 	"github.com/locklens/locklens/internal/domain/observe"
+	"github.com/locklens/locklens/internal/domain/optimizer"
 	"github.com/locklens/locklens/internal/domain/rules"
+	"github.com/locklens/locklens/internal/lib/sqlparse"
 	"github.com/locklens/locklens/internal/repository"
 )
 
@@ -135,11 +137,12 @@ func (s *Server) queryInsight(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	step, err := metricStep(r, from, to, time.Minute)
+	step, err := metricStep(r, from, to, s.statementsStep(t))
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	step = s.d.Store.QueryStep(from, step)
 	ident, _, _, err := s.d.Store.QueryIdentity(r.Context(), t.ID, qid, false)
 	if errors.Is(err, repository.ErrNotFound) {
 		writeError(w, r, http.StatusNotFound, "not_found", "query identity not found")
@@ -223,6 +226,31 @@ func (s *Server) queryInsight(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp["plans"] = n
+	// The statement as PostgreSQL's parser sees it, and the optimizer's
+	// recommendations that name it.
+	analysis := map[string]any{"available": sqlparse.Available()}
+	if text, _, _, err := s.d.Store.QueryIdentity(r.Context(), t.ID, qid, t.QueryTextEnabled); err == nil && text.Text != nil && sqlparse.Available() {
+		if a, err := sqlparse.Analyze(*text.Text); err == nil {
+			analysis["result"] = a
+		} else {
+			analysis["error"] = "the statement text could not be parsed"
+		}
+	} else if err == nil && text.Text == nil {
+		analysis["error"] = "query text is not collected for this instance"
+	}
+	resp["analysis"] = analysis
+	recs, err := s.d.Store.ListRecommendations(r.Context(), repository.RecommendationFilter{TargetID: t.ID, Statuses: activeStatuses})
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	related := []repository.Recommendation{}
+	for _, rec := range recs {
+		if slices.Contains(optimizer.StatementIDs(rec.Details), qid) {
+			related = append(related, rec)
+		}
+	}
+	resp["recommendations"] = related
 	writeJSON(w, http.StatusOK, resp)
 }
 

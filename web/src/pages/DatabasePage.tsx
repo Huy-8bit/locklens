@@ -240,6 +240,14 @@ export function DatabaseOverview() {
                       {c.enabled ? (
                         c.last_error ? (
                           <Badge tone="crit" title={c.last_error}>failing</Badge>
+                        ) : c.throttle_reason ? (
+                          <Badge tone="warn" title={c.throttle_reason}>
+                            slowed: every {seconds(c.interval_seconds)}
+                          </Badge>
+                        ) : c.burst ? (
+                          <Badge tone="accent" title="Collected faster while this instance has an open incident or an active problem (adaptive sampling).">
+                            fast: every {seconds(c.interval_seconds)}
+                          </Badge>
                         ) : (
                           <span className="text-xs text-muted">every {seconds(c.interval_seconds)}</span>
                         )

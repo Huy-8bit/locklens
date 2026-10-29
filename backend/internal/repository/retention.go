@@ -16,6 +16,10 @@ type RetentionPolicy struct {
 	Findings time.Duration
 	// Statement rollups (query baselines); at least History.
 	Rollups time.Duration
+	// One-minute and one-hour metric rollups; at least History (and the
+	// hourly ones at least as long as the one-minute ones).
+	MetricMinute time.Duration
+	MetricHour   time.Duration
 }
 
 // RetentionResult reports deleted rows per table.
@@ -56,19 +60,31 @@ func (s *Store) ApplyRetention(ctx context.Context, p RetentionPolicy, now time.
 			return res, err
 		}
 	}
-	rcut := now.Add(-max(p.Rollups, p.History)).UTC()
-	for _, t := range rollupTables {
+	// prune removes rows older than cutoff: whole chunks of a hypertable,
+	// batches otherwise.
+	prune := func(t string, cutoff time.Time) error {
 		if s.isHypertable(t) {
 			var n int64
-			if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM drop_chunks($1::regclass, older_than => $2::timestamptz)", t, rcut).Scan(&n); err != nil {
-				return res, s.red.Error(err)
+			if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM drop_chunks($1::regclass, older_than => $2::timestamptz)", t, cutoff).Scan(&n); err != nil {
+				return s.red.Error(err)
 			}
 			res[t+" (chunks)"] += n
-			continue
+			return nil
 		}
-		if err := run(t, "ts < $1", rcut); err != nil {
+		return run(t, "ts < $1", cutoff)
+	}
+	rcut := now.Add(-max(p.Rollups, p.History)).UTC()
+	for _, t := range rollupTables {
+		if err := prune(t, rcut); err != nil {
 			return res, err
 		}
+	}
+	minute := max(p.MetricMinute, p.History)
+	if err := prune("metric_rollups_1m", now.Add(-minute).UTC()); err != nil {
+		return res, err
+	}
+	if err := prune("metric_rollups_1h", now.Add(-max(p.MetricHour, minute)).UTC()); err != nil {
+		return res, err
 	}
 	// Identities stay while rollups or saved plans refer to them (baselines
 	// and plans outlive samples). Plans are kept as long as incidents.
@@ -87,6 +103,9 @@ func (s *Store) ApplyRetention(ctx context.Context, p RetentionPolicy, now time.
 	}
 	fcut := now.Add(-p.Findings).UTC()
 	if err := run("findings", "status = 'resolved' AND resolved_at < $1", fcut); err != nil {
+		return res, err
+	}
+	if err := run("recommendations", "status IN ('resolved', 'dismissed') AND coalesce(resolved_at, decided_at, last_seen) < $1", fcut); err != nil {
 		return res, err
 	}
 	if err := run("collection_gaps", "ended_at < $1", fcut); err != nil {

@@ -121,7 +121,7 @@ A target's `status` holds `state` (`pending`, `healthy`, `degraded`,
 | Method and path | Default range | Description |
 | --- | --- | --- |
 | `GET /api/v1/targets/{id}/overview` | | Latest values, session counts, blocking summary, visibility warnings, current findings, open incidents, host status. |
-| `GET /api/v1/targets/{id}/metrics?names=a,b` | 1h | Time series for 1–20 metric names (see [collectors.md](collectors.md#metrics)). Downsampled to at most 400 buckets per series; each point has `t`, `v` (null when unknown), `n` samples, and `known` samples. Includes collection `gaps` in the range. |
+| `GET /api/v1/targets/{id}/metrics?names=a,b` | 1h | Time series for 1–20 metric names (see [collectors.md](collectors.md#metrics)). Downsampled to at most 400 buckets per series; each point has `t`, `v` (null when unknown), `n` samples, and `known` samples. Includes collection `gaps` in the range. Coarse steps and ranges older than the raw history are read from rollups; `step_seconds` is then at least the rollup resolution (see [storage-and-retention.md](storage-and-retention.md#resolution-of-history)). Per-table metrics (`table.seq_rows.per_s`, `table.writes.per_s`, `table.idx_scans.per_s`, `table.seq_scans.per_s`, `table.dead_rows`) have one series per table label. |
 | `GET /api/v1/targets/{id}/activity` | | Latest activity report (sessions, blocking graph, long transactions, vacuum progress): live from memory, else the last stored snapshot (`source`: `live`, `stored`, `none`). |
 | `GET /api/v1/targets/{id}/blocking/snapshots` | 24h | Stored activity snapshots (`?blocking=true` for those with blocking; `limit` ≤ 1000). |
 | `GET /api/v1/targets/{id}/blocking/snapshots/{sid}` | | One stored snapshot rendered as a report. |
@@ -135,7 +135,7 @@ A target's `status` holds `state` (`pending`, `healthy`, `degraded`,
 | `GET /api/v1/targets/{id}/plans/{plan_id}` | | One plan with its parsed nodes, fingerprint, and index candidates (hypotheses). |
 | `GET /api/v1/targets/{id}/plans/compare?a=&b=` | | Differences between two plans: same shape, cost ratio, scan and join changes. |
 | `DELETE /api/v1/targets/{id}/plans/{plan_id}` | | Remove a saved plan (operators and administrators). |
-| `GET /api/v1/targets/{id}/tables` | | Table/vacuum health, vacuum progress, long transactions (live or last stored). |
+| `GET /api/v1/targets/{id}/tables` | | Table/vacuum health, vacuum progress, long transactions (live or last stored), and `activity`: the busiest tables of the last minute (rates of sequential scans and rows, index scans, rows written; dead rows). |
 | `GET /api/v1/targets/{id}/replication` | | Role, replicas with LSN lags and time-lag fields, slots with retained WAL, standby receiver state, archiver. |
 | `GET /api/v1/targets/{id}/host` | | node_exporter metrics: `configured`, `available`, `host`, `error`. |
 | `GET /api/v1/targets/{id}/findings` | | Findings; `?status=current` or `resolved`. |
@@ -161,6 +161,23 @@ samples, number of collections, resets, evicted entries), `available` and
 `unavailable_reason`, and `min_calls` used by the comparison flags. Query IDs
 are strings (64-bit values do not fit JavaScript numbers). See
 [query-analysis.md](query-analysis.md).
+
+## Query optimizer
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/v1/optimizer` | Recommendations across the fleet (`environment`), the largest benefit first; `status` (comma-separated, `all`; default: open, accepted, applied, verified, no_effect, regressed) and `kind` filters; `counts` by status; per target `catalog_at`, `database`, `query_text_enabled`, `hypopg_enabled`, `hypopg_installed`, `warnings`; `parser_available`. |
+| `GET /api/v1/targets/{id}/recommendations` | One target's recommendations (same filters). |
+| `GET /api/v1/targets/{id}/recommendations/{rid}` | One recommendation: `kind`, `status`, `severity`, `title`, `summary`, `details` (evidence and statements), `ddl`, `benefit`, `confidence`, decision, `applied_at`/`applied_how`, `before_ms`/`after_ms`, `whatif`. |
+| `POST /api/v1/targets/{id}/recommendations/{rid}/decision` | `{"status": "accepted" \| "dismissed" \| "open", "note"}` (operators and administrators). 409 once the change was applied. |
+| `POST /api/v1/targets/{id}/recommendations/{rid}/whatif` | `{"request_id"}`: check an index recommendation with a hypothetical index (HypoPG) through the workspace (SQL permission; the policy must allow SQL and HypoPG). Returns the costs per statement and the updated recommendation. |
+| `POST /api/v1/targets/{id}/optimizer/refresh` | Collect a fresh catalog (waits up to 20 s) and run the optimizer for the target now; returns `derived` and `fresh_catalog`. |
+
+The workspace policy (`PUT /api/v1/targets/{id}/workspace/policy`) accepts
+`hypopg_enabled` (needs `sql_enabled`). The statement insight response
+includes `analysis` (the parser's tables, predicates, sort order, and lints)
+and the `recommendations` that name the statement. See
+[query-optimizer.md](query-optimizer.md).
 
 ## Query performance
 

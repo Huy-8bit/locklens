@@ -101,6 +101,19 @@ INSERT, UPDATE, DELETE, or MERGE statement in the workspace's database is
 accepted, and it is planned, never executed. The plan is saved in the store
 for comparison (see [query-intelligence.md](query-intelligence.md#execution-plans)).
 
+## What-if checks with HypoPG
+
+With **What-if checks with HypoPG** enabled in the policy (it requires SQL),
+the [query optimizer](query-optimizer.md#what-if-checks-with-hypopg-optional)
+can check an index recommendation: `POST /api/v1/targets/{id}/recommendations/{rid}/whatif`
+plans the recommendation's statements, creates the index hypothetically with
+`hypopg_create_index` (session memory only, nothing written to the catalog),
+plans them again, and calls `hypopg_reset()`, in the same read-only
+transaction, limits, and audit (action `whatif`) as the SQL Editor. Each
+statement is planned under a savepoint, so one that fails does not abort the
+others. The `hypopg` extension must be installed by the database owner;
+LockLens never installs extensions.
+
 ## SQL execution and limits
 
 `POST /api/v1/targets/{id}/workspace/run` with `action: "sql"` (or `"explain"`)

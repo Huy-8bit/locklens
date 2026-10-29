@@ -25,8 +25,9 @@ export function AccessSetup({ id, policy }: { id: number; policy: WorkspacePolic
   const [metadata, setMetadata] = useState(policy.metadata_enabled || !policy.configured)
   const [data, setData] = useState(policy.data_enabled)
   const [sql, setSql] = useState(policy.sql_enabled)
+  const [hypopg, setHypopg] = useState(policy.hypopg_enabled ?? false)
   const [confirm, setConfirm] = useState(false)
-  const apply = () => save.mutate({ metadata_enabled: metadata, data_enabled: data, sql_enabled: sql, dsn: dsn || undefined })
+  const apply = () => save.mutate({ metadata_enabled: metadata, data_enabled: data, sql_enabled: sql, hypopg_enabled: sql && hypopg, dsn: dsn || undefined })
   const submit = (e: FormEvent) => {
     e.preventDefault()
     if ((data && !policy.data_enabled) || (sql && !policy.sql_enabled)) setConfirm(true)
@@ -63,6 +64,15 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO locklens_reader;`}</pre>
           <span>
             <span className="font-medium">Read-only SQL editor</span>
             <span className="block text-xs text-muted">Run one read-only statement at a time (at most 500 rows, 1 MiB) and show EXPLAIN plans. Statements run in a read-only transaction that is always rolled back.</span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" className="mt-1" checked={sql && hypopg} disabled={!sql} onChange={(e) => setHypopg(e.target.checked)} />
+          <span>
+            <span className="font-medium">What-if checks with HypoPG (optional)</span>
+            <span className="block text-xs text-muted">
+              Check index recommendations by planning statements with hypothetical indexes: they exist only in the session’s memory, nothing is written. Needs the SQL editor and the <code>hypopg</code> extension, installed by the database owner.
+            </span>
           </span>
         </label>
         <Button type="submit" variant="primary" busy={save.isPending}>

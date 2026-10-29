@@ -21,6 +21,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/notify"
 	"github.com/locklens/locklens/internal/domain/onboard"
+	"github.com/locklens/locklens/internal/domain/optimizer"
 	"github.com/locklens/locklens/internal/domain/settings"
 	"github.com/locklens/locklens/internal/domain/targets"
 	"github.com/locklens/locklens/internal/domain/workspace"
@@ -49,6 +50,7 @@ type Deps struct {
 	Notify    *notify.Service
 	Baselines *baseline.Service
 	Insight   *insight.Service
+	Optimizer *optimizer.Service
 	Hub       *Hub
 	Metrics   *obs.Metrics
 	Log       *slog.Logger
@@ -113,6 +115,12 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/fleet/queries", s.authed(s.fleetQueries))
 	m.HandleFunc("GET /api/v1/fleet/live", s.authed(s.fleetLive))
 	m.HandleFunc("GET /api/v1/performance", s.authed(s.performance))
+	m.HandleFunc("GET /api/v1/optimizer", s.authed(s.optimizerOverview))
+	m.HandleFunc("GET /api/v1/targets/{id}/recommendations", s.authed(s.listRecommendations))
+	m.HandleFunc("GET /api/v1/targets/{id}/recommendations/{rid}", s.authed(s.getRecommendation))
+	m.HandleFunc("POST /api/v1/targets/{id}/recommendations/{rid}/decision", s.allow(auth.PermAcknowledge, s.decideRecommendation))
+	m.HandleFunc("POST /api/v1/targets/{id}/recommendations/{rid}/whatif", s.allow(auth.PermRunSQL, s.whatIfRecommendation))
+	m.HandleFunc("POST /api/v1/targets/{id}/optimizer/refresh", s.allow(auth.PermAcknowledge, s.refreshOptimizer))
 	m.HandleFunc("GET /api/v1/system", s.authed(s.system))
 	m.HandleFunc("GET /api/v1/topology", s.authed(s.topology))
 	m.HandleFunc("PUT /api/v1/topology", s.allow(auth.PermManageSettings, s.putTopology))

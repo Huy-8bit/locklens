@@ -23,9 +23,11 @@ activity data. Collectors never run DDL or DML on targets, never call
 | `activity` | `interval` | min(interval, 15 s) | `pg_stat_activity`, `pg_blocking_pids()`, `pg_locks` (waiting locks only), `pg_prepared_xacts`, `pg_stat_progress_vacuum`, `max_connections`, reserved connections | Session counts by state, connection usage, blocking graph, long transactions, statements running for long (with `query_id`, PostgreSQL 14+, to compare with their baseline), vacuum progress; the full activity snapshot is stored for every collection with blocking or long transactions, and every 5 minutes otherwise |
 | `load` | 2 s (`LOCKLENS_LOAD_SAMPLE_INTERVAL`) | 5 s | `pg_stat_activity` (labels, state, wait event, `query_id`; never the query text) | Active session sampling: sessions that are not idle, aggregated into 15-second buckets; see [Database load](#database-load-active-session-sampling) |
 | `database` | max(interval, 15 s) | 15 s | `pg_stat_database`, `pg_stat_bgwriter`, `pg_stat_checkpointer` (17+), `pg_stat_io` (16+), WAL LSN, `pg_stat_archiver`, `pg_postmaster_start_time()` | Commit/rollback rates, cache hit ratio, temp files/bytes, deadlocks, checkpoints, background writer, I/O, WAL rate, archiver deltas |
-| `statements` | max(interval, 60 s); 15 s in demo mode | 30 s | `pg_stat_statements`, `pg_stat_statements_info` | Per-query deltas per collection; see [query-analysis.md](query-analysis.md) |
+| `statements` | max(interval, `LOCKLENS_STATEMENTS_INTERVAL`), 15 s by default | 30 s | `pg_stat_statements(false)` (counters without texts), `pg_stat_statements_info`; texts only for statements not seen before | Per-query deltas per collection; see [query-analysis.md](query-analysis.md) |
 | `replication` | max(interval, 30 s) | 15 s | `pg_stat_replication`, `pg_replication_slots`, `pg_stat_wal_receiver`, recovery functions | Role, replicas and lags, slots and retained WAL, standby receive/replay state |
 | `tables` | 5 min | 60 s | `pg_stat_user_tables`, `pg_stat_user_indexes`, `pg_class`, `pg_database` | Tuple estimates, vacuum/analyze times and counts, sizes (200 largest tables), XID age per database, database sizes |
+| `table_activity` | max(interval, 60 s) | 15 s | `pg_stat_user_tables` counters only (no size functions, no locks) | Per-table rates of the 20 busiest tables: sequential scans and rows read, index scans, rows written, dead rows (`table.*` metrics, Hot tables) |
+| `catalog` | 15 min, and on request (Optimize → Analyse now) | 60 s | `pg_index`, `pg_class`, `pg_constraint`, `pg_stat_user_tables`, `pg_stat_user_indexes`, `pg_stats` (`null_frac`, `n_distinct`, `correlation` only), `pg_extension`, planner settings | The schema for the [query optimizer](query-optimizer.md) |
 | `host` | max(interval, 15 s) | 10 s (5 s HTTP) | node_exporter `/metrics` (optional) | CPU, memory, disk and network throughput, filesystem usage |
 
 Database and table sizes run only in the 5-minute `tables` collector. Size
@@ -35,6 +37,41 @@ locked exclusively, so a long-running DDL statement on a target never blocks
 LockLens (and LockLens never queues behind it for long).
 
 The first run of each collector is staggered by 300 ms per collector.
+
+### Statement texts
+
+`pg_stat_statements` keeps statement texts in a file that the extension reads
+in full whenever texts are requested, the most expensive part of reading it.
+The `statements` collector therefore reads counters with
+`pg_stat_statements(false)` and asks for texts only for statements it has not
+seen before (or for all of them once after query text collection is turned
+on). The text is needed once per statement: its command class and text do not
+change while the entry exists. This is what makes a 15-second interval cheap.
+
+The `table_activity` rates are shown as **Hot tables** on the instance's
+Activity tab:
+
+![Hot tables](images/hot-tables.png)
+
+### Adaptive sampling
+
+While a target has an open incident, a statement running for long, blocked
+sessions, or a statement slower than its baseline, it is collected faster for
+`LOCKLENS_BURST_DURATION` (10 minutes, extended while the problem lasts):
+`activity` every 3 s, `database`, `statements`, and `host` every 5 s,
+`replication` every 10 s, `table_activity` every 15 s. Evidence around a
+problem is denser; quiet targets cost no more than before. The collector
+status shows `burst` and the interval in effect. `LOCKLENS_ADAPTIVE_SAMPLING=false`
+turns it off.
+
+### Collector time budget
+
+Each run is timed. A collector whose runs take more than
+`LOCKLENS_COLLECTOR_BUDGET_PERCENT` (10%) of its interval three times in a row
+runs half as often, up to 8 times less often, and returns to its normal pace
+step by step after 20 cheap runs. The collector status says so
+(`throttle_reason`), and the instance's Collection card shows "slowed". A
+target that is expensive to observe is thus protected from LockLens itself.
 
 ## Database load (active session sampling)
 

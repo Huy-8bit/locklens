@@ -36,7 +36,9 @@ returns them as strings so JavaScript does not round them.
 
 ## Deltas between collections
 
-The collector reads cumulative counters every 60 s (15 s in demo mode) and
+The collector reads cumulative counters every 15 s
+(`LOCKLENS_STATEMENTS_INTERVAL`; texts only for statements not seen before, see
+[collectors.md](collectors.md#statement-texts)) and
 stores **per-collection deltas** for entries that changed: calls, total
 execution time (the mean is derived), rows, shared blocks hit/read, temp blocks written, and WAL
 bytes. Rules for computing deltas:

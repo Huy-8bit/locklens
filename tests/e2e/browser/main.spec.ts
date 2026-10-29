@@ -185,6 +185,21 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     await page.getByRole('tab', { name: /Running now/ }).click()
     await expect(page).toHaveURL(/tab=running/)
     await expectAccessible(page, 'performance')
+
+    // Optimize: a fresh catalog on request, then recommendations with their SQL.
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Optimize' }).click()
+    await expect(page.getByRole('heading', { name: 'Optimize', exact: true })).toBeVisible()
+    const instances = page.getByRole('region', { name: 'Instances' })
+    await instances.getByRole('button', { name: 'Analyse now' }).first().click()
+    await expect(instances.getByText(/catalog of /).first()).toBeVisible({ timeout: 60_000 })
+    await page.getByRole('radio', { name: 'All' }).click()
+    const recs = page.getByRole('table', { name: /Recommendations/ })
+    if (await recs.isVisible()) {
+      await recs.locator('tbody tr').first().click()
+      await expect(page.getByRole('dialog').getByRole('heading', { name: 'Evidence' })).toBeVisible()
+      await page.keyboard.press('Escape')
+    }
+    await expectAccessible(page, 'optimize')
   })
 
   await test.step('browse tables and rows', async () => {
@@ -262,6 +277,9 @@ test('main investigation path', async ({ page, browser }, testInfo) => {
     await expect(page.getByRole('dialog')).toBeVisible()
     await expect(page.getByRole('dialog').getByText(/Current query|Last query/)).toBeVisible()
     await page.keyboard.press('Escape')
+    // The busiest tables, from table counters every minute.
+    await expect(page.getByRole('heading', { name: 'Hot tables' })).toBeVisible()
+    await expect(page.getByRole('table', { name: 'Busiest tables in the last minute' }).getByRole('link', { name: /^shop\./ }).first()).toBeVisible({ timeout: 90_000 })
     await expectAccessible(page, 'activity')
 
     await page.goto(`${base}/alerts`)

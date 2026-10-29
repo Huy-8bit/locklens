@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Search } from 'lucide-react'
 import { useActivity } from '../api/hooks'
 import { BlockingTree } from '../components/BlockingTree'
+import { HotTables } from '../components/HotTables'
 import { SectionHeader, useNumParam } from '../components/Shell'
 import { SessionDetail, stateTone } from '../components/widgets/SessionsTable'
 import { SqlText } from '../components/SqlText'
@@ -113,6 +114,7 @@ export default function ActivityPage() {
                   </div>
                 )}
               </Card>
+              <HotTables targetId={id} />
             </div>
           )
         }}

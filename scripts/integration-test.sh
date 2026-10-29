@@ -24,7 +24,7 @@ ROOT=$(pwd)
 VERSIONS=${LOCKLENS_IT_PG_VERSIONS:-"14.24 18.6"}
 ARTIFACTS=${LOCKLENS_IT_ARTIFACTS:-"$ROOT/test-results"}
 GO_TEST_TIMEOUT=${LOCKLENS_IT_GO_TIMEOUT:-15m}
-PACKAGES=${LOCKLENS_IT_PACKAGES:-"./tests/e2e/cli/... ./backend/internal/lib/postgres/... ./backend/internal/repository/... ./backend/internal/domain/workspace/... ./backend/internal/domain/onboard/... ./backend/internal/domain/incidents/... ./backend/internal/domain/notify/... ./tests/e2e/server/..."}
+PACKAGES=${LOCKLENS_IT_PACKAGES:-"./tests/e2e/cli/... ./backend/internal/lib/postgres/... ./backend/internal/repository/... ./backend/internal/domain/workspace/... ./backend/internal/domain/onboard/... ./backend/internal/domain/incidents/... ./backend/internal/domain/notify/... ./backend/internal/domain/optimizer/... ./tests/e2e/server/..."}
 RUN_FILTER=${LOCKLENS_IT_RUN:-.}
 WAIT_TIMEOUT=${LOCKLENS_IT_WAIT_TIMEOUT:-120}
 COMPOSE_FILE="$ROOT/deploy/compose.test.yaml"
@@ -100,6 +100,24 @@ CREATE DATABASE locklens_pgss;
 SQL
   "${compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -q -U locklens_it_admin -d locklens_pgss \
     -c "CREATE EXTENSION pg_stat_statements; GRANT CREATE ON SCHEMA public TO demo_app;" || return 1
+  # HypoPG (for what-if checks of index recommendations) is built from source
+  # into this disposable server and created in locklens_pgss. It needs the
+  # network; when it cannot be installed, the tests that need it are skipped.
+  local hypopg=0
+  if "${compose[@]}" exec -T -u root postgres sh -c '
+      set -e
+      apk add --no-cache --virtual .hypopg-build build-base >/dev/null
+      cd /tmp && wget -q -O hypopg.tgz https://github.com/HypoPG/hypopg/archive/refs/tags/1.4.4.tar.gz
+      tar xzf hypopg.tgz && cd hypopg-1.4.4
+      make -s USE_PGXS=1 with_llvm=no && make -s USE_PGXS=1 with_llvm=no install
+      apk del .hypopg-build >/dev/null' >"$workdir/hypopg.log" 2>&1 \
+    && "${compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -q -U locklens_it_admin -d locklens_pgss -c "CREATE EXTENSION hypopg" >>"$workdir/hypopg.log" 2>&1; then
+    hypopg=1
+    echo "    hypopg installed in locklens_pgss"
+  else
+    echo "    hypopg could not be installed (see below); tests that need it are skipped"
+    tail -5 "$workdir/hypopg.log" | sed 's/^/      /'
+  fi
   # Replication for the standby profile, then the standby itself.
   "${compose[@]}" exec -T postgres sh -c 'echo "host replication replicator all scram-sha-256" >> "$PGDATA/pg_hba.conf"' || return 1
   "${compose[@]}" exec -T postgres psql -q -U locklens_it_admin -d locklens_it -c 'SELECT pg_reload_conf()' >/dev/null || return 1
@@ -121,6 +139,7 @@ SQL
   env -u LOCKLENS_DSN \
     GOWORK="$workdir/go.work" \
     LOCKLENS_IT_PG_VERSION="$version" \
+    LOCKLENS_IT_HYPOPG="$hypopg" \
     LOCKLENS_IT_SERVER_VERSION="$server_version" \
     LOCKLENS_IT_ADMIN_DSN="postgres://locklens_it_admin:${admin_pw}@${base}" \
     LOCKLENS_IT_DEMO_DSN="postgres://demo_app:${demo_pw}@${base}" \

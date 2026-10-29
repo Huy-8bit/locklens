@@ -23,6 +23,7 @@ import {
   Sun,
   TriangleAlert,
   Users,
+  Wand,
   X,
 } from 'lucide-react'
 import { useFleet, useIncidents, useSystem } from '../api/hooks'
@@ -268,6 +269,7 @@ export function Shell() {
     {
       label: 'Investigate',
       items: [
+        <NavItem key="opt" to="/optimize" icon={<Wand />}>Optimize</NavItem>,
         <NavItem key="e" to="/explorer" icon={<FolderTree />}>Explorer</NavItem>,
         can('workspace.sql') ? <NavItem key="sql" to="/sql" icon={<SquareTerminal />}>SQL Editor</NavItem> : null,
       ],

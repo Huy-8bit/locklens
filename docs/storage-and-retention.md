@@ -27,6 +27,9 @@ recorded in `schema_migrations`; `/readyz` reports the schema version.
 | `metric_points` | `(target, metric, label, ts, value)`; `value` is NULL when unknown | History |
 | `query_identities`, `query_samples`, `statement_collections` | Query identities (text only with opt-in), per-collection statement deltas, collection metadata (interval, reset, evictions) | History |
 | `query_rollups`, `statement_coverage` | Five-minute statement rollups and collection coverage per bucket (with resets), the source of query baselines | Baselines |
+| `metric_rollups_1m`, `metric_rollups_1h` | Downsampled metrics: per bucket the sample counts (known and all), sum, max, last value, and time-weighted sums, so every aggregation (and "unknown") is the same as from raw points | Minute / hour rollups |
+| `catalog_state` | The latest schema catalog of each target (indexes, tables, foreign keys, column statistics without data values) | Replaced on each collection |
+| `recommendations` | Optimizer recommendations with evidence, SQL, decisions, application, before/after measurement, and what-if results | Findings (resolved and dismissed ones) |
 | `query_plans` | Execution plans saved on request (EXPLAIN output, shape fingerprint, cost, who and how) | Incidents |
 | `activity_snapshots` | Full activity snapshots (sessions, blocking edges, waiting locks) | History |
 | `table_stats`, `index_stats`, `state_snapshots` | Table/index statistics, replication and other state | History |
@@ -40,7 +43,8 @@ recorded in `schema_migrations`; `/readyz` reports the schema version.
 With TimescaleDB, the history tables (`metric_points`, `query_samples`,
 `statement_collections`, `activity_snapshots`, `table_stats`, `index_stats`,
 `state_snapshots`, `load_samples`, `load_buckets`) and the baseline rollups
-(`query_rollups`, weekly chunks; `statement_coverage`, 30-day chunks) are
+(`query_rollups`, weekly chunks; `statement_coverage`, 30-day chunks) and the
+metric rollups (`metric_rollups_1m`, weekly; `metric_rollups_1h`, 30-day) are
 **hypertables**:
 
 - **Partitioned by time** into daily chunks (weekly for the small tables), so
@@ -107,6 +111,23 @@ Synthetic data, one machine: real metrics compress differently (steady
 gauges better, noisy rates worse). Check the Settings page (Monitoring store),
 which shows each table's size and compression ratio.
 
+## Resolution of history
+
+Raw metric points are kept for `LOCKLENS_RETENTION` at the collection
+interval (10–15 s by default). Every minute LockLens rolls them up into
+one-minute and one-hour buckets (`metric_rollups_1m`, `metric_rollups_1h`),
+recomputing the last few minutes so late points are included. A chart reads:
+
+- raw points for steps under 5 minutes over the raw history;
+- one-minute rollups for steps of 5 minutes to 3 hours, and for ranges older
+  than the raw history;
+- hourly rollups for steps of 3 hours or more.
+
+The newest minutes not rolled up yet are read from raw points and merged, so
+a chart is never behind. Statement charts do the same with the five-minute
+statement rollups for steps of 5 minutes or more. Short relative ranges
+("15m", "1h") refresh after every collection in the UI (live tail).
+
 ## Retention
 
 | Data | Variable | Default |
@@ -114,6 +135,9 @@ which shows each table's size and compression ratio.
 | History (metrics, statements, snapshots, table stats, state) | `LOCKLENS_RETENTION` | 7 days |
 | Resolved incidents and their events | `LOCKLENS_INCIDENT_RETENTION` | 90 days |
 | Resolved findings, collection gaps | `LOCKLENS_FINDING_RETENTION` | 30 days |
+| One-minute metric rollups | `LOCKLENS_MINUTE_ROLLUP_RETENTION` | 14 days |
+| Hourly metric rollups | `LOCKLENS_HOUR_ROLLUP_RETENTION` | 90 days |
+| Resolved and dismissed recommendations | `LOCKLENS_FINDING_RETENTION` | 30 days |
 | Statement rollups and coverage (baselines) | `LOCKLENS_BASELINE_RETENTION` (never shorter than history) | 15 days |
 | Saved execution plans | `LOCKLENS_INCIDENT_RETENTION` | 90 days |
 
