@@ -15,6 +15,7 @@ const QueriesPage = lazy(() => import('./pages/QueriesPage'))
 const ReplicationPage = lazy(() => import('./pages/ReplicationPage'))
 const LoadPage = lazy(() => import('./pages/LoadPage'))
 const AlertsPage = lazy(() => import('./pages/AlertsPage'))
+const LogsPage = lazy(() => import('./pages/LogsPage'))
 const TopologyPage = lazy(() => import('./pages/TopologyPage'))
 const FleetQueriesPage = lazy(() => import('./pages/FleetQueriesPage'))
 const PerformancePage = lazy(() => import('./pages/PerformancePage'))
@@ -77,6 +78,7 @@ export function App() {
             <Route path="activity" element={<ActivityPage />} />
             <Route path="replication" element={<ReplicationPage />} />
             <Route path="alerts" element={<AlertsPage />} />
+            <Route path="logs" element={<LogsPage />} />
           </Route>
           <Route path="topology" element={<TopologyPage />} />
           <Route path="queries" element={<FleetQueriesPage />} />

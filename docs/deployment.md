@@ -85,6 +85,36 @@ You can also skip the frontend image and serve `web/dist` (`make web`) with
 any web server that proxies `/api/` to the backend with the same rules; copy
 the headers from [web/nginx/default.conf.template](../web/nginx/default.conf.template).
 
+## Several servers
+
+For availability, run two or more backends with the same
+`LOCKLENS_STORE_DSN` and `LOCKLENS_MASTER_KEY` behind the frontend (or any
+load balancer; sticky sessions keep SQL workspace cancellation on the server
+that runs the statement). They split the instances by leases and take over
+each other's within about a minute; see
+[architecture.md](architecture.md#several-servers). Give each a distinct
+`LOCKLENS_SERVER_ID` if you want stable names in Settings → Data and storage.
+The monitoring store itself is a single PostgreSQL; make it highly available
+with your usual PostgreSQL tooling.
+
+## Log agent
+
+To ship server logs, create a token of scope "Ship logs" for the instance
+(Settings → API tokens) and run the agent on the database host, where it can
+read the log directory (for example as the `postgres` user or a member of its
+group):
+
+```bash
+LOCKLENS_AGENT_TOKEN=llk_... locklens agent --server https://locklens.example.com \
+  --log /var/lib/postgresql/data/log --state-dir /var/lib/locklens-agent
+```
+
+The same image runs it: `docker run -v /var/lib/postgresql/data/log:/log:ro
+-v locklens-agent:/state -e LOCKLENS_AGENT_TOKEN … <backend image> agent
+--server … --log /log --state-dir /state`. See
+[configuration.md](configuration.md#log-agent) for the logging settings it
+needs.
+
 ## Versions and upgrades
 
 Run the same tag of both images (`X.Y.Z` for releases, `latest` for the main

@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/locklens/locklens/internal/lib/postgres"
 	"github.com/locklens/locklens/internal/lib/render"
 	"github.com/locklens/locklens/internal/lib/textsafe"
+	"github.com/locklens/locklens/internal/targetdb"
 )
 
 // errDoctorFailed signals exit code 1 after the checks were printed.
@@ -20,7 +20,7 @@ var errDoctorFailed = errors.New("one or more checks failed")
 type doctorResult struct {
 	Target string           `json:"target"`
 	OK     bool             `json:"ok"`
-	Checks []postgres.Check `json:"checks"`
+	Checks []targetdb.Check `json:"checks"`
 }
 
 func (a *app) doctorCommand() *cobra.Command {
@@ -54,18 +54,18 @@ Warnings mean reports will be less complete; failures exit with code 1.`,
 			started := time.Now()
 			c, err := connect(ctx)
 			if err != nil {
-				res.Checks = append(res.Checks, postgres.Check{Name: "connection", Status: postgres.StatusFail,
-					Detail: a.red.String(err.Error()), Hint: postgres.Hint(err)})
+				res.Checks = append(res.Checks, targetdb.Check{Name: "connection", Status: targetdb.StatusFail,
+					Detail: a.red.String(err.Error()), Hint: targetdb.Hint(err)})
 			} else {
 				defer c.Close()
-				res.Checks = append(res.Checks, postgres.Check{Name: "connection", Status: postgres.StatusOK,
+				res.Checks = append(res.Checks, targetdb.Check{Name: "connection", Status: targetdb.StatusOK,
 					Detail: fmt.Sprintf("connected in %d ms", time.Since(started).Milliseconds())})
 				dctx, cancel := contextWithTimeout(ctx, a.queryTimeout)
-				res.Checks = append(res.Checks, c.Diagnose(dctx, postgres.Options{QueryMaxLength: 200, MinTxAge: time.Minute})...)
+				res.Checks = append(res.Checks, c.Diagnose(dctx, targetdb.Options{QueryMaxLength: 200, MinTxAge: time.Minute})...)
 				cancel()
 			}
 			for _, ch := range res.Checks {
-				if ch.Status == postgres.StatusFail {
+				if ch.Status == targetdb.StatusFail {
 					res.OK = false
 				}
 			}

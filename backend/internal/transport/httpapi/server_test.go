@@ -14,6 +14,10 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/auth"
+	"github.com/locklens/locklens/internal/domain/changes"
+	"github.com/locklens/locklens/internal/domain/observe"
+	"github.com/locklens/locklens/internal/domain/targets"
+	"github.com/locklens/locklens/internal/domain/tokens"
 	"github.com/locklens/locklens/internal/lib/obs"
 	"github.com/locklens/locklens/internal/repository"
 )
@@ -266,6 +270,11 @@ func TestRoutePermissions(t *testing.T) {
 		{"DELETE", "/api/v1/topology/1", "", auth.PermManageSettings},
 		{"POST", "/api/v1/incidents/import", "{}", auth.PermManageSettings},
 		{"POST", "/api/v1/incidents/1/acknowledge", "{}", auth.PermAcknowledge},
+		{"POST", "/api/v1/changes", "{}", auth.PermAcknowledge},
+		{"DELETE", "/api/v1/changes/1", "", auth.PermManageSettings},
+		{"GET", "/api/v1/tokens", "", auth.PermManageSettings},
+		{"POST", "/api/v1/tokens", "{}", auth.PermManageSettings},
+		{"DELETE", "/api/v1/tokens/1", "", auth.PermManageSettings},
 		{"POST", "/api/v1/targets/1/workspace/run", `{"action":"data","request_id":"r-123456"}`, auth.PermBrowseData},
 		{"POST", "/api/v1/targets/1/workspace/run", `{"action":"sql","request_id":"r-123456"}`, auth.PermRunSQL},
 		{"POST", "/api/v1/targets/1/workspace/run", `{"action":"explain","request_id":"r-123456"}`, auth.PermRunSQL},
@@ -329,4 +338,77 @@ func TestClientKeyBehindTrustedProxy(t *testing.T) {
 			t.Errorf("remote %s xff %q: got %s, want %s", c.remote, c.xf, got, c.want)
 		}
 	}
+}
+
+// fakeTokens accepts one secret with a fixed token.
+type fakeTokens struct {
+	TokenService
+	secret string
+	token  repository.APIToken
+}
+
+func (f fakeTokens) Authenticate(_ context.Context, secret, scope string, _ int64) (repository.APIToken, error) {
+	if secret != f.secret {
+		return repository.APIToken{}, tokens.ErrInvalid
+	}
+	if scope != f.token.Scope {
+		return repository.APIToken{}, tokens.ErrScope
+	}
+	return f.token, nil
+}
+
+// fakeChanges records reported changes.
+type fakeChanges struct {
+	ChangeService
+	got *[]observe.ChangeEvent
+}
+
+func (f fakeChanges) Record(_ context.Context, r changes.Report, source, by string, now time.Time) (observe.ChangeEvent, error) {
+	e := observe.ChangeEvent{ID: 1, TargetID: r.TargetID, At: now, Kind: r.Kind, Source: source, Title: r.Title, CreatedBy: by}
+	*f.got = append(*f.got, e)
+	return e, nil
+}
+
+func TestReportChangeWithToken(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var got []observe.ChangeEvent
+	seven := int64(7)
+	s := New(Deps{Auth: auth.NewService(roleStore{"viewer"}, time.Hour, false), Metrics: obs.NewMetrics(), Log: log,
+		Tokens:  fakeTokens{secret: "llk_good", token: repository.APIToken{Name: "ci", Scope: repository.TokenEvents, TargetID: &seven}},
+		Changes: fakeChanges{got: &got}, Targets: fakeTargets{}})
+	post := func(auth, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/changes", strings.NewReader(body))
+		if auth != "" {
+			r.Header.Set("Authorization", auth)
+		}
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, r)
+		return w
+	}
+	deploy := `{"kind":"deploy","title":"api v2.3.1"}`
+	// A token needs no session or CSRF header; a token limited to an
+	// instance reports for that instance.
+	if w := post("Bearer llk_good", deploy); w.Code != http.StatusCreated || len(got) != 1 ||
+		got[0].Source != changes.SourceAPI || got[0].CreatedBy != "token:ci" || got[0].TargetID == nil || *got[0].TargetID != 7 {
+		t.Fatalf("token report: %d %s %+v", w.Code, w.Body, got)
+	}
+	if w := post("Bearer llk_good", `{"kind":"deploy","title":"x","target_id":8}`); w.Code != http.StatusForbidden {
+		t.Fatalf("other instance: %d", w.Code)
+	}
+	if w := post("Bearer llk_bad", deploy); w.Code != http.StatusUnauthorized {
+		t.Fatalf("bad token: %d", w.Code)
+	}
+	// Without a token it is a session request: a viewer may not report.
+	if w := post("", deploy); w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden {
+		t.Fatalf("no token: %d", w.Code)
+	}
+	if w := post("Bearer llk_good", `{"kind":"restart","title":"x"}`); w.Code != http.StatusBadRequest && w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("detected kinds cannot be reported: %d", w.Code)
+	}
+}
+
+type fakeTargets struct{ TargetService }
+
+func (fakeTargets) Get(_ context.Context, id int64) (targets.View, error) {
+	return targets.View{ID: id}, nil
 }

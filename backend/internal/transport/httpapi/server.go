@@ -2,7 +2,8 @@
 // health and metrics endpoints. The web UI is a separate image.
 //
 // All /api/v1 routes except login and session require an authenticated
-// session; mutations also require the CSRF header. Responses never contain
+// session; mutations also require the CSRF header. Machine endpoints
+// (reporting changes, shipping logs) also accept an API token instead. Responses never contain
 // connection strings, passwords, or raw internal errors.
 package httpapi
 
@@ -15,16 +16,7 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/auth"
-	"github.com/locklens/locklens/internal/domain/baseline"
-	"github.com/locklens/locklens/internal/domain/collector"
-	"github.com/locklens/locklens/internal/domain/insight"
 	"github.com/locklens/locklens/internal/domain/model"
-	"github.com/locklens/locklens/internal/domain/notify"
-	"github.com/locklens/locklens/internal/domain/onboard"
-	"github.com/locklens/locklens/internal/domain/optimizer"
-	"github.com/locklens/locklens/internal/domain/settings"
-	"github.com/locklens/locklens/internal/domain/targets"
-	"github.com/locklens/locklens/internal/domain/workspace"
 	"github.com/locklens/locklens/internal/lib/obs"
 	"github.com/locklens/locklens/internal/repository"
 )
@@ -40,17 +32,21 @@ const (
 
 // Deps are the server's collaborators.
 type Deps struct {
-	Workspace *workspace.Service
-	Onboard   *onboard.Service
-	Store     *repository.Store
-	Auth      *auth.Service
-	Targets   *targets.Service
-	Manager   *collector.Manager
-	Settings  *settings.Service
-	Notify    *notify.Service
-	Baselines *baseline.Service
-	Insight   *insight.Service
-	Optimizer *optimizer.Service
+	Workspace WorkspaceService
+	Onboard   OnboardService
+	Store     Store
+	Auth      AuthService
+	Targets   TargetService
+	Manager   CollectorManager
+	Settings  SettingsService
+	Notify    NotifyService
+	Baselines BaselineService
+	Insight   InsightService
+	Optimizer OptimizerService
+	Changes   ChangeService
+	Tokens    TokenService
+	Cluster   ClusterInfo
+	Logs      LogService
 	Hub       *Hub
 	Metrics   *obs.Metrics
 	Log       *slog.Logger
@@ -182,6 +178,15 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/settings/rules", s.authed(s.getRuleSettings))
 	m.HandleFunc("PUT /api/v1/settings/rules", s.allow(auth.PermManageSettings, s.putRuleSettings))
 	m.HandleFunc("GET /api/v1/storage", s.authed(s.storageStats))
+	m.HandleFunc("POST /api/v1/ingest/logs", s.ingestLogs)
+	m.HandleFunc("GET /api/v1/targets/{id}/logs", s.authed(s.targetLogs))
+	m.HandleFunc("GET /api/v1/targets/{id}/logs/events", s.authed(s.targetLogEvents))
+	m.HandleFunc("GET /api/v1/changes", s.authed(s.listChanges))
+	m.HandleFunc("POST /api/v1/changes", s.tokenOr(repository.TokenEvents, auth.PermAcknowledge, s.reportChange))
+	m.HandleFunc("DELETE /api/v1/changes/{id}", s.allow(auth.PermManageSettings, s.deleteChange))
+	m.HandleFunc("GET /api/v1/tokens", s.allow(auth.PermManageSettings, s.listTokens))
+	m.HandleFunc("POST /api/v1/tokens", s.allow(auth.PermManageSettings, s.createToken))
+	m.HandleFunc("DELETE /api/v1/tokens/{id}", s.allow(auth.PermManageSettings, s.revokeToken))
 	m.HandleFunc("GET /api/v1/events", s.authed(func(w http.ResponseWriter, r *http.Request) { s.d.Hub.ServeHTTP(w, r) }))
 
 	m.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

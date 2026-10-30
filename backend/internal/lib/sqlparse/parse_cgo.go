@@ -400,3 +400,17 @@ func constString(n *pg.Node) string {
 func tableName(rv *pg.RangeVar) string {
 	return Table{Schema: rv.GetSchemaname(), Name: rv.GetRelname()}.Qualified()
 }
+
+// normalizeParsed normalises with PostgreSQL's scanner and fingerprints
+// with its parser.
+func normalizeParsed(sql string) (string, string, bool) {
+	n, err := pg.Normalize(sql)
+	if err != nil {
+		return "", "", false
+	}
+	fp, err := pg.Fingerprint(sql)
+	if err != nil {
+		return "", "", false
+	}
+	return n, fp, true
+}

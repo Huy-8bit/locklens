@@ -85,7 +85,9 @@ export function RecommendationDetail({ rec, target }: { rec: Recommendation; tar
   const info = kindInfo(rec.kind)
   const statements = rec.details.statements ?? (rec.details.statement ? [rec.details.statement] : [])
   const indexRec = rec.kind === 'missing_index' || rec.kind === 'fk_without_index'
-  const hypopgReady = !!target?.hypopg_enabled && !!target.hypopg_installed
+  // What-if checks run on the connected database only.
+  const otherDatabase = !!rec.database && !!target?.database && rec.database !== target.database
+  const hypopgReady = !!target?.hypopg_enabled && !!target.hypopg_installed && !otherDatabase
   const change = changeLabel(rec.before_ms, rec.after_ms)
   const decidable = rec.status === 'open' || rec.status === 'accepted' || rec.status === 'dismissed'
 
@@ -159,7 +161,9 @@ export function RecommendationDetail({ rec, target }: { rec: Recommendation; tar
             <p className="text-xs text-ink-2">
               {hypopgReady
                 ? 'Plan the statements with this index created hypothetically (in memory only; nothing is written).'
-                : !target?.hypopg_installed
+                : otherDatabase
+                  ? `What-if checks run on the database of the connection string (${target?.database}); this recommendation is for ${rec.database}.`
+                  : !target?.hypopg_installed
                   ? 'The hypopg extension is not installed in this database. Its owner can install it; LockLens never installs extensions.'
                   : 'What-if checks are turned off for this instance (Explorer → access settings).'}
             </p>

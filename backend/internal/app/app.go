@@ -4,20 +4,27 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/locklens/locklens/internal/config"
 	"github.com/locklens/locklens/internal/domain/auth"
 	"github.com/locklens/locklens/internal/domain/baseline"
+	"github.com/locklens/locklens/internal/domain/changes"
+	"github.com/locklens/locklens/internal/domain/cluster"
 	"github.com/locklens/locklens/internal/domain/collector"
 	"github.com/locklens/locklens/internal/domain/incidents"
 	"github.com/locklens/locklens/internal/domain/insight"
+	"github.com/locklens/locklens/internal/domain/logs"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/notify"
 	"github.com/locklens/locklens/internal/domain/onboard"
@@ -26,6 +33,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/rollup"
 	"github.com/locklens/locklens/internal/domain/settings"
 	"github.com/locklens/locklens/internal/domain/targets"
+	"github.com/locklens/locklens/internal/domain/tokens"
 	"github.com/locklens/locklens/internal/domain/workspace"
 	"github.com/locklens/locklens/internal/lib/obs"
 	"github.com/locklens/locklens/internal/lib/secret"
@@ -68,9 +76,6 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	notifier := notify.New(store, box, log, cfg.PublicURL, version)
 	// Incident events go to the browsers (SSE) and to notifications.
 	recorder := incidents.NewRecorder(store, incidents.DefaultConfig(), st, metrics, fanout{hub, notifier}, log)
-	if err := recorder.Recover(ctx); err != nil {
-		return fmt.Errorf("recover open incidents: %w", err)
-	}
 	baselines := baseline.NewService(store, func() baseline.Params { return insight.BaselineParams(st.Thresholds()) }, log)
 	recorder.SetBaselines(baselines)
 	recorder.SetBurster(manager)
@@ -85,11 +90,37 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 		}
 	}
 
+	// Servers sharing the store split the targets and the once-per-cluster
+	// jobs, and exchange browser events and requests over a bus.
+	node := cluster.New(store, serverID(cfg), hostname(), version, log)
+	bus := cluster.NewBus(node, store, log)
+	hub.Forward(bus.Send)
+	bus.DeliverTo(hub.PublishLocal)
+	manager.SetCluster(node, bus)
+	bus.Handle(collector.MessageRunSoon, func(raw json.RawMessage) {
+		var m struct {
+			TargetID  int64  `json:"target_id"`
+			Collector string `json:"collector"`
+		}
+		if json.Unmarshal(raw, &m) == nil {
+			manager.RunSoonHere(m.TargetID, m.Collector)
+		}
+	})
+	st.OnChange(func() { bus.Send(messageSettingsChanged, nil) })
+	bus.Handle(messageSettingsChanged, func(json.RawMessage) {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := st.Reload(rctx); err != nil {
+			log.Warn("reloading settings changed on another server failed", "error", err.Error())
+		}
+	})
+
 	tool := model.Tool{Name: "locklens", Version: version}
 	handler := httpapi.New(httpapi.Deps{Workspace: ws, Store: store, Auth: auth.NewService(store, cfg.SessionIdle, cfg.CookieSecure), Targets: tsvc,
 		Onboard: onboard.New(store, box, tsvc, ws),
 		Manager: manager, Settings: st, Notify: notifier, Hub: hub, Metrics: metrics, Log: log, Tool: tool, TrustedProxies: cfg.TrustedProxies, TrustedProxyHosts: cfg.TrustedProxyHosts,
-		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode, Baselines: baselines, Insight: insight.NewService(store, cfg.LoadSampling), Optimizer: opt})
+		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode, Baselines: baselines, Insight: insight.NewService(store, cfg.LoadSampling), Optimizer: opt,
+		Changes: changes.New(store), Tokens: tokens.New(store), Cluster: node, Logs: logs.New(store)})
 
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 64 << 10}
@@ -99,19 +130,33 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	}
 
 	bg, cancelBG := context.WithCancel(context.WithoutCancel(ctx))
-	done := make(chan struct{}, 7)
-	go func() { writer.Run(bg); done <- struct{}{} }()
-	go func() { notifier.Run(bg); done <- struct{}{} }()
-	go func() { manager.Run(bg); done <- struct{}{} }()
-	go func() { baselines.Run(bg, baselineRefresh(cfg)); done <- struct{}{} }()
-	go func() { rollup.Run(bg, store, time.Minute, cfg.HistoryRetention, log); done <- struct{}{} }()
-	go func() { opt.Run(bg, optimizerEvery(cfg)); done <- struct{}{} }()
-	go func() {
-		retention.Run(bg, store, repository.RetentionPolicy{History: cfg.HistoryRetention, Incidents: cfg.IncidentRetention,
-			Findings: cfg.FindingRetention, Rollups: cfg.BaselineRetention,
-			MetricMinute: cfg.MinuteRollupRetention, MetricHour: cfg.HourRollupRetention}, time.Hour, log)
-		done <- struct{}{}
-	}()
+	// Every server runs these.
+	tasks := []func(context.Context){
+		node.Run,
+		bus.Run,
+		writer.Run,
+		notifier.Run,
+		manager.Run,
+	}
+	// One server of a cluster runs each of these at a time.
+	singletons := map[string]func(context.Context){
+		"baselines": func(ctx context.Context) { baselines.Run(ctx, baselineRefresh(cfg)) },
+		"rollups":   func(ctx context.Context) { rollup.Run(ctx, store, time.Minute, cfg.HistoryRetention, log) },
+		"optimizer": func(ctx context.Context) { opt.Run(ctx, optimizerEvery(cfg)) },
+		"retention": func(ctx context.Context) {
+			retention.Run(ctx, store, repository.RetentionPolicy{History: cfg.HistoryRetention, Incidents: cfg.IncidentRetention,
+				Findings: cfg.FindingRetention, Rollups: cfg.BaselineRetention,
+				MetricMinute: cfg.MinuteRollupRetention, MetricHour: cfg.HourRollupRetention}, time.Hour, log)
+		},
+		"notification-reminders": notifier.RunReminders,
+	}
+	for name, run := range singletons {
+		tasks = append(tasks, func(ctx context.Context) { node.Singleton(ctx, name, run) })
+	}
+	done := make(chan struct{}, len(tasks))
+	for _, run := range tasks {
+		go func() { run(bg); done <- struct{}{} }()
+	}
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()
@@ -131,7 +176,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	defer cancel()
 	_ = srv.Shutdown(sctx)
 	cancelBG()
-	for range 7 {
+	for range tasks {
 		select {
 		case <-done:
 		case <-sctx.Done():
@@ -191,6 +236,31 @@ func loadInterval(cfg config.Config) time.Duration {
 }
 
 // fanout publishes each event to several sinks.
+// messageSettingsChanged tells the other servers to reload the settings.
+const messageSettingsChanged = "settings.changed"
+
+// The recorder adopts the open incidents of the targets this server
+// starts collecting.
+var _ collector.Adopter = (*incidents.Recorder)(nil)
+
+// serverID is LOCKLENS_SERVER_ID, or the host name with a random suffix.
+func serverID(cfg config.Config) string {
+	if cfg.ServerID != "" {
+		return cfg.ServerID
+	}
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hostname() + "-" + hex.EncodeToString(b)
+}
+
+func hostname() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return "locklens"
+	}
+	return h
+}
+
 type fanout []collector.EventSink
 
 func (f fanout) Publish(kind string, payload any) {

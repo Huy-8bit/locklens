@@ -2,8 +2,9 @@ package repository
 
 import (
 	"context"
-	"fmt"
 	"time"
+
+	"github.com/locklens/locklens/internal/repository/queries"
 )
 
 // RetentionPolicy says how long data is kept.
@@ -25,38 +26,31 @@ type RetentionPolicy struct {
 // RetentionResult reports deleted rows per table.
 type RetentionResult map[string]int64
 
-// historyTables are pruned by their ts column.
-// rollupTables are kept for the rollup retention (query baselines).
-var rollupTables = []string{"query_rollups", "statement_coverage"}
-
-var historyTables = []string{"metric_points", "query_samples", "statement_collections", "activity_snapshots",
-	"table_stats", "index_stats", "state_snapshots", "load_samples", "load_buckets"}
-
 // ApplyRetention deletes expired rows in batches of 5,000 with a short pause
 // between batches, so it never holds long locks or starves collectors.
 // Incidents keep their own evidence, so pruning raw history never changes an
 // incident.
 func (s *Store) ApplyRetention(ctx context.Context, p RetentionPolicy, now time.Time) (RetentionResult, error) {
 	res := RetentionResult{}
-	run := func(table, where string, args ...any) error {
-		n, err := s.deleteInBatchesPaced(ctx, table, where, args...)
+	run := func(table, sql string, args ...any) error {
+		n, err := s.deleteInBatchesPaced(ctx, sql, args...)
 		res[table] += n
 		return err
 	}
 	cutoff := now.Add(-p.History).UTC()
-	for _, t := range historyTables {
+	for _, t := range queries.HistoryTables {
 		if s.isHypertable(t) {
 			// Whole chunks older than the cutoff are dropped: no row-by-row
 			// delete, no bloat. Rows of the chunk that straddles the cutoff
 			// stay until that chunk ends (at most one chunk interval longer).
 			var n int64
-			if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM drop_chunks($1::regclass, older_than => $2::timestamptz)", t, cutoff).Scan(&n); err != nil {
+			if err := s.pool.QueryRow(ctx, queries.DropChunksOlderThan, t, cutoff).Scan(&n); err != nil {
 				return res, s.red.Error(err)
 			}
 			res[t+" (chunks)"] += n
 			continue
 		}
-		if err := run(t, "ts < $1", cutoff); err != nil {
+		if err := run(t, queries.DeleteOlderThan(t), cutoff); err != nil {
 			return res, err
 		}
 	}
@@ -65,71 +59,76 @@ func (s *Store) ApplyRetention(ctx context.Context, p RetentionPolicy, now time.
 	prune := func(t string, cutoff time.Time) error {
 		if s.isHypertable(t) {
 			var n int64
-			if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM drop_chunks($1::regclass, older_than => $2::timestamptz)", t, cutoff).Scan(&n); err != nil {
+			if err := s.pool.QueryRow(ctx, queries.DropChunksOlderThan, t, cutoff).Scan(&n); err != nil {
 				return s.red.Error(err)
 			}
 			res[t+" (chunks)"] += n
 			return nil
 		}
-		return run(t, "ts < $1", cutoff)
+		return run(t, queries.DeleteOlderThan(t), cutoff)
 	}
 	rcut := now.Add(-max(p.Rollups, p.History)).UTC()
-	for _, t := range rollupTables {
+	for _, t := range queries.RollupTables {
 		if err := prune(t, rcut); err != nil {
 			return res, err
 		}
 	}
 	minute := max(p.MetricMinute, p.History)
-	if err := prune("metric_rollups_1m", now.Add(-minute).UTC()); err != nil {
+	if err := prune(queries.MinuteRollupTable, now.Add(-minute).UTC()); err != nil {
 		return res, err
 	}
-	if err := prune("metric_rollups_1h", now.Add(-max(p.MetricHour, minute)).UTC()); err != nil {
+	if err := prune(queries.HourRollupTable, now.Add(-max(p.MetricHour, minute)).UTC()); err != nil {
 		return res, err
 	}
 	// Identities stay while rollups or saved plans refer to them (baselines
 	// and plans outlive samples). Plans are kept as long as incidents.
-	if err := run("query_plans", "captured_at < $1", now.Add(-p.Incidents).UTC()); err != nil {
+	if err := run("query_plans", queries.PurgeOldPlans, now.Add(-p.Incidents).UTC()); err != nil {
 		return res, err
 	}
-	if err := run("query_identities", "NOT EXISTS (SELECT 1 FROM query_rollups r WHERE r.identity_id = query_identities.id) AND NOT EXISTS (SELECT 1 FROM query_plans p WHERE p.identity_id = query_identities.id) AND last_seen < $1 AND NOT EXISTS (SELECT 1 FROM query_samples q WHERE q.identity_id = query_identities.id)", cutoff); err != nil {
+	if err := run("query_identities", queries.PurgeUnreferencedIdentities, cutoff); err != nil {
 		return res, err
 	}
 	icut := now.Add(-p.Incidents).UTC()
-	if err := run("incident_events", "incident_id IN (SELECT id FROM incidents WHERE state = 'resolved' AND resolved_at < $1)", icut); err != nil {
+	if err := run("incident_events", queries.PurgeResolvedIncidentEvents, icut); err != nil {
 		return res, err
 	}
-	if err := run("incidents", "state = 'resolved' AND resolved_at < $1", icut); err != nil {
+	if err := run("incidents", queries.PurgeResolvedIncidents, icut); err != nil {
 		return res, err
 	}
 	fcut := now.Add(-p.Findings).UTC()
-	if err := run("findings", "status = 'resolved' AND resolved_at < $1", fcut); err != nil {
+	if err := run("findings", queries.PurgeResolvedFindings, fcut); err != nil {
 		return res, err
 	}
-	if err := run("recommendations", "status IN ('resolved', 'dismissed') AND coalesce(resolved_at, decided_at, last_seen) < $1", fcut); err != nil {
+	if err := run("recommendations", queries.PurgeClosedRecommendations, fcut); err != nil {
 		return res, err
 	}
-	if err := run("collection_gaps", "ended_at < $1", fcut); err != nil {
+	if err := run("collection_gaps", queries.PurgeOldGaps, fcut); err != nil {
 		return res, err
 	}
-	if err := run("notification_deliveries", "at < $1", fcut); err != nil {
+	// Changes explain incidents, so they are kept as long as incidents.
+	if err := run("change_events", queries.PurgeOldChanges, icut); err != nil {
 		return res, err
 	}
-	if err := run("notification_silences", "ends_at < $1", fcut); err != nil {
+	if err := run("notification_deliveries", queries.PurgeOldDeliveries, fcut); err != nil {
 		return res, err
 	}
-	if err := run("auth_sessions", "expires_at < $1", now.UTC()); err != nil {
+	if err := run("notification_silences", queries.PurgeEndedSilences, fcut); err != nil {
+		return res, err
+	}
+	if err := run("auth_sessions", queries.PurgeExpiredSessions, now.UTC()); err != nil {
 		return res, err
 	}
 	// Soft-deleted targets whose history has fully expired are removed.
-	if err := run("targets", "deleted_at IS NOT NULL AND deleted_at < $1 AND NOT EXISTS (SELECT 1 FROM incidents i WHERE i.target_id = targets.id)", cutoff); err != nil {
+	if err := run("targets", queries.PurgeDeletedTargets, cutoff); err != nil {
 		return res, err
 	}
 	return res, nil
 }
 
-func (s *Store) deleteInBatchesPaced(ctx context.Context, table, where string, args ...any) (int64, error) {
+// deleteInBatchesPaced repeats a batched delete (at most 5,000 rows) until a
+// batch deletes fewer, pausing between batches.
+func (s *Store) deleteInBatchesPaced(ctx context.Context, sql string, args ...any) (int64, error) {
 	var total int64
-	sql := fmt.Sprintf("DELETE FROM %s WHERE ctid IN (SELECT ctid FROM %s WHERE %s LIMIT 5000)", table, table, where)
 	for {
 		tag, err := s.pool.Exec(ctx, sql, args...)
 		if err != nil {
@@ -161,24 +160,9 @@ type StorageStats struct {
 
 // TableSizes returns sizes of LockLens' tables (estimated row counts).
 func (s *Store) TableSizes(ctx context.Context) ([]StorageStats, error) {
-	q := `
-SELECT c.relname, pg_total_relation_size(c.oid), greatest(c.reltuples, 0)::bigint, NULL::bigint, NULL::bigint
-FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = current_schema() AND c.relkind = 'r'
-ORDER BY 2 DESC`
+	q := queries.TableSizes
 	if s.timescale.Enabled {
-		// A hypertable's rows live in its chunks; compressed chunks report
-		// their size before compression too.
-		q = `
-SELECT c.relname,
-       CASE WHEN h.hypertable_name IS NULL THEN pg_total_relation_size(c.oid) ELSE hypertable_size(c.oid) END,
-       CASE WHEN h.hypertable_name IS NULL THEN greatest(c.reltuples, 0)::bigint ELSE approximate_row_count(c.oid) END,
-       cs.before_compression_total_bytes, cs.after_compression_total_bytes
-FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-LEFT JOIN timescaledb_information.hypertables h ON h.hypertable_schema = n.nspname AND h.hypertable_name = c.relname
-LEFT JOIN LATERAL (SELECT * FROM hypertable_compression_stats(c.oid) WHERE h.compression_enabled AND h.hypertable_name IS NOT NULL) cs ON true
-WHERE n.nspname = current_schema() AND c.relkind = 'r'
-ORDER BY 2 DESC`
+		q = queries.TableSizesTimescale
 	}
 	rows, err := s.pool.Query(ctx, q)
 	if err != nil {

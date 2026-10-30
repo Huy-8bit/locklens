@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/locklens/locklens/internal/domain/observe"
+	"github.com/locklens/locklens/internal/repository/queries"
 )
 
 // QueryRow is one identity aggregated over a window, with the previous
@@ -51,61 +52,15 @@ type QueryListParams struct {
 	Command string
 }
 
-var querySorts = map[string]string{
-	"total_time":   "cur.total_ms",
-	"calls":        "cur.calls",
-	"mean_time":    "cur.total_ms / NULLIF(cur.calls, 0)",
-	"rows":         "cur.rows",
-	"shared_read":  "cur.rd",
-	"temp_written": "cur.temp",
-	"wal_bytes":    "cur.wal",
-	"mean_ratio":   "(cur.total_ms / NULLIF(cur.calls, 0)) / NULLIF(prev.total_ms / NULLIF(prev.calls, 0), 0)",
-	"calls_ratio":  "cur.calls::float8 / NULLIF(prev.calls, 0)",
-	"total_ratio":  "cur.total_ms / NULLIF(prev.total_ms, 0)",
-}
-
 // ValidQuerySort reports whether a sort key is accepted.
-func ValidQuerySort(s string) bool { _, ok := querySorts[s]; return ok }
+func ValidQuerySort(s string) bool { _, ok := queries.QuerySorts[s]; return ok }
 
 // ListQueries aggregates query samples. Text is returned only when
 // IncludeText is set (the caller checks the target's policy).
 func (s *Store) ListQueries(ctx context.Context, p QueryListParams) ([]QueryRow, int, error) {
-	order, ok := querySorts[p.Sort]
-	if !ok {
-		order = querySorts["total_time"]
-	}
-	dir := "ASC"
-	if p.Desc {
-		dir = "DESC"
-	}
 	window := p.To.Sub(p.From)
 	prevFrom := p.From.Add(-window)
-	sql := `
-WITH cur AS (
-    SELECT identity_id, sum(calls) AS calls, sum(total_exec_ms) AS total_ms, sum(rows) AS rows,
-           sum(shared_blks_hit) AS hit, sum(shared_blks_read) AS rd, sum(temp_blks_written) AS temp,
-           sum(wal_bytes)::float8 AS wal
-    FROM query_samples WHERE target_id = $1 AND ts > $2 AND ts <= $3 GROUP BY identity_id
-), prev AS (
-    SELECT identity_id, sum(calls) AS calls, sum(total_exec_ms) AS total_ms
-    FROM query_samples WHERE $4::bool AND target_id = $1 AND ts > $5 AND ts <= $2 GROUP BY identity_id
-), tot AS (SELECT sum(total_ms) AS t FROM cur)
-SELECT i.id, i.server_major, i.datname, i.username, i.toplevel, i.queryid, i.command,
-       CASE WHEN $6::bool THEN i.query_text END,
-       cur.calls, cur.total_ms, cur.rows, cur.hit, cur.rd, cur.temp, cur.wal,
-       cur.total_ms / NULLIF(tot.t, 0), prev.calls, prev.total_ms,
-       count(*) OVER ()
-FROM cur
-JOIN query_identities AS i ON i.id = cur.identity_id
-LEFT JOIN prev ON prev.identity_id = cur.identity_id
-CROSS JOIN tot
-WHERE ($7 = '' OR i.datname ILIKE '%' || $7 || '%' OR i.username ILIKE '%' || $7 || '%'
-      OR i.queryid::text = $7 OR ($6::bool AND i.query_text ILIKE '%' || $7 || '%'))
-  AND ($10 = '' OR i.username <> $10)
-  AND ($11 = '' OR i.command = $11)
-ORDER BY ` + order + ` ` + dir + ` NULLS LAST, i.id
-LIMIT $8 OFFSET $9`
-	rows, err := s.pool.Query(ctx, sql, p.TargetID, p.From.UTC(), p.To.UTC(), p.Compare, prevFrom.UTC(), p.IncludeText,
+	rows, err := s.pool.Query(ctx, queries.ListQueries(p.Sort, p.Desc), p.TargetID, p.From.UTC(), p.To.UTC(), p.Compare, prevFrom.UTC(), p.IncludeText,
 		strings.TrimSpace(p.Filter), p.Limit, p.Offset, p.ExcludeUser, p.Command)
 	if err != nil {
 		return nil, 0, s.red.Error(err)
@@ -140,11 +95,7 @@ type CommandTotals struct {
 // excludeUser are left out.
 func (s *Store) CommandBreakdown(ctx context.Context, targetID int64, from, to time.Time, step time.Duration, excludeUser string) ([]CommandTotals, []CommandBucket, []CoverageBucket, error) {
 	totals := []CommandTotals{}
-	rows, err := s.pool.Query(ctx, `
-SELECT i.command, sum(q.calls)::bigint, sum(q.total_exec_ms), sum(q.rows)::bigint, count(DISTINCT q.identity_id)
-FROM query_samples q JOIN query_identities i ON i.id = q.identity_id
-WHERE q.target_id = $1 AND q.ts > $2 AND q.ts <= $3 AND ($4 = '' OR i.username <> $4)
-GROUP BY i.command ORDER BY 3 DESC`, targetID, from.UTC(), to.UTC(), excludeUser)
+	rows, err := s.pool.Query(ctx, queries.CommandTotals, targetID, from.UTC(), to.UTC(), excludeUser)
 	if err != nil {
 		return nil, nil, nil, s.red.Error(err)
 	}
@@ -165,11 +116,7 @@ GROUP BY i.command ORDER BY 3 DESC`, targetID, from.UTC(), to.UTC(), excludeUser
 		return nil, nil, nil, s.red.Error(err)
 	}
 	buckets := []CommandBucket{}
-	rows, err = s.pool.Query(ctx, `
-SELECT date_bin($5::interval, q.ts, $2), i.command, sum(q.calls)::bigint, sum(q.total_exec_ms), sum(q.rows)::bigint
-FROM query_samples q JOIN query_identities i ON i.id = q.identity_id
-WHERE q.target_id = $1 AND q.ts > $2 AND q.ts <= $3 AND ($4 = '' OR i.username <> $4)
-GROUP BY 1, 2 ORDER BY 1, 2`, targetID, from.UTC(), to.UTC(), excludeUser, step)
+	rows, err = s.pool.Query(ctx, queries.CommandBuckets, targetID, from.UTC(), to.UTC(), excludeUser, step)
 	if err != nil {
 		return nil, nil, nil, s.red.Error(err)
 	}
@@ -186,10 +133,7 @@ GROUP BY 1, 2 ORDER BY 1, 2`, targetID, from.UTC(), to.UTC(), excludeUser, step)
 		return nil, nil, nil, s.red.Error(err)
 	}
 	coverage := []CoverageBucket{}
-	rows, err = s.pool.Query(ctx, `
-SELECT date_bin($4::interval, ts, $2), sum(interval_seconds)
-FROM statement_collections WHERE target_id = $1 AND ts > $2 AND ts <= $3 AND interval_seconds IS NOT NULL
-GROUP BY 1 ORDER BY 1`, targetID, from.UTC(), to.UTC(), step)
+	rows, err = s.pool.Query(ctx, queries.CommandCoverageBuckets, targetID, from.UTC(), to.UTC(), step)
 	if err != nil {
 		return nil, nil, nil, s.red.Error(err)
 	}
@@ -217,10 +161,7 @@ type Coverage struct {
 // StatementCoverage returns coverage for (from, to].
 func (s *Store) StatementCoverage(ctx context.Context, targetID int64, from, to time.Time) (Coverage, error) {
 	c := Coverage{WindowSeconds: to.Sub(from).Seconds()}
-	err := s.pool.QueryRow(ctx, `
-SELECT coalesce(sum(interval_seconds), 0), count(*), count(*) FILTER (WHERE reset_detected),
-       coalesce(sum(dealloc_delta), 0), coalesce(max(hidden), 0)
-FROM statement_collections WHERE target_id = $1 AND ts > $2 AND ts <= $3`, targetID, from.UTC(), to.UTC()).
+	err := s.pool.QueryRow(ctx, queries.StatementCoverage, targetID, from.UTC(), to.UTC()).
 		Scan(&c.CoveredSeconds, &c.Collections, &c.Resets, &c.Evicted, &c.Hidden)
 	c.CoveredSeconds = min(c.CoveredSeconds, c.WindowSeconds)
 	return c, s.red.Error(err)
@@ -230,9 +171,7 @@ FROM statement_collections WHERE target_id = $1 AND ts > $2 AND ts <= $3`, targe
 func (s *Store) QueryIdentity(ctx context.Context, targetID, id int64, includeText bool) (QueryRow, time.Time, time.Time, error) {
 	var q QueryRow
 	var first, last time.Time
-	err := s.pool.QueryRow(ctx, `
-SELECT id, server_major, datname, username, toplevel, queryid, command, CASE WHEN $3 THEN query_text END, first_seen, last_seen
-FROM query_identities WHERE target_id = $1 AND id = $2`, targetID, id, includeText).
+	err := s.pool.QueryRow(ctx, queries.QueryIdentity, targetID, id, includeText).
 		Scan(&q.IdentityID, &q.ServerMajor, &q.DatName, &q.UserName, &q.TopLevel, &q.QueryID, &q.Command, &q.Text, &first, &last)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return q, first, last, ErrNotFound
@@ -264,13 +203,7 @@ func (s *Store) QueryRefs(ctx context.Context, targetID int64, keys []observe.Qu
 	for i, k := range keys {
 		majors[i], dbids[i], userids[i], tops[i], qids[i] = int32(k.ServerMajor), int64(k.DBID), int64(k.UserID), k.TopLevel, k.QueryID
 	}
-	rows, err := s.pool.Query(ctx, `
-SELECT q.server_major, q.dbid::bigint, q.userid::bigint, q.toplevel, q.queryid, q.id, q.datname, q.username, q.command,
-       CASE WHEN $7 THEN q.query_text END
-FROM query_identities q
-JOIN unnest($2::int[], $3::bigint[], $4::bigint[], $5::bool[], $6::bigint[]) AS k(m, d, u, t, qid)
-  ON q.server_major = k.m AND q.dbid = k.d::oid AND q.userid = k.u::oid AND q.toplevel = k.t AND q.queryid = k.qid
-WHERE q.target_id = $1`, targetID, majors, dbids, userids, tops, qids, includeText)
+	rows, err := s.pool.Query(ctx, queries.QueryRefs, targetID, majors, dbids, userids, tops, qids, includeText)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -307,14 +240,7 @@ func (s *Store) QueryBuckets(ctx context.Context, targetID, id int64, from, to t
 	if step >= RollupBucket || (raw > 0 && from.Before(time.Now().Add(-raw))) {
 		return s.queryRollupBuckets(ctx, targetID, id, from, to, max(step, RollupBucket))
 	}
-	rows, err := s.pool.Query(ctx, `
-WITH buckets AS (
- SELECT date_bin($5::interval, ts - interval '1 microsecond', $3::timestamptz) AS b, sum(calls) AS calls, sum(total_exec_ms) AS ms, sum(rows) AS rows, sum(interval_seconds) AS covered
- FROM query_samples WHERE target_id = $1 AND identity_id = $2 AND ts > $3 AND ts <= $4
- GROUP BY b
-)
-SELECT b,calls,ms,rows,covered,EXISTS(SELECT 1 FROM collection_gaps g WHERE g.target_id=$1 AND g.collector='statements' AND g.ended_at>b AND g.started_at<b+$5::interval)
-FROM buckets ORDER BY b LIMIT 1001`, targetID, id, from.UTC(), to.UTC(), step)
+	rows, err := s.pool.Query(ctx, queries.QueryBuckets, targetID, id, from.UTC(), to.UTC(), step)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -331,30 +257,7 @@ FROM buckets ORDER BY b LIMIT 1001`, targetID, id, from.UTC(), to.UTC(), step)
 }
 
 func (s *Store) queryRollupBuckets(ctx context.Context, targetID, id int64, from, to time.Time, step time.Duration) ([]QueryBucket, error) {
-	rows, err := s.pool.Query(ctx, `
-WITH cut AS (
- SELECT coalesce(max(ts) + interval '5 minutes', date_bin('5 minutes', $3::timestamptz, 'epoch'::timestamptz)) AS c
- FROM statement_coverage WHERE target_id = $1 AND ts >= $3::timestamptz - interval '5 minutes'
-), act AS (
- SELECT r.ts AS b, r.calls, r.total_exec_ms AS ms, r.rows FROM query_rollups r, cut
- WHERE r.target_id = $1 AND r.identity_id = $2 AND r.ts >= date_bin('5 minutes', $3::timestamptz, 'epoch'::timestamptz) AND r.ts < cut.c
- UNION ALL
- SELECT date_bin('5 minutes', ts - interval '1 microsecond', 'epoch'::timestamptz), sum(calls), sum(total_exec_ms), sum(rows)
- FROM query_samples, cut WHERE target_id = $1 AND identity_id = $2 AND ts > greatest(cut.c, $3::timestamptz) AND ts <= $4 GROUP BY 1
-), cov AS (
- SELECT c.ts AS b, c.covered_seconds AS covered FROM statement_coverage c, cut
- WHERE c.target_id = $1 AND c.ts >= date_bin('5 minutes', $3::timestamptz, 'epoch'::timestamptz) AND c.ts < cut.c
- UNION ALL
- SELECT date_bin('5 minutes', ts - interval '1 microsecond', 'epoch'::timestamptz), least(sum(interval_seconds), 300)
- FROM statement_collections, cut WHERE target_id = $1 AND interval_seconds IS NOT NULL AND ts > greatest(cut.c, $3::timestamptz) AND ts <= $4 GROUP BY 1
-), a AS (
- SELECT date_bin($5::interval, b, $3::timestamptz) AS bucket, sum(calls)::bigint AS calls, sum(ms) AS ms, sum(rows)::bigint AS rows FROM act GROUP BY 1
-), c AS (
- SELECT date_bin($5::interval, b, $3::timestamptz) AS bucket, sum(covered) AS covered FROM cov GROUP BY 1
-)
-SELECT a.bucket, a.calls, a.ms, a.rows, coalesce(c.covered, 0),
- EXISTS (SELECT 1 FROM collection_gaps g WHERE g.target_id = $1 AND g.collector = 'statements' AND g.ended_at > a.bucket AND g.started_at < a.bucket + $5::interval)
-FROM a LEFT JOIN c USING (bucket) ORDER BY a.bucket LIMIT 1001`, targetID, id, from.UTC(), to.UTC(), step)
+	rows, err := s.pool.Query(ctx, queries.QueryRollupBuckets, targetID, id, from.UTC(), to.UTC(), step)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -381,9 +284,7 @@ func (s *Store) QueryStep(from time.Time, step time.Duration) time.Duration {
 
 // WindowTotals aggregates one identity in a window.
 func (s *Store) WindowTotals(ctx context.Context, targetID, id int64, from, to time.Time) (calls int64, totalMS float64, rows int64, err error) {
-	err = s.pool.QueryRow(ctx, `
-SELECT coalesce(sum(calls), 0), coalesce(sum(total_exec_ms), 0), coalesce(sum(rows), 0)
-FROM query_samples WHERE target_id = $1 AND identity_id = $2 AND ts > $3 AND ts <= $4`, targetID, id, from.UTC(), to.UTC()).
+	err = s.pool.QueryRow(ctx, queries.WindowTotals, targetID, id, from.UTC(), to.UTC()).
 		Scan(&calls, &totalMS, &rows)
 	return calls, totalMS, rows, s.red.Error(err)
 }
@@ -392,7 +293,7 @@ FROM query_samples WHERE target_id = $1 AND identity_id = $2 AND ts > $3 AND ts 
 func (s *Store) IdentityKey(ctx context.Context, targetID, id int64) (observe.QueryKey, error) {
 	var k observe.QueryKey
 	var dbid, userid int64
-	err := s.pool.QueryRow(ctx, `SELECT server_major, dbid::bigint, userid::bigint, toplevel, queryid FROM query_identities WHERE target_id = $1 AND id = $2`,
+	err := s.pool.QueryRow(ctx, queries.IdentityKey,
 		targetID, id).Scan(&k.ServerMajor, &dbid, &userid, &k.TopLevel, &k.QueryID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return k, ErrNotFound

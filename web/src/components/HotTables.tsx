@@ -26,7 +26,7 @@ function perTable(data: MetricsResponse, metric: string): ChartSeries[] {
     .map((s, i) => ({ key: s.label ?? '', label: s.label ?? '', color: slot(i), points: toPoints(s.points.map((p) => ({ t: p.t, v: p.gap ? null : p.v })), data.step_seconds) }))
 }
 
-/** The busiest tables of the database LockLens connects to: the last minute, and over time. */
+/** The busiest tables of the monitored databases: the last minute, and over time. */
 export function HotTables({ targetId }: { targetId: number }) {
   const [range] = useRange()
   const [measure, setMeasure] = useState<Measure>('table.seq_rows.per_s')
@@ -34,10 +34,13 @@ export function HotTables({ targetId }: { targetId: number }) {
   const history = useMetrics(targetId, [measure], range)
   const series = useMemo(() => (history.data ? perTable(history.data, measure) : []), [history.data, measure])
   const rows = live.data?.activity ?? []
+  // Data browsing works on the connected database only.
+  const connected = live.data?.tables?.datname
+  const several = new Set(rows.map((r) => r.datname)).size > 1
   return (
     <Card
       title="Hot tables"
-      subtitle="The busiest tables of this database, from pg_stat_user_tables every minute (no locks taken). Many rows read sequentially on a large table often means a missing index."
+      subtitle="The busiest tables of the monitored databases, from pg_stat_user_tables every minute (no locks taken). Many rows read sequentially on a large table often means a missing index."
     >
       <div className="space-y-4">
         {rows.length === 0 ? (
@@ -58,11 +61,18 @@ export function HotTables({ targetId }: { targetId: number }) {
               </thead>
               <tbody>
                 {rows.map((r) => (
-                  <tr key={r.relid} className={trCls}>
+                  <tr key={`${r.datname}.${r.relid}`} className={trCls}>
                     <td className={tdCls}>
-                      <Link to={`/explorer/${targetId}/${encodeURIComponent(r.schema)}/${encodeURIComponent(r.name)}`} className="font-mono text-xs text-accent hover:underline">
-                        {r.schema}.{r.name}
-                      </Link>
+                      {several && <span className="mr-1 font-mono text-xs text-muted">{r.datname}.</span>}
+                      {!r.datname || r.datname === connected ? (
+                        <Link to={`/explorer/${targetId}/${encodeURIComponent(r.schema)}/${encodeURIComponent(r.name)}`} className="font-mono text-xs text-accent hover:underline">
+                          {r.schema}.{r.name}
+                        </Link>
+                      ) : (
+                        <span className="font-mono text-xs">
+                          {r.schema}.{r.name}
+                        </span>
+                      )}
                     </td>
                     <td className={tdNum}>{num(r.seq_scans_per_s, 2)}</td>
                     <td className={tdNum}>{rate(r.seq_rows_per_s)}</td>

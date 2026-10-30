@@ -11,6 +11,7 @@ import (
 
 	"github.com/locklens/locklens/internal/domain/baseline"
 	"github.com/locklens/locklens/internal/domain/finding"
+	"github.com/locklens/locklens/internal/domain/logs"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/rules"
 	"github.com/locklens/locklens/internal/repository"
@@ -18,13 +19,13 @@ import (
 
 // Service gathers the signals of an anomaly from the monitoring store.
 type Service struct {
-	store    *repository.Store
+	store    Store
 	sampling bool
 }
 
 // NewService returns an insight service; sampling says whether active
 // session sampling is enabled.
-func NewService(store *repository.Store, sampling bool) *Service {
+func NewService(store Store, sampling bool) *Service {
 	return &Service{store: store, sampling: sampling}
 }
 
@@ -101,6 +102,21 @@ func (s *Service) Investigate(ctx context.Context, targetID int64, subject strin
 	for _, g := range gaps {
 		sig.Gaps = append(sig.Gaps, Gap{From: g.From, To: g.To, What: g.Collector})
 	}
+	sig.Changes, err = s.store.ListChanges(ctx, repository.ChangeFilter{From: sig.Since.Add(-changeLead), To: at.Add(time.Second),
+		TargetIDs: []int64{targetID}, Limit: 100})
+	if err != nil {
+		return Investigation{}, err
+	}
+	sig.QueryID = queryID
+	if sig.Logs, err = s.store.LogEvents(ctx, repository.LogEventFilter{TargetID: targetID, From: sig.Since.Add(-30 * time.Minute), To: at.Add(time.Second),
+		Kinds: []string{logs.KindLockWait, logs.KindDeadlock, logs.KindTempFile}, Limit: 500}); err != nil {
+		return Investigation{}, err
+	}
+	agents, err := s.store.LogAgents(ctx, targetID)
+	if err != nil {
+		return Investigation{}, err
+	}
+	sig.LogsShipped = len(agents) > 0
 	if queryID != nil {
 		if n, err := s.store.CountPlans(ctx, targetID, *queryID); err == nil && n > 0 {
 			sig.PlanHistory = true

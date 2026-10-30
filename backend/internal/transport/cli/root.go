@@ -19,7 +19,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/lib/buildinfo"
 	"github.com/locklens/locklens/internal/lib/logger"
-	"github.com/locklens/locklens/internal/lib/postgres"
+	"github.com/locklens/locklens/internal/targetdb"
 )
 
 // Exit codes. They are part of the documented interface.
@@ -79,7 +79,7 @@ func Main(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	msg := a.red.String(err.Error())
 	fmt.Fprintf(stderr, "locklens: error: %s\n", msg)
-	if hint := postgres.Hint(err); hint != "" {
+	if hint := targetdb.Hint(err); hint != "" {
 		fmt.Fprintf(stderr, "hint: %s\n", hint)
 	}
 	if code == ExitUsage && !errors.As(err, &ue) {
@@ -133,7 +133,7 @@ are visible to other users in the process list.`,
 	pf.StringVar(&a.logLevel, "log-level", "info", "stderr log level: debug, info, warn, or error")
 
 	root.AddCommand(a.doctorCommand(), a.inspectCommand(), a.watchCommand(), a.snapshotCommand(), a.versionCommand(),
-		a.serverCommand(), a.migrateCommand(), a.adminCommand(), a.incidentCommand())
+		a.serverCommand(), a.migrateCommand(), a.adminCommand(), a.incidentCommand(), a.agentCommand())
 	return root
 }
 
@@ -203,8 +203,8 @@ func (f *reportFlags) validate(withFormat bool) error {
 	return nil
 }
 
-func (f *reportFlags) options() postgres.Options {
-	return postgres.Options{IncludeQuery: f.includeQuery, QueryMaxLength: f.queryMaxLength, MinTxAge: f.minTxAge}
+func (f *reportFlags) options() targetdb.Options {
+	return targetdb.Options{IncludeQuery: f.includeQuery, QueryMaxLength: f.queryMaxLength, MinTxAge: f.minTxAge}
 }
 
 func validateFormat(format string) error {
@@ -216,7 +216,7 @@ func validateFormat(format string) error {
 }
 
 // poolConfig resolves and parses the DSN. Failures are usage errors.
-func (a *app) poolConfig() (*config.Target, func(context.Context) (*postgres.Collector, error), error) {
+func (a *app) poolConfig() (*config.Target, func(context.Context) (*targetdb.Collector, error), error) {
 	dsn, err := config.ResolveDSN(a.dsn)
 	if err != nil {
 		return nil, nil, &usageError{err: err}
@@ -227,12 +227,12 @@ func (a *app) poolConfig() (*config.Target, func(context.Context) (*postgres.Col
 		return nil, nil, &usageError{err: err}
 	}
 	target := config.TargetOf(cfg)
-	connect := func(ctx context.Context) (*postgres.Collector, error) {
+	connect := func(ctx context.Context) (*targetdb.Collector, error) {
 		ctx, cancel := context.WithTimeout(ctx, a.connectTimeout+time.Second)
 		defer cancel()
 		// Each attempt needs a fresh copy: the pool takes ownership of the
 		// config, and Connect installs hooks on it.
-		c, err := postgres.Connect(ctx, cfg.Copy(), red, tool())
+		c, err := targetdb.Connect(ctx, cfg.Copy(), red, tool())
 		if err != nil {
 			return nil, fmt.Errorf("connect to %s: %w", target, err)
 		}
@@ -246,7 +246,7 @@ func tool() model.Tool {
 }
 
 // collectOnce connects, collects one snapshot, and disconnects.
-func (a *app) collectOnce(ctx context.Context, opts postgres.Options) (*model.Snapshot, error) {
+func (a *app) collectOnce(ctx context.Context, opts targetdb.Options) (*model.Snapshot, error) {
 	_, connect, err := a.poolConfig()
 	if err != nil {
 		return nil, err

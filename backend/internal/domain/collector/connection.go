@@ -14,7 +14,7 @@ import (
 	"github.com/locklens/locklens/internal/config"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/observe"
-	"github.com/locklens/locklens/internal/lib/postgres"
+	"github.com/locklens/locklens/internal/targetdb"
 )
 
 func (w *worker) connect(ctx context.Context) bool {
@@ -34,22 +34,22 @@ func (w *worker) connect(ctx context.Context) bool {
 		cfg.MaxConns = int32(w.target.MaxConnections)
 		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		obs, err := postgres.Connect(cctx, cfg, red, model.Tool{Name: "locklens", Version: w.m.version})
+		obs, err := targetdb.Connect(cctx, cfg, red, model.Tool{Name: "locklens", Version: w.m.version})
 		if err != nil {
 			return err
 		}
 		var caps observe.Capabilities
 		if err := obs.ReadOnly(cctx, func(ctx context.Context, tx pgx.Tx, _ []int32) error {
 			var err error
-			caps, err = detectCapabilities(ctx, tx)
+			caps, err = targetdb.DetectCapabilities(ctx, tx)
 			return err
 		}); err != nil {
 			obs.Close()
 			return err
 		}
-		if caps.VersionNum < postgres.MinServerVersionNum {
+		if caps.VersionNum < targetdb.MinServerVersionNum {
 			obs.Close()
-			return &postgres.UnsupportedVersionError{Version: caps.ServerVersion}
+			return &targetdb.UnsupportedVersionError{Version: caps.ServerVersion}
 		}
 		w.obs, w.caps = obs, &caps
 		return nil
@@ -86,6 +86,7 @@ func (w *worker) close() {
 	// The current load bucket is stored with the ticks it has; its average
 	// stays correct because it is divided by those ticks.
 	w.flushLoad()
+	w.closeDatabases(nil)
 	if w.obs != nil {
 		w.obs.Close()
 		w.obs = nil
@@ -126,14 +127,14 @@ func isConnectionError(err error) bool {
 }
 
 // sanitizeError returns a single-line error message for storage and the UI.
-// Errors from postgres.Connect and the collectors are already redacted; this
+// Errors from targetdb.Connect and the collectors are already redacted; this
 // additionally bounds length and strips line breaks.
 func sanitizeError(err error) string {
 	msg := strings.Join(strings.Fields(err.Error()), " ")
 	if len(msg) > 500 {
 		msg = msg[:500] + "…"
 	}
-	if hint := postgres.Hint(err); hint != "" {
+	if hint := targetdb.Hint(err); hint != "" {
 		msg += " (hint: " + hint + ")"
 	}
 	return msg

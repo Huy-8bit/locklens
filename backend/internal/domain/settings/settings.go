@@ -16,9 +16,12 @@ const keyThresholds = "rules.thresholds"
 
 // Service caches settings in memory.
 type Service struct {
-	store *repository.Store
+	store Store
+	base  rules.Thresholds
 	mu    sync.RWMutex
 	th    rules.Thresholds
+	// changed is told after a change (other servers reload then).
+	changed func()
 }
 
 // Load reads settings, falling back to defaults for anything unset. Stored
@@ -26,25 +29,42 @@ type Service struct {
 // versions get their default values.
 //
 // In demo mode the base values are rules.DemoDefaults().
-func Load(ctx context.Context, store *repository.Store, demo bool) (*Service, error) {
+func Load(ctx context.Context, store Store, demo bool) (*Service, error) {
 	base := rules.Defaults()
 	if demo {
 		base = rules.DemoDefaults()
 	}
-	s := &Service{store: store, th: base}
-	th := base
-	err := store.GetSetting(ctx, keyThresholds, &th)
-	switch {
-	case errors.Is(err, repository.ErrNotFound):
-	case err != nil:
+	s := &Service{store: store, base: base, th: base}
+	if err := s.Reload(ctx); err != nil {
 		return nil, err
-	default:
-		if verr := th.Validate(); verr == nil {
-			s.th = th
-		}
 	}
 	return s, nil
 }
+
+// Reload reads the stored settings again (after another server changed
+// them).
+func (s *Service) Reload(ctx context.Context) error {
+	th := s.base
+	err := s.store.GetSetting(ctx, keyThresholds, &th)
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		th = s.base
+	case err != nil:
+		return err
+	case th.Validate() != nil:
+		return nil // keep the current thresholds
+	}
+	s.mu.Lock()
+	s.th = th
+	s.mu.Unlock()
+	if s.changed != nil {
+		s.changed()
+	}
+	return nil
+}
+
+// OnChange sets a function called after the settings were changed here.
+func (s *Service) OnChange(fn func()) { s.changed = fn }
 
 // Thresholds returns the current thresholds.
 func (s *Service) Thresholds() rules.Thresholds {
@@ -69,5 +89,8 @@ func (s *Service) UpdateThresholds(ctx context.Context, th rules.Thresholds) err
 	s.mu.Lock()
 	s.th = th
 	s.mu.Unlock()
+	if s.changed != nil {
+		s.changed()
+	}
 	return nil
 }

@@ -34,6 +34,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/workspace"
 	"github.com/locklens/locklens/internal/lib/secret"
 	"github.com/locklens/locklens/internal/repository"
+	"github.com/locklens/locklens/internal/targetdb"
 )
 
 // Role names LockLens creates.
@@ -96,29 +97,19 @@ type Request struct {
 
 // Service adds instances.
 type Service struct {
-	store     *repository.Store
+	store     Store
 	box       *secret.Box
-	targets   *targets.Service
-	workspace *workspace.Service
+	targets   Targets
+	workspace Workspace
 }
 
 // New returns a service.
-func New(store *repository.Store, box *secret.Box, t *targets.Service, ws *workspace.Service) *Service {
+func New(store Store, box *secret.Box, t Targets, ws Workspace) *Service {
 	return &Service{store: store, box: box, targets: t, workspace: ws}
 }
 
 func aad(systemIdentifier, purpose string) []byte {
 	return []byte("managed-role:" + systemIdentifier + ":" + purpose)
-}
-
-type facts struct {
-	user, version   string
-	standby, super  bool
-	seesAll, unsafe bool
-	pgss            bool
-	versionNum      int
-	sysid           string
-	existing        []string
 }
 
 func connectConfig(dsn string) (*pgx.ConnConfig, *config.Redactor, error) {
@@ -135,36 +126,6 @@ func connectConfig(dsn string) (*pgx.ConnConfig, *config.Redactor, error) {
 	cfg.RuntimeParams["statement_timeout"] = "10000"
 	cfg.RuntimeParams["lock_timeout"] = "3000"
 	return cfg, red, nil
-}
-
-func readFacts(ctx context.Context, conn *pgx.Conn) (facts, error) {
-	var f facts
-	err := conn.QueryRow(ctx, `
-SELECT current_user, current_setting('server_version'), current_setting('server_version_num')::int, pg_is_in_recovery(), r.rolsuper,
-       pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER'),
-       r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolbypassrls OR EXISTS (
-           SELECT 1 FROM pg_roles x WHERE pg_has_role(current_user, x.oid, 'MEMBER') AND (x.rolsuper OR x.rolcreaterole OR x.rolcreatedb
-           OR x.rolbypassrls OR x.rolname IN ('pg_write_all_data', 'pg_read_server_files', 'pg_write_server_files', 'pg_execute_server_program'))),
-       EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')
-FROM pg_roles r WHERE r.rolname = current_user`).
-		Scan(&f.user, &f.version, &f.versionNum, &f.standby, &f.super, &f.seesAll, &f.unsafe, &f.pgss)
-	if err != nil {
-		return f, err
-	}
-	if f.super {
-		if err := conn.QueryRow(ctx, `SELECT system_identifier::text FROM pg_control_system()`).Scan(&f.sysid); err != nil {
-			return f, err
-		}
-		rows, err := conn.Query(ctx, `SELECT rolname FROM pg_roles WHERE rolname = ANY($1) ORDER BY rolname`, []string{MonitorRole, ReaderRole})
-		if err != nil {
-			return f, err
-		}
-		f.existing, err = pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return f, err
-		}
-	}
-	return f, nil
 }
 
 func suggestName(cfg *pgx.ConnConfig, standby bool) string {
@@ -197,35 +158,35 @@ func (s *Service) Inspect(ctx context.Context, dsn string) (Plan, error) {
 		return p, nil
 	}
 	defer conn.Close(context.Background())
-	f, err := readFacts(cctx, conn)
+	f, err := targetdb.ReadSetupFacts(cctx, conn, []string{MonitorRole, ReaderRole})
 	if err != nil {
 		msg := strings.Join(strings.Fields(red.String(err.Error())), " ")
 		p.Error = &msg
 		return p, nil
 	}
 	p.OK = true
-	p.ServerVersion, p.IsStandby, p.Superuser, p.PgStatStatements = f.version, f.standby, f.super, f.pgss
-	p.User = f.user
-	p.SuggestedName = suggestName(cfg, f.standby)
-	p.systemIdentifier = f.sysid
-	if !f.pgss {
+	p.ServerVersion, p.IsStandby, p.Superuser, p.PgStatStatements = f.Version, f.Standby, f.Superuser, f.StatStatements
+	p.User = f.User
+	p.SuggestedName = suggestName(cfg, f.Standby)
+	p.systemIdentifier = f.SystemID
+	if !f.StatStatements {
 		p.Warnings = append(p.Warnings, "pg_stat_statements is not installed in this database: the Queries pages stay empty until an administrator runs CREATE EXTENSION pg_stat_statements (it also needs shared_preload_libraries).")
 	}
 	switch {
-	case f.versionNum < 140000:
+	case f.VersionNum < 140000:
 		p.Mode, p.Reason = ModeUnsupported, "LockLens needs PostgreSQL 14 or later."
 		return p, nil
-	case !f.super:
+	case !f.Superuser:
 		p.Mode = ModeDirect
-		p.SeesAllSessions = f.seesAll
-		p.WorkspaceAllowed = !f.unsafe
+		p.SeesAllSessions = f.SeesAll
+		p.WorkspaceAllowed = !f.Unsafe
 		p.Reason = "LockLens monitors with this connection."
 		if p.WorkspaceAllowed {
 			p.Reason += " The Explorer and SQL editor use it too, in read-only transactions."
 		} else {
 			p.Warnings = append(p.Warnings, "This role has administrative privileges (for example CREATEROLE or CREATEDB), so the Explorer and SQL editor are not offered with it. Paste a superuser connection to let LockLens create safe roles, or a role without these privileges.")
 		}
-		if !f.seesAll {
+		if !f.SeesAll {
 			p.Warnings = append(p.Warnings, "This role cannot see other users' sessions and queries in full: grant it pg_monitor (or pg_read_all_stats).")
 		}
 		return p, nil
@@ -235,7 +196,7 @@ func (s *Service) Inspect(ctx context.Context, dsn string) (Plan, error) {
 		p.Mode, p.Reason = ModeUnsupported, "Use a connection string with a single host to set up roles automatically."
 		return p, nil
 	}
-	managed, err := s.store.ManagedRoles(ctx, f.sysid)
+	managed, err := s.store.ManagedRoles(ctx, f.SystemID)
 	if err != nil {
 		return p, err
 	}
@@ -245,17 +206,17 @@ func (s *Service) Inspect(ctx context.Context, dsn string) (Plan, error) {
 		p.Reason = fmt.Sprintf("This is a superuser. LockLens already created %s and %s for this cluster and reuses them; nothing is changed on the server.", MonitorRole, ReaderRole)
 		return p, nil
 	}
-	if f.standby {
+	if f.Standby {
 		p.Mode, p.Reason = ModeUnsupported, "This is a superuser on a standby, which cannot create roles. Add the primary first: LockLens creates its roles there and they reach this standby through replication."
 		return p, nil
 	}
 	p.Mode = ModeCreateRoles
 	p.Reason = fmt.Sprintf("This is a superuser. LockLens will not store it: it creates %s (monitoring, pg_monitor) and %s (Explorer and SQL editor, pg_read_all_data, read-only by default) with generated passwords and stores only those.", MonitorRole, ReaderRole)
-	p.ExistingRoles = append(p.ExistingRoles, f.existing...)
-	if len(f.existing) > 0 {
-		p.Warnings = append(p.Warnings, fmt.Sprintf("%s already exist; their passwords will be reset. Anything else using them must be updated.", strings.Join(f.existing, " and ")))
+	p.ExistingRoles = append(p.ExistingRoles, f.ExistingRoles...)
+	if len(f.ExistingRoles) > 0 {
+		p.Warnings = append(p.Warnings, fmt.Sprintf("%s already exist; their passwords will be reset. Anything else using them must be updated.", strings.Join(f.ExistingRoles, " and ")))
 	}
-	p.Statements = append(p.Statements, roleStatements(cfg.Database, f.existing, "••••••••", "••••••••")...)
+	p.Statements = append(p.Statements, roleStatements(cfg.Database, f.ExistingRoles, "••••••••", "••••••••")...)
 	return p, nil
 }
 
@@ -288,29 +249,9 @@ func (s *Service) dsnFor(dsn string, m repository.ManagedRole) (string, error) {
 	return WithCredentials(dsn, m.RoleName, string(pw))
 }
 
-func quoteLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
-
-// roleStatements creates (or resets) the two roles. The attributes are set
-// explicitly so an existing role is brought back to least privilege.
+// roleStatements creates (or resets) the two roles.
 func roleStatements(database string, existing []string, monitorPassword, readerPassword string) []string {
-	attrs := "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 10 PASSWORD "
-	verb := func(role string) string {
-		for _, e := range existing {
-			if e == role {
-				return "ALTER ROLE "
-			}
-		}
-		return "CREATE ROLE "
-	}
-	mon, rd := pgx.Identifier{MonitorRole}.Sanitize(), pgx.Identifier{ReaderRole}.Sanitize()
-	return []string{
-		verb(MonitorRole) + mon + " WITH " + attrs + quoteLiteral(monitorPassword),
-		"GRANT pg_monitor TO " + mon,
-		verb(ReaderRole) + rd + " WITH " + attrs + quoteLiteral(readerPassword),
-		"GRANT pg_read_all_data TO " + rd,
-		"ALTER ROLE " + rd + " SET default_transaction_read_only = on",
-		"GRANT CONNECT ON DATABASE " + pgx.Identifier{database}.Sanitize() + " TO " + mon + ", " + rd,
-	}
+	return targetdb.RoleStatements(database, MonitorRole, ReaderRole, existing, monitorPassword, readerPassword)
 }
 
 func generatePassword() (string, error) {

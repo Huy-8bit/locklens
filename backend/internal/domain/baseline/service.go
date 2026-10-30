@@ -27,7 +27,7 @@ const maxStatements = 300
 // Service keeps statement rollups up to date and holds the baselines of
 // recently active statements in memory, refreshed on a schedule.
 type Service struct {
-	store  *repository.Store
+	store  Store
 	params func() Params
 	log    *slog.Logger
 
@@ -36,7 +36,7 @@ type Service struct {
 }
 
 // NewService returns a baseline service.
-func NewService(store *repository.Store, params func() Params, log *slog.Logger) *Service {
+func NewService(store Store, params func() Params, log *slog.Logger) *Service {
 	return &Service{store: store, params: params, log: log, cache: map[int64]map[observe.QueryKey]Baseline{}}
 }
 

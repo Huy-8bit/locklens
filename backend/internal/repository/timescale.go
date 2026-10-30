@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/locklens/locklens/internal/repository/queries"
 )
 
 // TimescaleMode chooses whether the store uses TimescaleDB.
@@ -63,6 +65,7 @@ var hypertables = []hypertable{
 	{"statement_coverage", 30 * 24 * time.Hour, "target_id"},
 	{"metric_rollups_1m", 7 * 24 * time.Hour, "target_id, metric, label"},
 	{"metric_rollups_1h", 30 * 24 * time.Hour, "target_id, metric, label"},
+	{"log_events", 24 * time.Hour, "target_id, kind"},
 }
 
 // timescaleLockKey serialises setup between LockLens instances sharing a store.
@@ -96,15 +99,14 @@ func (s *Store) SetupTimescale(ctx context.Context, mode TimescaleMode, compress
 		return st, s.red.Error(err)
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", timescaleLockKey); err != nil {
+	if _, err := conn.Exec(ctx, queries.AdvisoryLock, timescaleLockKey); err != nil {
 		return st, s.red.Error(err)
 	}
-	defer conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", timescaleLockKey) //nolint:errcheck
+	defer conn.Exec(context.WithoutCancel(ctx), queries.AdvisoryUnlock, timescaleLockKey) //nolint:errcheck
 
 	var available bool
 	var preload string
-	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'timescaledb'),
-       current_setting('shared_preload_libraries')`).Scan(&available, &preload); err != nil {
+	if err := conn.QueryRow(ctx, queries.TimescaleAvailable).Scan(&available, &preload); err != nil {
 		return st, s.red.Error(err)
 	}
 	if !available {
@@ -113,10 +115,10 @@ func (s *Store) SetupTimescale(ctx context.Context, mode TimescaleMode, compress
 	if !strings.Contains(preload, "timescaledb") {
 		return fail("timescaledb is installed but not in shared_preload_libraries", nil)
 	}
-	if _, err := conn.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS timescaledb"); err != nil {
+	if _, err := conn.Exec(ctx, queries.CreateTimescaleExtension); err != nil {
 		return fail("could not create the timescaledb extension (it needs a superuser once: CREATE EXTENSION timescaledb)", s.red.Error(err))
 	}
-	if err := conn.QueryRow(ctx, `SELECT extversion, current_setting('timescaledb.license', true) FROM pg_extension WHERE extname = 'timescaledb'`).
+	if err := conn.QueryRow(ctx, queries.TimescaleVersion).
 		Scan(&st.Version, &st.License); err != nil {
 		return st, s.red.Error(err)
 	}
@@ -127,7 +129,7 @@ func (s *Store) SetupTimescale(ctx context.Context, mode TimescaleMode, compress
 	}
 
 	existing := map[string]bool{}
-	rows, err := conn.Query(ctx, "SELECT hypertable_name FROM timescaledb_information.hypertables WHERE hypertable_schema = current_schema()")
+	rows, err := conn.Query(ctx, queries.ExistingHypertables)
 	if err != nil {
 		return st, s.red.Error(err)
 	}
@@ -165,11 +167,11 @@ func (s *Store) convert(ctx context.Context, conn *pgxpool.Conn, h hypertable) e
 	if h.table == "activity_snapshots" {
 		// A hypertable's unique keys must include its time column; snapshots
 		// are still looked up by id (with the target).
-		if _, err := tx.Exec(ctx, `ALTER TABLE activity_snapshots DROP CONSTRAINT IF EXISTS activity_snapshots_pkey, ADD PRIMARY KEY (id, ts)`); err != nil {
+		if _, err := tx.Exec(ctx, queries.DropActivitySnapshotsPrimaryKey); err != nil {
 			return s.red.Error(err)
 		}
 	}
-	if _, err := tx.Exec(ctx, `SELECT create_hypertable($1::regclass, by_range('ts', $2::interval), migrate_data => true)`, h.table, h.chunk); err != nil {
+	if _, err := tx.Exec(ctx, queries.CreateHypertable, h.table, h.chunk); err != nil {
 		return s.red.Error(err)
 	}
 	return s.red.Error(tx.Commit(ctx))
@@ -178,22 +180,20 @@ func (s *Store) convert(ctx context.Context, conn *pgxpool.Conn, h hypertable) e
 // compress enables compression on a hypertable and its background policy.
 func (s *Store) compress(ctx context.Context, conn *pgxpool.Conn, h hypertable, after time.Duration) error {
 	var on bool
-	if err := conn.QueryRow(ctx, `SELECT compression_enabled FROM timescaledb_information.hypertables
-WHERE hypertable_schema = current_schema() AND hypertable_name = $1`, h.table).Scan(&on); err != nil {
+	if err := conn.QueryRow(ctx, queries.CompressionEnabled, h.table).Scan(&on); err != nil {
 		return s.red.Error(err)
 	}
 	if !on {
 		// The identifiers are fixed in this file, never input.
-		if _, err := conn.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s SET (timescaledb.compress, timescaledb.compress_segmentby = '%s', timescaledb.compress_orderby = 'ts')`,
-			pgx.Identifier{h.table}.Sanitize(), h.segmentBy)); err != nil {
+		if _, err := conn.Exec(ctx, queries.EnableCompression(h.table, h.segmentBy)); err != nil {
 			return s.red.Error(err)
 		}
 	}
 	// Replace the policy when the delay changed.
-	if _, err := conn.Exec(ctx, `SELECT remove_compression_policy($1::regclass, if_exists => true)`, h.table); err != nil {
+	if _, err := conn.Exec(ctx, queries.RemoveCompressionPolicy, h.table); err != nil {
 		return s.red.Error(err)
 	}
-	if _, err := conn.Exec(ctx, `SELECT add_compression_policy($1::regclass, $2::interval)`, h.table, after); err != nil {
+	if _, err := conn.Exec(ctx, queries.AddCompressionPolicy, h.table, after); err != nil {
 		return s.red.Error(err)
 	}
 	return nil

@@ -26,6 +26,7 @@ function TargetStatus({ t, parser }: { t: OptimizerTarget; parser: boolean }) {
         {t.target_name}
       </Link>
       <span className="text-xs text-muted">{t.catalog_at ? `catalog of ${t.database} ${ago(t.catalog_at)}` : 'no catalog yet'}</span>
+      {t.databases.length > 1 && <span className="text-xs text-muted">{t.databases.length} databases: {t.databases.join(', ')}</span>}
       <Badge tone={t.hypopg_enabled && t.hypopg_installed ? 'good' : 'muted'} title="What-if checks of index recommendations with hypothetical indexes">
         HypoPG {t.hypopg_installed ? (t.hypopg_enabled ? 'on' : 'installed, off') : 'not installed'}
       </Badge>
@@ -138,7 +139,10 @@ export default function OptimizePage() {
                                   <span className="mt-1 block truncate">{r.title}</span>
                                 </button>
                               </td>
-                              <td className={tdCls}>{r.target_name}</td>
+                              <td className={tdCls}>
+                                {r.target_name}
+                                {r.database && <span className="block text-xs text-muted">{r.database}</span>}
+                              </td>
                               <td className={tdCls}>
                                 <StatusBadge status={r.status} />
                                 {change && <span className="ml-1 text-xs text-ink-2">{change}</span>}

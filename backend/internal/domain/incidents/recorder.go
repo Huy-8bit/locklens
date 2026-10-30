@@ -120,7 +120,7 @@ type targetState struct {
 
 // Recorder implements collector.Analyzer.
 type Recorder struct {
-	store   *repository.Store
+	store   Store
 	cfg     Config
 	th      ThresholdSource
 	metrics *obs.Metrics
@@ -137,7 +137,7 @@ type Recorder struct {
 }
 
 // NewRecorder returns a recorder.
-func NewRecorder(store *repository.Store, cfg Config, th ThresholdSource, metrics *obs.Metrics, events collector.EventSink, log *slog.Logger) *Recorder {
+func NewRecorder(store Store, cfg Config, th ThresholdSource, metrics *obs.Metrics, events collector.EventSink, log *slog.Logger) *Recorder {
 	return &Recorder{store: store, cfg: cfg, th: th, metrics: metrics, events: events, log: log, targets: map[int64]*targetState{}}
 }
 
@@ -167,9 +167,11 @@ func (r *Recorder) target(id int64) *targetState {
 	return ts
 }
 
-// Recover reattaches incidents that were open when LockLens stopped and
-// records the interruption in their timelines.
-func (r *Recorder) Recover(ctx context.Context) error {
+// Adopt attaches the open incidents of a target this server starts
+// collecting (at start-up, or after taking it over from another server) and
+// records the interruption in their timelines. The collector manager calls
+// it before the target's first collection.
+func (r *Recorder) Adopt(ctx context.Context, targetID int64) error {
 	open, err := r.store.OpenIncidents(ctx)
 	if err != nil {
 		return err
@@ -178,15 +180,18 @@ func (r *Recorder) Recover(ctx context.Context) error {
 	defer r.mu.Unlock()
 	now := time.Now().UTC()
 	for _, in := range open {
-		if in.TargetID == nil {
+		if in.TargetID == nil || *in.TargetID != targetID {
 			continue
 		}
-		ts := r.target(*in.TargetID)
+		ts := r.target(targetID)
+		if _, ok := ts.open[in.RuleID]; ok {
+			continue
+		}
 		ts.open[in.RuleID] = &openIncident{id: in.ID, ruleID: in.RuleID, openedAt: in.OpenedAt, severity: in.Severity,
 			title: in.Title, events: in.EventCount, bytes: in.SizeBytes, truncated: in.Truncated, findingKeys: map[string]bool{}}
 		payload, _ := json.Marshal(map[string]any{"previous_last_seen": in.LastSeenAt, "restarted_at": now})
 		ev := repository.IncidentEvent{At: now, Kind: KindRestarted, Payload: payload,
-			Summary: fmt.Sprintf("LockLens restarted; nothing was recorded between %s and %s, and in-memory buffers were lost.",
+			Summary: fmt.Sprintf("LockLens restarted or another LockLens server took over collecting this instance; nothing was recorded between %s and %s, and in-memory buffers were lost.",
 				in.LastSeenAt.UTC().Format(time.RFC3339), now.Format(time.RFC3339))}
 		if err := r.store.AppendIncidentEvents(ctx, in.ID, nil, []repository.IncidentEvent{ev}); err != nil {
 			return err
@@ -194,6 +199,15 @@ func (r *Recorder) Recover(ctx context.Context) error {
 	}
 	r.updateOpenGauge()
 	return nil
+}
+
+// Forget drops the in-memory state of a target another server now
+// collects; its incidents stay open and that server adopts them.
+func (r *Recorder) Forget(targetID int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.targets, targetID)
+	r.updateOpenGauge()
 }
 
 func (r *Recorder) updateOpenGauge() {

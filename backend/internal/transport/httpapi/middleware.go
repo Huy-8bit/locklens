@@ -22,6 +22,7 @@ type ctxKey int
 const (
 	keySession ctxKey = iota
 	keyRequestID
+	keyToken
 )
 
 // ServeHTTP applies middleware: request ID, panic recovery, security

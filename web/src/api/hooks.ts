@@ -1,6 +1,11 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError, qs } from './client'
 import type {
+  ApiToken,
+  LogEvent,
+  LogSummary,
+  ChangeReport,
+  ChangesResponse,
   ActivityResponse,
   CommandsResponse,
   FindingRow,
@@ -612,5 +617,70 @@ export function useRefreshOptimizer(targetId: number) {
   return useMutation({
     mutationFn: () => api<{ derived: number }>(`/api/v1/targets/${targetId}/optimizer/refresh`, { method: 'POST' }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['optimizer'] }),
+  })
+}
+
+/** Changes of some instances (all for an empty list) in a range, with those for every instance. */
+export function useChanges(targetIds: number[], range: Range) {
+  return useQuery({
+    queryKey: ['changes', targetIds.join(','), range],
+    queryFn: () => api<ChangesResponse>(`/api/v1/changes${qs({ target_id: targetIds.join(',') || undefined, ...rangeQuery(range) })}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: every(HIST),
+  })
+}
+
+export function useReportChange() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (x: ChangeReport) => api('/api/v1/changes', { method: 'POST', json: x }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['changes'] }),
+  })
+}
+
+export function useDeleteChange() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api<undefined>(`/api/v1/changes/${id}`, { method: 'DELETE' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['changes'] }),
+  })
+}
+
+export function useTokens() {
+  return useQuery({ queryKey: ['tokens'], queryFn: () => api<{ tokens: ApiToken[] }>('/api/v1/tokens') })
+}
+
+export function useCreateToken() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (x: { name: string; scope: ApiToken['scope']; target_id: number | null }) =>
+      api<{ token: ApiToken; secret: string; note: string }>('/api/v1/tokens', { method: 'POST', json: x }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['tokens'] }),
+  })
+}
+
+export function useRevokeToken() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api<undefined>(`/api/v1/tokens/${id}`, { method: 'DELETE' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['tokens'] }),
+  })
+}
+
+export function useLogSummary(id: number, range: Range) {
+  return useQuery({
+    queryKey: ['t', id, 'hist', 'logs', range],
+    queryFn: () => api<LogSummary>(`/api/v1/targets/${id}/logs${qs(rangeQuery(range))}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: every(HIST),
+  })
+}
+
+export function useLogEvents(id: number, kinds: string[], range: Range, fingerprint = '') {
+  return useQuery({
+    queryKey: ['t', id, 'hist', 'log-events', kinds.join(','), fingerprint, range],
+    queryFn: () => api<{ events: LogEvent[] }>(`/api/v1/targets/${id}/logs/events${qs({ kind: kinds.join(','), fingerprint: fingerprint || undefined, ...rangeQuery(range) })}`),
+    placeholderData: keepPreviousData,
+    refetchInterval: every(HIST),
   })
 }

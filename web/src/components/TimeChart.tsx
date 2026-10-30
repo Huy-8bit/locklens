@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import * as echarts from 'echarts/core'
 import { BarChart, LineChart } from 'echarts/charts'
-import { GridComponent, MarkAreaComponent, TooltipComponent } from 'echarts/components'
+import { GridComponent, MarkAreaComponent, MarkLineComponent, TooltipComponent } from 'echarts/components'
 import { SVGRenderer } from 'echarts/renderers'
 import { Maximize2, X } from 'lucide-react'
 import { cssVar } from '../lib/commands'
 import { time as fmtTime, UNKNOWN } from '../lib/format'
+import { useChartMarkers, type ChartMarker } from '../lib/changes'
 import { absolute, MIN_WINDOW_MS, useScope, zoomedOut } from '../lib/scope'
 import { useThemeVersion } from '../lib/theme'
 import { cx } from './ui'
 
-echarts.use([LineChart, BarChart, GridComponent, TooltipComponent, MarkAreaComponent, SVGRenderer])
+echarts.use([LineChart, BarChart, GridComponent, TooltipComponent, MarkAreaComponent, MarkLineComponent, SVGRenderer])
 
 // Every time chart joins one group, so hovering one shows the crosshair and
 // values at the same moment on all charts of the page.
@@ -76,6 +77,8 @@ interface TimeChartProps {
   highlight?: GapRange
   /** A shaded value range behind the series (listed in the tooltip, not the legend). */
   band?: ChartBand
+  /** Vertical markers (changes); defaults to the page's change markers. */
+  markers?: ChartMarker[]
 }
 
 /**
@@ -87,6 +90,8 @@ interface TimeChartProps {
  */
 export function TimeChart(props: TimeChartProps) {
   const { series, format, height = 220, stacked = false, area = false, from, to, gaps = [], label, emptyText = 'No samples in this time range', legend = true, compactAxis = false, axisWidth, integer = false, expandable = true, zoomable = true, highlight, band } = props
+  const pageMarkers = useChartMarkers()
+  const markers = useMemo(() => (props.markers ?? pageMarkers).filter((m) => m.at >= from && m.at <= to), [props.markers, pageMarkers, from, to])
   const el = useRef<HTMLDivElement>(null)
   const chart = useRef<echarts.ECharts | null>(null)
   const themeVersion = useThemeVersion()
@@ -105,6 +110,7 @@ export function TimeChart(props: TimeChartProps) {
     const surface = cssVar('var(--surface)')
     const crit = cssVar('var(--warn-mark)')
     const mark = cssVar('var(--crit-mark)')
+    const ink = cssVar('var(--ink)')
     const span = to - from
     const colors = new Map(series.map((s) => [s.label, cssVar(s.color)]))
     const bandColor = band ? cssVar(band.color) : ''
@@ -207,10 +213,22 @@ export function TimeChart(props: TimeChartProps) {
                   ],
                 }
               : undefined,
+          // Changes: a dashed line each, named on hover.
+          markLine:
+            i === 0 && markers.length
+              ? {
+                  symbol: 'none',
+                  animation: false,
+                  lineStyle: { color: muted, type: 'dashed', width: 1, opacity: 0.8 },
+                  label: { show: false },
+                  emphasis: { label: { show: true, position: 'insideEndTop', formatter: (p: { name: string }) => p.name, color: ink, fontSize: 11 } },
+                  data: markers.map((m) => ({ xAxis: m.at, name: m.label })),
+                }
+              : undefined,
         }
       })],
     }
-  }, [series, visible, format, stacked, area, compactAxis, axisWidth, integer, from, to, gaps, highlight, band, themeVersion])
+  }, [series, visible, format, stacked, area, compactAxis, axisWidth, integer, from, to, gaps, highlight, band, markers, themeVersion])
 
   useEffect(() => {
     if (!el.current || !hasData) return

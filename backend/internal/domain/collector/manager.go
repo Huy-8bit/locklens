@@ -6,6 +6,7 @@ package collector
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -27,6 +28,36 @@ type Analyzer interface {
 type EventSink interface {
 	Publish(kind string, payload any)
 }
+
+// Adopter is an Analyzer that keeps per-target state (open incidents): it
+// adopts a target when this server starts collecting it and forgets it when
+// another server takes it over.
+type Adopter interface {
+	Adopt(ctx context.Context, targetID int64) error
+	Forget(targetID int64)
+}
+
+// Cluster decides which targets this server collects when several servers
+// share the store (implemented by *cluster.Node).
+type Cluster interface {
+	Assign(ctx context.Context, wanted []int64) (map[int64]bool, error)
+	Alone() bool
+	ID() string
+}
+
+// Messenger sends requests to the other servers (implemented by
+// *cluster.Bus).
+type Messenger interface {
+	Send(kind string, payload any)
+}
+
+// MessageRunSoon asks the server that collects a target to run a collector
+// now ({"target_id", "collector"}).
+const MessageRunSoon = "collector.run_soon"
+
+// liveEvery is how often a server publishes the live view of the targets
+// it collects for the other servers.
+const liveEvery = 5 * time.Second
 
 // Settings provides thresholds that collectors need.
 type Settings interface {
@@ -53,7 +84,7 @@ type Config struct {
 
 // Manager owns all target workers.
 type Manager struct {
-	store     *repository.Store
+	store     Store
 	box       *secret.Box
 	writer    *Writer
 	analyzer  Analyzer
@@ -72,6 +103,10 @@ type Manager struct {
 	slotsBusy atomic.Int64
 	reload    chan struct{}
 
+	cluster   Cluster
+	messenger Messenger
+	remote    remoteViews
+
 	mu      sync.Mutex
 	workers map[int64]*running
 	states  map[int64]*State
@@ -84,7 +119,7 @@ type running struct {
 }
 
 // NewManager builds a manager. analyzer may be nil.
-func NewManager(store *repository.Store, box *secret.Box, writer *Writer, analyzer Analyzer, events EventSink,
+func NewManager(store Store, box *secret.Box, writer *Writer, analyzer Analyzer, events EventSink,
 	settings Settings, metrics *obs.Metrics, log *slog.Logger, cfg Config) *Manager {
 	if cfg.MaxConcurrent < 1 {
 		cfg.MaxConcurrent = 4
@@ -108,6 +143,11 @@ func NewManager(store *repository.Store, box *secret.Box, writer *Writer, analyz
 // SetAnalyzer sets the analyzer before Run.
 func (m *Manager) SetAnalyzer(a Analyzer) { m.analyzer = a }
 
+// SetCluster makes the manager collect only the targets the cluster assigns
+// to this server, publish their live views, and forward requests about
+// other targets. Call it before Run.
+func (m *Manager) SetCluster(c Cluster, msg Messenger) { m.cluster, m.messenger = c, msg }
+
 // Burst collects a target faster for the configured burst duration (from
 // now), for example while it has an open incident. Calling it again extends
 // the burst. It does nothing when adaptive sampling is off.
@@ -121,13 +161,30 @@ func (m *Manager) Burst(targetID int64, reason string) {
 }
 
 // RunSoon asks a target's worker to run a collector now instead of at its
-// next turn; false when the target has no worker.
+// next turn; with a cluster, the server that collects it is asked. False
+// when no worker could be asked.
 func (m *Manager) RunSoon(targetID int64, collector string) bool {
-	s, ok := m.State(targetID)
-	if ok {
-		s.requestRun(collector)
+	if m.RunSoonHere(targetID, collector) {
+		return true
 	}
-	return ok
+	if m.messenger != nil && m.cluster != nil && !m.cluster.Alone() {
+		m.messenger.Send(MessageRunSoon, map[string]any{"target_id": targetID, "collector": collector})
+		return true
+	}
+	return false
+}
+
+// RunSoonHere is RunSoon for a target this server collects.
+func (m *Manager) RunSoonHere(targetID int64, collector string) bool {
+	m.mu.Lock()
+	_, running := m.workers[targetID]
+	s := m.states[targetID]
+	m.mu.Unlock()
+	if !running || s == nil {
+		return false
+	}
+	s.requestRun(collector)
+	return true
 }
 
 // Reload asks the manager to re-read targets now (after a change via the API).
@@ -146,11 +203,36 @@ func (m *Manager) State(id int64) (*State, bool) {
 	return s, ok
 }
 
+// View returns the live view of a target: this server's when it collects
+// the target, otherwise the one its collecting server published (when it is
+// recent), otherwise the last one this server had.
+func (m *Manager) View(ctx context.Context, id int64) (View, bool) {
+	m.mu.Lock()
+	_, running := m.workers[id]
+	s := m.states[id]
+	m.mu.Unlock()
+	if running && s != nil {
+		return s.Snapshot(), true
+	}
+	if m.cluster != nil && !m.cluster.Alone() {
+		if v, ok := m.remote.get(ctx, m.store, id); ok {
+			return v, true
+		}
+	}
+	if s != nil {
+		return s.Snapshot(), true
+	}
+	return View{}, false
+}
+
 // Run synchronises workers with the stored targets until ctx is cancelled,
 // then stops every worker.
 func (m *Manager) Run(ctx context.Context) {
 	t := time.NewTicker(m.syncEvery)
 	defer t.Stop()
+	if m.cluster != nil {
+		go m.publishLive(ctx)
+	}
 	m.sync(ctx)
 	for {
 		select {
@@ -178,22 +260,56 @@ func (m *Manager) sync(ctx context.Context) {
 			wanted[t.ID] = t
 		}
 	}
+	if m.cluster != nil {
+		ids := make([]int64, 0, len(wanted))
+		for id := range wanted {
+			ids = append(ids, id)
+		}
+		actx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		owned, err := m.cluster.Assign(actx, ids)
+		cancel()
+		if err != nil {
+			m.log.Warn("cluster assignment failed; keeping current workers", "error", err.Error())
+			return
+		}
+		for id := range wanted {
+			if !owned[id] {
+				delete(wanted, id)
+			}
+		}
+	}
+	adopter, _ := m.analyzer.(Adopter)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	updated := map[int64]bool{}
 	for id, r := range m.workers {
 		t, ok := wanted[id]
 		if !ok || !t.UpdatedAt.Equal(r.updatedAt) {
 			r.cancel()
 			<-r.done
 			delete(m.workers, id)
-			if !ok {
+			if ok {
+				updated[id] = true
+			} else {
 				m.metrics.CollectFreshness.Delete(strconv.FormatInt(id, 10))
+				if adopter != nil {
+					adopter.Forget(id)
+				}
 			}
 		}
 	}
 	for id, t := range wanted {
 		if _, ok := m.workers[id]; ok {
 			continue
+		}
+		// A target this server starts collecting (at start-up or taken
+		// over from another server): attach its open incidents.
+		if adopter != nil && !updated[id] {
+			actx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			if err := adopter.Adopt(actx, id); err != nil {
+				m.log.Warn("adopting open incidents failed", "target_id", id, "error", err.Error())
+			}
+			cancel()
 		}
 		st, ok := m.states[id]
 		if !ok {
@@ -231,4 +347,73 @@ func (m *Manager) stopAll() {
 		delete(m.workers, id)
 	}
 	m.metrics.ActiveTargets.Set(0)
+}
+
+// publishLive publishes the live views of the targets this server collects
+// while other servers share the store, so they can answer API requests.
+func (m *Manager) publishLive(ctx context.Context) {
+	t := time.NewTicker(liveEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if m.cluster.Alone() {
+			continue
+		}
+		m.mu.Lock()
+		views := map[int64]View{}
+		for id := range m.workers {
+			if s := m.states[id]; s != nil {
+				views[id] = s.Snapshot()
+			}
+		}
+		m.mu.Unlock()
+		for id, v := range views {
+			// Statement collections and load buckets are not read from the
+			// live view by the API; they are large.
+			v.Statements, v.Load = nil, nil
+			raw, err := json.Marshal(v)
+			if err != nil {
+				continue
+			}
+			pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := m.store.SaveLiveState(pctx, id, m.cluster.ID(), time.Now(), raw); err != nil && ctx.Err() == nil {
+				m.log.Warn("publishing live view failed", "target_id", id, "error", err.Error())
+			}
+			cancel()
+		}
+	}
+}
+
+// remoteViews caches the live views other servers published.
+type remoteViews struct {
+	mu    sync.Mutex
+	cache map[int64]remoteView
+}
+
+type remoteView struct {
+	fetched time.Time
+	view    View
+	ok      bool
+}
+
+// get returns a published view younger than a minute (cached two seconds).
+func (r *remoteViews) get(ctx context.Context, store Store, id int64) (View, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c, ok := r.cache[id]; ok && time.Since(c.fetched) < 2*time.Second {
+		return c.view, c.ok
+	}
+	if r.cache == nil {
+		r.cache = map[int64]remoteView{}
+	}
+	c := remoteView{fetched: time.Now()}
+	if _, at, raw, err := store.LiveState(ctx, id); err == nil && time.Since(at) < time.Minute {
+		c.ok = json.Unmarshal(raw, &c.view) == nil
+	}
+	r.cache[id] = c
+	return c.view, c.ok
 }

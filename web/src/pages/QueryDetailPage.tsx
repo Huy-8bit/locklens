@@ -12,10 +12,11 @@ import { Badge, Card, ErrorBox, KeyValue, Load, Notice, Spinner, Stat } from '..
 import { commandColor, COMMAND_LABEL } from '../lib/commands'
 import { compact, ms, num, rate, time } from '../lib/format'
 import { bandPoints } from '../lib/insight'
+import { ChangeMarkers } from '../lib/changes'
 import { useRange } from '../lib/scope'
 import { bucketSeries } from '../lib/statements'
 
-export default function QueryDetailPage() {
+function QueryDetail() {
   const id = useNumParam('targetId')
   const qid = Number(useParams().qid)
   const [range] = useRange()
@@ -127,5 +128,14 @@ export default function QueryDetailPage() {
         }}
       </Load>
     </>
+  )
+}
+
+export default function QueryDetailPage() {
+  const id = useNumParam('targetId')
+  return (
+    <ChangeMarkers targetIds={[id]}>
+      <QueryDetail />
+    </ChangeMarkers>
   )
 }

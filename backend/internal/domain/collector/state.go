@@ -140,7 +140,7 @@ type View struct {
 	Replication  *observe.Replication
 	Tables       *observe.TableHealth
 	// TableActivity are the busiest tables between the last two table
-	// activity collections.
+	// activity collections, of every database in scope.
 	TableActivity []observe.TableActivity
 	Host          *observe.HostMetrics
 	HostError     *string

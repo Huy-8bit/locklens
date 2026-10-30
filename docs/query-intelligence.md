@@ -167,25 +167,33 @@ trigger), LockLens gathers:
 - the statement's and the instance's sampled wait profile (average active
   sessions per wait class) during the anomaly and the equal period before;
 - how many other statements became slower at the same time;
-- collection gaps; whether plans were saved.
+- collection gaps; whether plans were saved;
+- the [changes](collectors.md#change-detection) from two hours before the
+  anomaly (settings, restarts, failovers, schema, reported deploys);
+- server log events (when the log agent runs): lock waits, deadlocks, and
+  temporary files, those of this statement matched by `queryid`.
 
 Fixed rules then score these hypotheses (0–1) and rank them:
 
 | Hypothesis | Supported by | Weakened by |
 | --- | --- | --- |
-| Waiting for locks | Lock share of the statement's samples ≥ 30%; blocking findings (weighted by whether they began *before* the anomaly); the running execution is blocked; deadlocks | Lock share < 5% |
-| A different plan or access path | Blocks read per call ≥ 2× usual; temp per call ≥ 2×; slower with unchanged rows per call; I/O waits; the I/O rule | Rows per call also grew |
+| Waiting for locks | Lock share of the statement's samples ≥ 30%; blocking findings (weighted by whether they began *before* the anomaly); the running execution is blocked; deadlocks; the server log shows the statement waiting for locks, or other lock waits and deadlocks | Lock share < 5% |
+| A different plan or access path | Blocks read per call ≥ 2× usual; temp per call ≥ 2×; slower with unchanged rows per call; I/O waits; the I/O rule; an index dropped or invalid, planner settings changed, or a server upgrade shortly before; temporary files of the statement in the server log | Rows per call also grew |
 | More data per call | Rows per call ≥ 2× usual | Rows per call unchanged |
 | More executions (traffic, retries, N+1) | Calls/s ≥ 2× usual, with unchanged time per call; the N+1 rule | Calls unchanged |
 | Instance-wide resource pressure | Other statements slower at the same time; active sessions ≥ 1.5× before; mostly CPU; connection or temp-file findings | Only this statement is slower; load unchanged |
 | Bloat or VACUUM held back | Dead tuples, long transactions, XID age findings | |
 | One heavy execution (long-running) | Not blocked; far beyond its usual time, or no baseline (rare statement) | |
+| A deploy, migration, or configuration change made shortly before | Reported changes before the anomaly, weighted by how close (full within minutes, a fifth at two hours); changes after the anomaly began do not count | |
+
+A restart or failover before the anomaly supports resource pressure (caches
+start cold).
 
 Strength: strong ≥ 0.6, moderate ≥ 0.3, weak below. Each hypothesis lists
 its supporting and contradicting evidence and the steps that confirm or rule
 it out. The investigation also lists a **timeline** and **missing evidence**
-(sampling off, no `query_id` samples, no saved plan, gaps, and that
-deployments and configuration changes are not recorded). The summary always
+(sampling off, no `query_id` samples, no saved plan, gaps, no changes known
+in the period, the server log not shipped). The summary always
 says the top hypothesis is "a hypothesis to check, not a confirmed cause".
 
 ## Execution plans
@@ -213,8 +221,13 @@ incidents (`LOCKLENS_INCIDENT_RETENTION`).
 `pg_stat_statements` keeps totals per statement, not individual executions,
 so p50/p95/p99 latency cannot be derived from it. LockLens shows means over
 periods and the spread of those means across the baseline, and **never
-estimates percentiles**. APIs return `"percentiles": {"available": false,
-"reason": …}`.
+estimates percentiles** from it. APIs return `"percentiles": {"available":
+false, "reason": …}`.
+
+With the [log agent](collectors.md#server-log-agent), the instance's **Logs**
+tab shows real percentiles from individual logged executions — of the
+executions slower than `log_min_duration_statement` only (all executions
+when it is 0), and says so next to them.
 
 ## Where to see it
 
@@ -241,5 +254,6 @@ APIs: [api.md](api.md#query-performance).
   lose activity; evictions are reported in the limitations of findings.
 - `queryid` changes across major versions; baselines restart after an upgrade.
 - Wait profiles are sampled; very short statements may never be sampled.
-- Correlation is only as good as what was collected: application deployments,
-  configuration changes, and host events outside node_exporter are not seen.
+- Correlation is only as good as what was collected: deploys are known only
+  when reported, schema changes within 15 minutes, and host events outside
+  node_exporter are not seen. A change near an anomaly is a lead, not a cause.

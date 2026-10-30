@@ -27,6 +27,7 @@ activity data. Collectors never run DDL or DML on targets, never call
 | `replication` | max(interval, 30 s) | 15 s | `pg_stat_replication`, `pg_replication_slots`, `pg_stat_wal_receiver`, recovery functions | Role, replicas and lags, slots and retained WAL, standby receive/replay state |
 | `tables` | 5 min | 60 s | `pg_stat_user_tables`, `pg_stat_user_indexes`, `pg_class`, `pg_database` | Tuple estimates, vacuum/analyze times and counts, sizes (200 largest tables), XID age per database, database sizes |
 | `table_activity` | max(interval, 60 s) | 15 s | `pg_stat_user_tables` counters only (no size functions, no locks) | Per-table rates of the 20 busiest tables: sequential scans and rows read, index scans, rows written, dead rows (`table.*` metrics, Hot tables) |
+| `changes` | 1 min | 15 s | `pg_settings` (name, value, unit, source, pending restart), `pg_postmaster_start_time()`, `pg_conf_load_time()`, `pg_is_in_recovery()`, version | The [change timeline](#change-detection): settings changes, restarts, promotions, upgrades |
 | `catalog` | 15 min, and on request (Optimize → Analyse now) | 60 s | `pg_index`, `pg_class`, `pg_constraint`, `pg_stat_user_tables`, `pg_stat_user_indexes`, `pg_stats` (`null_frac`, `n_distinct`, `correlation` only), `pg_extension`, planner settings | The schema for the [query optimizer](query-optimizer.md) |
 | `host` | max(interval, 15 s) | 10 s (5 s HTTP) | node_exporter `/metrics` (optional) | CPU, memory, disk and network throughput, filesystem usage |
 
@@ -37,6 +38,67 @@ locked exclusively, so a long-running DDL statement on a target never blocks
 LockLens (and LockLens never queues behind it for long).
 
 The first run of each collector is staggered by 300 ms per collector.
+
+### Several databases
+
+`tables`, `table_activity`, and `catalog` read per database. With a target's
+`database_scope` of `all` or `list`, they run on the connection string's
+database and then on each other database of the scope (listed from
+`pg_database` every 5 minutes, at most 20), over one extra connection per
+database with the same credentials. A database that cannot be reached is
+skipped for a minute and logged; the other databases are still collected.
+Cluster-wide data (database sizes and ages, sessions, statements) comes from
+the main connection only. Per-table metrics are labelled
+`database.schema.table`.
+
+## Change detection
+
+The `changes` collector compares each reading of `pg_settings` and the
+server facts with the previous one; the `catalog` collector does the same for
+each database's tables and index definitions. A difference is stored as a
+change event:
+
+| Kind | Detected from | Time |
+| --- | --- | --- |
+| `restart` | `pg_postmaster_start_time()` changed | Exact (the new start time) |
+| `settings` | Values in `pg_settings` changed (also settings that appeared or disappeared, and `pending_restart`) | The reload (`pg_conf_load_time()`) when it falls in the window, else the reading |
+| `promotion`, `demotion` | `pg_is_in_recovery()` changed | Between two readings |
+| `upgrade` | `server_version_num` changed | Between two readings |
+| `schema` | Tables created or dropped; indexes created, dropped, redefined, or becoming invalid/valid | Between two catalog readings (15 min); skipped while the catalog is cut at its limits |
+
+The first reading after a target is added is the baseline. Settings that can
+hold secrets (names containing `conninfo`, `command`, `password`,
+`passphrase`, `secret`, `key_file`) are compared by a SHA-256 fingerprint,
+never stored. Reported changes (deploys, migrations) come from the API.
+
+## Server log agent
+
+The server log holds what the statistics views cannot: individual slow
+executions and their plans, lock waits with their holders, deadlocks,
+autovacuum durations, temporary files, checkpoint durations, and errors.
+`locklens agent` runs next to the log files and reads them; it never connects
+to PostgreSQL.
+
+| Event | Log message | Needs |
+| --- | --- | --- |
+| `slow_query` | `duration: … ms  statement: …` | `log_min_duration_statement` ≥ 0 |
+| `plan` | `duration: … ms  plan: …` | `auto_explain` loaded, `auto_explain.log_min_duration` ≥ 0 |
+| `lock_wait` | `process N still waiting for … after … ms` / `acquired …` | `log_lock_waits = on` |
+| `deadlock` | `deadlock detected` with the cycle | always |
+| `autovacuum`, `autoanalyze` | `automatic vacuum/analyze of table …` | `log_autovacuum_min_duration` ≥ 0 |
+| `temp_file` | `temporary file: path …, size …` | `log_temp_files` ≥ 0 |
+| `checkpoint` | `checkpoint complete: …` | `log_checkpoints = on` |
+| `error` | `ERROR`, `FATAL`, `PANIC` messages with their SQLSTATE | always |
+
+Before an event leaves the host, statement texts are normalised (constants
+become `$1`, `$2`, …, with PostgreSQL's parser in cgo builds, a lexical pass
+otherwise), constants in plan conditions become `?`, quoted values in error
+messages become `"?"` (quoted object names stay), and error DETAIL lines are
+dropped. Other messages (connections, notices) are not kept. The agent reads
+files from their end on its first start (`--from-start` to read history),
+follows rotation and truncation, keeps its read positions, and spools
+batches to disk while the server cannot be reached. Events are deduplicated
+by an ID derived from the message, so a batch sent twice is stored once.
 
 ### Statement texts
 

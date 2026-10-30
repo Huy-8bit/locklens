@@ -65,6 +65,9 @@ type Config struct {
 	LogLevel          string
 	LogFormat         string
 	ShutdownTimeout   time.Duration
+	// ServerID names this server among the servers sharing the store; by
+	// default the host name and a random suffix (unique per start).
+	ServerID string
 }
 
 // LoadConfig reads the configuration. getenv is os.Getenv in production.
@@ -79,6 +82,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		BootstrapTargets:  getenv("LOCKLENS_BOOTSTRAP_TARGETS_FILE"),
 		LogLevel:          def(getenv("LOCKLENS_LOG_LEVEL"), "info"),
 		LogFormat:         def(getenv("LOCKLENS_LOG_FORMAT"), "text"),
+		ServerID:          strings.TrimSpace(getenv("LOCKLENS_SERVER_ID")),
 	}
 	var errs []error
 	dur := func(name string, d time.Duration, min time.Duration) time.Duration {

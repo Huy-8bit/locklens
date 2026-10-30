@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	rules "github.com/locklens/locklens/internal/domain/finding"
+	"github.com/locklens/locklens/internal/repository/queries"
 )
 
 // FindingRow is a stored finding.
@@ -42,17 +43,7 @@ func (s *Store) SyncFindings(ctx context.Context, targetID int64, now time.Time,
 				metrics, _ = json.Marshal(f.Metrics)
 			}
 			var id int64
-			err := tx.QueryRow(ctx, `
-INSERT INTO findings (target_id, rule_id, rule_version, finding_key, severity, title, status, first_seen, last_seen,
-    observed, evidence, explanation, possible_explanations, next_checks, limitations, confidence, metrics)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-ON CONFLICT (target_id, rule_id, finding_key) WHERE status <> 'resolved' DO UPDATE SET
-    rule_version = EXCLUDED.rule_version, severity = EXCLUDED.severity, title = EXCLUDED.title,
-    status = EXCLUDED.status, last_seen = EXCLUDED.last_seen, observed = EXCLUDED.observed,
-    evidence = EXCLUDED.evidence, explanation = EXCLUDED.explanation,
-    possible_explanations = EXCLUDED.possible_explanations, next_checks = EXCLUDED.next_checks,
-    limitations = EXCLUDED.limitations, confidence = EXCLUDED.confidence, metrics = EXCLUDED.metrics
-RETURNING id`, targetID, f.RuleID, f.RuleVersion, f.Key, string(f.Severity), f.Title, string(f.Status),
+			err := tx.QueryRow(ctx, queries.UpsertFinding, targetID, f.RuleID, f.RuleVersion, f.Key, string(f.Severity), f.Title, string(f.Status),
 				f.ObservedFrom, now.UTC(), observed, evidence, f.Explanation, poss, next, f.Limitations, conf, metrics).Scan(&id)
 			if err != nil {
 				return err
@@ -61,10 +52,7 @@ RETURNING id`, targetID, f.RuleID, f.RuleVersion, f.Key, string(f.Severity), f.T
 			keepRules = append(keepRules, f.RuleID)
 			keepKeys = append(keepKeys, f.Key)
 		}
-		_, err := tx.Exec(ctx, `
-UPDATE findings SET status = 'resolved', resolved_at = $2
-WHERE target_id = $1 AND status <> 'resolved'
-  AND (rule_id, finding_key) NOT IN (SELECT r, k FROM unnest($3::text[], $4::text[]) AS u(r, k))`,
+		_, err := tx.Exec(ctx, queries.ResolveMissingFindings,
 			targetID, now.UTC(), keepRules, keepKeys)
 		return err
 	})
@@ -76,7 +64,7 @@ func (s *Store) LinkFindingsToIncident(ctx context.Context, incidentID int64, fi
 	if len(findingIDs) == 0 {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, "UPDATE findings SET incident_id = $1 WHERE id = ANY($2) AND incident_id IS NULL", incidentID, findingIDs)
+	_, err := s.pool.Exec(ctx, queries.LinkFindingsToIncident, incidentID, findingIDs)
 	return s.red.Error(err)
 }
 
@@ -94,14 +82,7 @@ func (s *Store) ListFindings(ctx context.Context, f FindingFilter) ([]FindingRow
 	if f.Limit <= 0 || f.Limit > 500 {
 		f.Limit = 200
 	}
-	rows, err := s.pool.Query(ctx, `
-SELECT id, target_id, incident_id, rule_id, rule_version, finding_key, severity, title, status, first_seen, last_seen,
-       resolved_at, observed, evidence, explanation, possible_explanations, next_checks, limitations, confidence, metrics
-FROM findings
-WHERE ($1 = 0 OR target_id = $1) AND ($2 = 0 OR incident_id = $2)
-  AND ($3 = '' OR ($3 = 'current' AND status <> 'resolved') OR ($3 = 'resolved' AND status = 'resolved'))
-ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, last_seen DESC
-LIMIT $4`, f.TargetID, f.IncidentID, f.Status, f.Limit)
+	rows, err := s.pool.Query(ctx, queries.ListFindings, f.TargetID, f.IncidentID, f.Status, f.Limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}

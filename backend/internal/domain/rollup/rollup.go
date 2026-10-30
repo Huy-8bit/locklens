@@ -7,8 +7,6 @@ import (
 	"context"
 	"log/slog"
 	"time"
-
-	"github.com/locklens/locklens/internal/repository"
 )
 
 // overlap is recomputed on every pass, so points written late (the write
@@ -20,7 +18,7 @@ const backfillChunk = 6 * time.Hour
 
 // Run rolls up every target every interval until ctx is cancelled. The first
 // pass backfills the raw history (at most rawRetention).
-func Run(ctx context.Context, store *repository.Store, every, rawRetention time.Duration, log *slog.Logger) {
+func Run(ctx context.Context, store Store, every, rawRetention time.Duration, log *slog.Logger) {
 	timer := time.NewTimer(20 * time.Second)
 	defer timer.Stop()
 	for {
@@ -46,7 +44,7 @@ func Run(ctx context.Context, store *repository.Store, every, rawRetention time.
 }
 
 // Target brings one target's rollups up to now.
-func Target(ctx context.Context, store *repository.Store, targetID int64, now time.Time, rawRetention time.Duration) error {
+func Target(ctx context.Context, store Store, targetID int64, now time.Time, rawRetention time.Duration) error {
 	end := now.Truncate(time.Minute).Add(time.Minute)
 	last, ok, err := store.MetricRollupWatermark(ctx, targetID)
 	if err != nil {

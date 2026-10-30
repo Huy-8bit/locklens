@@ -97,7 +97,7 @@ var envPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
 
 // Service manages channels and silences and dispatches notifications.
 type Service struct {
-	store     *repository.Store
+	store     Store
 	box       *secret.Box
 	log       *slog.Logger
 	publicURL string
@@ -112,7 +112,7 @@ type Service struct {
 
 // New returns a service. publicURL is LockLens' address as users reach it
 // (for links in messages); it may be empty.
-func New(store *repository.Store, box *secret.Box, log *slog.Logger, publicURL, version string) *Service {
+func New(store Store, box *secret.Box, log *slog.Logger, publicURL, version string) *Service {
 	return &Service{store: store, box: box, log: log, publicURL: strings.TrimRight(publicURL, "/"), version: version,
 		send: newSender(version), now: time.Now, queue: make(chan int64, 256), pending: map[int64]bool{}}
 }

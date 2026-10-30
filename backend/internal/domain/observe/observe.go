@@ -134,6 +134,7 @@ type TableStat struct {
 
 // IndexStat is one row of index statistics.
 type IndexStat struct {
+	DatName      string `json:"datname"`
 	IndexRelID   uint32 `json:"indexrelid"`
 	RelID        uint32 `json:"relid"`
 	Schema       string `json:"schema"`
@@ -170,6 +171,7 @@ type TableHealth struct {
 // TableActivity is what one table did between two collections of
 // pg_stat_user_tables (rates per second).
 type TableActivity struct {
+	DatName         string  `json:"datname"`
 	RelID           uint32  `json:"relid"`
 	Schema          string  `json:"schema"`
 	Name            string  `json:"name"`

@@ -1,26 +1,10 @@
 package collector
 
-import "time"
+import (
+	"time"
 
-// CounterSample is one reading of cumulative counters from one source.
-//
-// Values are keyed first by scope (for example a database OID in
-// pg_stat_database, or "" for a cluster-wide view) and then by counter name.
-// Resets are tracked per scope.
-type CounterSample struct {
-	At time.Time
-	// ServerStart is pg_postmaster_start_time(); a change means the server
-	// restarted and every counter started again from zero.
-	ServerStart time.Time
-	Scopes      map[string]ScopeCounters
-}
-
-// ScopeCounters holds the counters of one scope.
-type ScopeCounters struct {
-	// StatsReset is the scope's stats_reset timestamp, if the view has one.
-	StatsReset *time.Time
-	Values     map[string]float64
-}
+	"github.com/locklens/locklens/internal/domain/observe"
+)
 
 // Unknown reasons. They are recorded with gaps and exposed to clients.
 const (
@@ -60,7 +44,7 @@ func (d DeltaResult) Rate() *float64 {
 //   - more than maxGap elapsed, because a single average over a long gap would
 //     hide what happened in between (a gap is recorded instead);
 //   - no scope is present in both samples.
-func Delta(prev *CounterSample, cur CounterSample, name string, maxGap time.Duration) DeltaResult {
+func Delta(prev *observe.CounterSample, cur observe.CounterSample, name string, maxGap time.Duration) DeltaResult {
 	if prev == nil {
 		return DeltaResult{Reason: ReasonFirstSample}
 	}

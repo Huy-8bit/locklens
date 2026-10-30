@@ -3,8 +3,11 @@ package repository
 import (
 	"context"
 	"errors"
-	"github.com/jackc/pgx/v5"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/locklens/locklens/internal/repository/queries"
 )
 
 type WorkspacePolicy struct {
@@ -23,7 +26,7 @@ type WorkspacePolicy struct {
 
 func (s *Store) WorkspacePolicy(ctx context.Context, id int64) (WorkspacePolicy, error) {
 	p := WorkspacePolicy{TargetID: id}
-	err := s.pool.QueryRow(ctx, `SELECT metadata_enabled,data_enabled,sql_enabled,history_enabled,hypopg_enabled,dsn_ciphertext,updated_at FROM workspace_policies WHERE target_id=$1`, id).Scan(&p.Metadata, &p.Data, &p.SQL, &p.History, &p.HypoPG, &p.Ciphertext, &p.UpdatedAt)
+	err := s.pool.QueryRow(ctx, queries.WorkspacePolicy, id).Scan(&p.Metadata, &p.Data, &p.SQL, &p.History, &p.HypoPG, &p.Ciphertext, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, nil
 	}
@@ -31,13 +34,13 @@ func (s *Store) WorkspacePolicy(ctx context.Context, id int64) (WorkspacePolicy,
 	return p, err
 }
 func (s *Store) SetWorkspacePolicy(ctx context.Context, p WorkspacePolicy) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO workspace_policies(target_id,metadata_enabled,data_enabled,sql_enabled,history_enabled,hypopg_enabled,dsn_ciphertext) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(target_id) DO UPDATE SET metadata_enabled=$2,data_enabled=$3,sql_enabled=$4,history_enabled=$5,hypopg_enabled=$6,dsn_ciphertext=$7,updated_at=now()`, p.TargetID, p.Metadata, p.Data, p.SQL, p.History, p.HypoPG, p.Ciphertext)
+	_, err := s.pool.Exec(ctx, queries.SetWorkspacePolicy, p.TargetID, p.Metadata, p.Data, p.SQL, p.History, p.HypoPG, p.Ciphertext)
 	return err
 }
 func (s *Store) AuditWorkspace(ctx context.Context, id int64, actor, action, status string, duration time.Duration, rows int) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO workspace_audit(target_id,actor,action,status,duration_ms,row_count) VALUES($1,$2,$3,$4,$5,$6)`, id, actor, action, status, duration.Milliseconds(), rows)
+	_, err := s.pool.Exec(ctx, queries.InsertWorkspaceAudit, id, actor, action, status, duration.Milliseconds(), rows)
 	if err == nil {
-		_, err = s.pool.Exec(ctx, `DELETE FROM workspace_audit WHERE id < (SELECT coalesce(max(id),0)-10000 FROM workspace_audit)`)
+		_, err = s.pool.Exec(ctx, queries.TrimWorkspaceAudit)
 	}
 	return err
 }
@@ -50,7 +53,7 @@ type TopologyLink struct {
 }
 
 func (s *Store) TopologyLinks(ctx context.Context) ([]TopologyLink, error) {
-	rows, err := s.pool.Query(ctx, `SELECT primary_id,standby_id,application_name,provenance FROM topology_links ORDER BY primary_id,standby_id LIMIT 200`)
+	rows, err := s.pool.Query(ctx, queries.TopologyLinks)
 	if err != nil {
 		return nil, err
 	}
@@ -66,15 +69,15 @@ func (s *Store) TopologyLinks(ctx context.Context) ([]TopologyLink, error) {
 	return out, rows.Err()
 }
 func (s *Store) SetTopologyLink(ctx context.Context, l TopologyLink) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO topology_links(primary_id,standby_id,application_name,provenance) VALUES($1,$2,$3,$4) ON CONFLICT(standby_id) DO UPDATE SET primary_id=$1,application_name=$3,provenance=$4`, l.PrimaryID, l.StandbyID, l.Application, l.Provenance)
+	_, err := s.pool.Exec(ctx, queries.SetTopologyLink, l.PrimaryID, l.StandbyID, l.Application, l.Provenance)
 	return err
 }
 func (s *Store) DeleteTopologyLink(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM topology_links WHERE standby_id=$1`, id)
+	_, err := s.pool.Exec(ctx, queries.DeleteTopologyLink, id)
 	return err
 }
 func (s *Store) HistoryBounds(ctx context.Context, id int64) (map[string]any, error) {
 	var a, b *time.Time
-	err := s.pool.QueryRow(ctx, `SELECT min(ts),max(ts) FROM metric_points WHERE target_id=$1`, id).Scan(&a, &b)
+	err := s.pool.QueryRow(ctx, queries.HistoryBounds, id).Scan(&a, &b)
 	return map[string]any{"from": a, "to": b}, err
 }

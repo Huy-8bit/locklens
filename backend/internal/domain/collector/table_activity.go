@@ -10,30 +10,15 @@ import (
 
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/repository"
+	"github.com/locklens/locklens/internal/targetdb"
 )
 
 // hotTables is how many of the busiest tables get per-table series.
 const hotTables = 20
 
-// sqlTableActivity reads only the cumulative counters of
-// pg_stat_user_tables: no size functions and no relation locks, so it is
-// cheap enough to run every minute (the full table health runs every five).
-const sqlTableActivity = `
-SELECT t.relid, t.schemaname, t.relname, coalesce(t.seq_scan, 0), coalesce(t.seq_tup_read, 0),
-       coalesce(t.idx_scan, 0), coalesce(t.idx_tup_fetch, 0),
-       t.n_tup_ins + t.n_tup_upd + t.n_tup_del, t.n_dead_tup, t.n_live_tup
-FROM pg_catalog.pg_stat_user_tables AS t`
-
-// tableCounters are the cumulative counters of one table.
-type tableCounters struct {
-	schema, name                                string
-	seqScan, seqRead, idxScan, idxFetch, writes int64
-	dead, live                                  int64
-}
-
 type tableActivityState struct {
 	at     time.Time
-	tables map[uint32]tableCounters
+	tables map[uint32]observe.TableCounters
 }
 
 // tableRates are the rates of one table between two collections, the
@@ -51,13 +36,13 @@ func tableRates(prev *tableActivityState, cur tableActivityState) []observe.Tabl
 		p, ok := prev.tables[relid]
 		// A counter that went down was reset (pg_stat_reset); its rates are
 		// unknown for this interval and the table is skipped.
-		if !ok || c.seqScan < p.seqScan || c.seqRead < p.seqRead || c.idxScan < p.idxScan || c.writes < p.writes || c.idxFetch < p.idxFetch {
+		if !ok || c.SeqScan < p.SeqScan || c.SeqRead < p.SeqRead || c.IdxScan < p.IdxScan || c.Writes < p.Writes || c.IdxFetch < p.IdxFetch {
 			continue
 		}
-		a := observe.TableActivity{RelID: relid, Schema: c.schema, Name: c.name,
-			SeqScansPerSec: float64(c.seqScan-p.seqScan) / iv, SeqRowsPerSec: float64(c.seqRead-p.seqRead) / iv,
-			IdxScansPerSec: float64(c.idxScan-p.idxScan) / iv, IdxRowsPerSec: float64(c.idxFetch-p.idxFetch) / iv,
-			WritesPerSec: float64(c.writes-p.writes) / iv, DeadRows: c.dead, LiveRows: c.live, IntervalSeconds: iv}
+		a := observe.TableActivity{RelID: relid, Schema: c.Schema, Name: c.Name,
+			SeqScansPerSec: float64(c.SeqScan-p.SeqScan) / iv, SeqRowsPerSec: float64(c.SeqRead-p.SeqRead) / iv,
+			IdxScansPerSec: float64(c.IdxScan-p.IdxScan) / iv, IdxRowsPerSec: float64(c.IdxFetch-p.IdxFetch) / iv,
+			WritesPerSec: float64(c.Writes-p.Writes) / iv, DeadRows: c.Dead, LiveRows: c.Live, IntervalSeconds: iv}
 		if a.SeqRowsPerSec+a.IdxRowsPerSec+a.WritesPerSec+a.SeqScansPerSec+a.IdxScansPerSec == 0 {
 			continue
 		}
@@ -75,32 +60,46 @@ func tableRates(prev *tableActivityState, cur tableActivityState) []observe.Tabl
 	return out
 }
 
+// collectTableActivity reads the table counters of every database in scope
+// and keeps the busiest tables of each.
 func (w *worker) collectTableActivity(ctx context.Context) error {
-	cur := tableActivityState{tables: map[uint32]tableCounters{}}
-	if err := w.obs.ReadOnly(ctx, func(ctx context.Context, tx pgx.Tx, _ []int32) error {
-		rows, err := tx.Query(ctx, sqlTableActivity)
-		if err != nil {
-			return err
-		}
-		var relid uint32
-		var c tableCounters
-		_, err = pgx.ForEachRow(rows, []any{&relid, &c.schema, &c.name, &c.seqScan, &c.seqRead, &c.idxScan, &c.idxFetch, &c.writes, &c.dead, &c.live}, func() error {
-			cur.tables[relid] = c
-			return nil
-		})
-		return err
-	}); err != nil {
-		return err
+	if w.prevTables == nil {
+		w.prevTables = map[string]*tableActivityState{}
 	}
-	cur.at = time.Now().UTC()
-	hot := tableRates(w.prevTables, cur)
-	w.prevTables = &cur
-	if hot == nil {
+	var hot []observe.TableActivity
+	var at time.Time
+	for _, db := range w.databases(ctx) {
+		var cur tableActivityState
+		err := db.obs.ReadOnly(ctx, func(ctx context.Context, tx pgx.Tx, _ []int32) error {
+			var err error
+			cur.tables, err = targetdb.ReadTableCounters(ctx, tx)
+			return err
+		})
+		if err != nil {
+			if db.main {
+				return err
+			}
+			w.m.log.Warn("table counters failed", "target_id", w.target.ID, "database", db.name, "error", sanitizeError(err))
+			continue
+		}
+		cur.at = time.Now().UTC()
+		at = cur.at
+		rates := tableRates(w.prevTables[db.name], cur)
+		w.prevTables[db.name] = &cur
+		for i := range rates {
+			rates[i].DatName = db.name
+		}
+		hot = append(hot, rates...)
+	}
+	if len(hot) == 0 {
 		return nil // the first collection only sets the baseline counters
 	}
+	slices.SortStableFunc(hot, func(a, b observe.TableActivity) int {
+		return cmp.Compare(b.SeqRowsPerSec+b.IdxRowsPerSec+b.WritesPerSec, a.SeqRowsPerSec+a.IdxRowsPerSec+a.WritesPerSec)
+	})
 	var pts []observe.Point
 	for _, a := range hot {
-		label, iv := a.Schema+"."+a.Name, a.IntervalSeconds
+		label, iv := a.DatName+"."+a.Schema+"."+a.Name, a.IntervalSeconds
 		pts = append(pts,
 			observe.Point{Metric: "table.seq_scans.per_s", Label: label, IntervalSeconds: &iv, Value: observe.F(a.SeqScansPerSec)},
 			observe.Point{Metric: "table.seq_rows.per_s", Label: label, IntervalSeconds: &iv, Value: observe.F(a.SeqRowsPerSec)},
@@ -111,9 +110,9 @@ func (w *worker) collectTableActivity(ctx context.Context) error {
 	w.state.mu.Lock()
 	w.state.tableActivity = hot
 	w.state.mu.Unlock()
-	id, at := w.target.ID, cur.at
+	id := w.target.ID
 	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorTableActivity, At: at,
-		Write: func(ctx context.Context, s *repository.Store, _ repository.IdentityCache) error {
+		Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
 			return s.InsertPoints(ctx, id, at, pts)
 		}})
 	return nil

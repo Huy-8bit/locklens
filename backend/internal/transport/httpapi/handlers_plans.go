@@ -13,6 +13,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/plans"
 	"github.com/locklens/locklens/internal/domain/workspace"
 	"github.com/locklens/locklens/internal/repository"
+	"github.com/locklens/locklens/internal/targetdb/investigate"
 )
 
 // explainableCommands are the statement classes EXPLAIN accepts.
@@ -136,7 +137,7 @@ func (s *Server) capturePlan(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := workspace.WithActor(r.Context(), sessionOf(r).Username)
 	out, err := s.d.Workspace.Run(ctx, t.ID, sessionOf(r).CSRFToken, "explain", in.RequestID, func(ctx context.Context, tx pgx.Tx) (any, error) {
-		return workspace.ExplainGeneric(ctx, tx, *ident.Text)
+		return investigate.ExplainGeneric(ctx, tx, *ident.Text)
 	})
 	if err != nil {
 		s.workspaceError(w, r, err)

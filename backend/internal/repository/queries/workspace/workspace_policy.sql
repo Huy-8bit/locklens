@@ -1,0 +1,1 @@
+SELECT metadata_enabled,data_enabled,sql_enabled,history_enabled,hypopg_enabled,dsn_ciphertext,updated_at FROM workspace_policies WHERE target_id=$1

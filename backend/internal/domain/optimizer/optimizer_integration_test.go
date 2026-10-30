@@ -105,7 +105,7 @@ func TestLifecycleAppliedVerifiedRegressed(t *testing.T) {
 			Details:    map[string]any{"table": "public.t", "columns": []string{x.col}, "statements": []StatementRef{{IdentityID: ids[x.qid]}}},
 			Confidence: Confidence{Level: "low", Reasons: []string{}}})
 	}
-	if err := s.SyncRecommendations(ctx, tg.ID, applied.Add(-2*time.Hour), recs); err != nil {
+	if err := s.SyncRecommendations(ctx, tg.ID, "app", applied.Add(-2*time.Hour), recs); err != nil {
 		t.Fatal(err)
 	}
 	// The catalog collected after the change has both indexes.

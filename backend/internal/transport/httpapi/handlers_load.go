@@ -96,7 +96,7 @@ func (s *Server) targetLoad(w http.ResponseWriter, r *http.Request) {
 
 	// Whether sampling runs, and why not, from the collector's status.
 	var status *collector.CollectorStatus
-	if v, ok := s.view(t.ID); ok {
+	if v, ok := s.view(r, t.ID); ok {
 		if c, ok := v.Collectors[collector.CollectorLoad]; ok {
 			status = &c
 		}

@@ -137,7 +137,7 @@ func (s *Server) queryInsight(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	step, err := metricStep(r, from, to, s.statementsStep(t))
+	step, err := metricStep(r, from, to, s.statementsStep(r, t))
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return

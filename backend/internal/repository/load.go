@@ -2,13 +2,12 @@ package repository
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/locklens/locklens/internal/domain/observe"
+	"github.com/locklens/locklens/internal/repository/queries"
 )
 
 // InsertLoadBucket stores one bucket of active session samples. Writing the
@@ -42,9 +41,7 @@ func (s *Store) InsertLoadBucket(ctx context.Context, targetID int64, b observe.
 		return s.red.Error(err)
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	tag, err := tx.Exec(ctx, `
-INSERT INTO load_buckets (target_id, ts, ticks, interval_seconds) VALUES ($1, $2, $3, $4)
-ON CONFLICT DO NOTHING`, targetID, b.At.UTC(), b.Ticks, b.IntervalSeconds)
+	tag, err := tx.Exec(ctx, queries.InsertLoadBucketTicks, targetID, b.At.UTC(), b.Ticks, b.IntervalSeconds)
 	if err != nil {
 		return s.red.Error(err)
 	}
@@ -52,11 +49,7 @@ ON CONFLICT DO NOTHING`, targetID, b.At.UTC(), b.Ticks, b.IntervalSeconds)
 		return nil
 	}
 	if n > 0 {
-		if _, err := tx.Exec(ctx, `
-INSERT INTO load_samples (target_id, ts, wait_class, wait_event, backend_type, dbid, datname, userid, usename, application_name, queryid, samples)
-SELECT $1, $2, c, e, b, d::oid, dn, u::oid, un, a, q, n
-FROM unnest($3::text[], $4::text[], $5::text[], $6::bigint[], $7::text[], $8::bigint[], $9::text[], $10::text[], $11::bigint[], $12::int[])
-  AS x(c, e, b, d, dn, u, un, a, q, n)`,
+		if _, err := tx.Exec(ctx, queries.InsertLoadSample,
 			targetID, b.At.UTC(), classes, events, backends, dbids, datnames, userids, usenames, apps, qids, samples); err != nil {
 			return s.red.Error(err)
 		}
@@ -79,18 +72,8 @@ const (
 	LoadByBackend     LoadDimension = "backend"
 )
 
-var loadColumns = map[LoadDimension][]string{
-	LoadByClass:       {},
-	LoadByEvent:       {"wait_event"},
-	LoadByQuery:       {"coalesce(dbid::bigint, 0)", "coalesce(userid::bigint, 0)", "coalesce(queryid, 0)", "max(datname)", "max(usename)"},
-	LoadByUser:        {"usename"},
-	LoadByDatabase:    {"datname"},
-	LoadByApplication: {"application_name"},
-	LoadByBackend:     {"backend_type"},
-}
-
 // ValidLoadDimension reports whether d is a known dimension.
-func ValidLoadDimension(d string) bool { _, ok := loadColumns[LoadDimension(d)]; return ok }
+func ValidLoadDimension(d string) bool { _, ok := queries.LoadDimensions[d]; return ok }
 
 // LoadFilter narrows the samples, for example to one wait class or statement.
 type LoadFilter struct {
@@ -99,7 +82,7 @@ type LoadFilter struct {
 }
 
 // LoadRow is the samples of one group in one time bucket. Key holds the
-// dimension's values (see loadColumns); WaitClass is always included so a
+// dimension's values (see queries.LoadDimensions); WaitClass is always included so a
 // group can be broken down by class.
 type LoadRow struct {
 	T         time.Time
@@ -117,45 +100,15 @@ type LoadTicks struct {
 // LoadRows returns samples in [from, to) summed per step bucket, dimension
 // value, and wait class, and the ticks per step bucket.
 func (s *Store) LoadRows(ctx context.Context, targetID int64, from, to time.Time, step time.Duration, dim LoadDimension, f LoadFilter) ([]LoadRow, []LoadTicks, error) {
-	cols, ok := loadColumns[dim]
-	if !ok {
-		return nil, nil, fmt.Errorf("unknown load dimension %q", dim)
+	sql, err := queries.LoadRows(string(dim))
+	if err != nil {
+		return nil, nil, err
 	}
-	args := []any{targetID, from.UTC(), to.UTC(), step}
-	where := "target_id = $1 AND ts >= $2 AND ts < $3"
+	var class *string
 	if f.WaitClass != "" {
-		args = append(args, f.WaitClass)
-		where += fmt.Sprintf(" AND wait_class = $%d", len(args))
+		class = &f.WaitClass
 	}
-	if f.QueryID != nil {
-		args = append(args, *f.QueryID)
-		where += fmt.Sprintf(" AND queryid = $%d", len(args))
-	}
-	// Grouping columns are the dimension's plain columns; aggregate label
-	// columns (max(...)) are selected but not grouped.
-	var sel, group []string
-	for _, c := range cols {
-		sel = append(sel, c+"::text")
-		if !strings.HasPrefix(c, "max(") {
-			group = append(group, c)
-		}
-	}
-	keySel := ""
-	if len(sel) > 0 {
-		keySel = ", ARRAY[" + strings.Join(sel, ", ") + "]"
-	} else {
-		keySel = ", ARRAY[]::text[]"
-	}
-	groupBy := "1, wait_class"
-	if len(group) > 0 {
-		groupBy += ", " + strings.Join(group, ", ")
-	}
-	q := `SELECT date_bin($4::interval, ts, $2::timestamptz), wait_class` + keySel + `, sum(samples)::bigint
-FROM load_samples WHERE ` + where + `
-GROUP BY ` + groupBy + `
-ORDER BY 1
-LIMIT 200000`
-	rows, err := s.pool.Query(ctx, q, args...)
+	rows, err := s.pool.Query(ctx, sql, targetID, from.UTC(), to.UTC(), step, class, f.QueryID)
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}
@@ -168,10 +121,7 @@ LIMIT 200000`
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}
-	trows, err := s.pool.Query(ctx, `
-SELECT date_bin($4::interval, ts, $2::timestamptz), sum(ticks)::bigint
-FROM load_buckets WHERE target_id = $1 AND ts >= $2 AND ts < $3
-GROUP BY 1 ORDER BY 1`, targetID, from.UTC(), to.UTC(), step)
+	trows, err := s.pool.Query(ctx, queries.LoadTicks, targetID, from.UTC(), to.UTC(), step)
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}
@@ -202,15 +152,7 @@ func (s *Store) QueryRefsByActivity(ctx context.Context, targetID int64, refs []
 	for i, r := range refs {
 		dbids[i], userids[i], qids[i] = int64(r.DBID), int64(r.UserID), r.QueryID
 	}
-	rows, err := s.pool.Query(ctx, `
-SELECT q.server_major, q.dbid::bigint, q.userid::bigint, q.toplevel, q.queryid, q.id, q.datname, q.username, q.command,
-       CASE WHEN $5 THEN q.query_text END
-FROM unnest($2::bigint[], $3::bigint[], $4::bigint[]) AS k(d, u, qid)
-CROSS JOIN LATERAL (
-    SELECT * FROM query_identities i
-    WHERE i.target_id = $1 AND i.dbid = k.d::oid AND i.userid = k.u::oid AND i.queryid = k.qid AND i.toplevel
-    ORDER BY i.last_seen DESC LIMIT 1
-) AS q`, targetID, dbids, userids, qids, includeText)
+	rows, err := s.pool.Query(ctx, queries.QueryRefsByActivity, targetID, dbids, userids, qids, includeText)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}

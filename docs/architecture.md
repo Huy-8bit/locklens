@@ -84,33 +84,91 @@ flowchart LR
 
 ### Packages
 
+The backend is layered. Each layer only depends on the ones below it, and
+SQL lives only in the two `queries` packages, never in Go files of the
+domain:
+
+```text
+backend/
+├── cmd/locklens/                 entry point: the CLI (server, agent, doctor, inspect, …)
+├── migrations/                   monitoring store schema, numbered SQL files (embedded)
+└── internal/
+    ├── app/                      composition root: builds and wires everything for `locklens server`
+    ├── config/                   settings from the environment, DSN parsing and redaction
+    ├── transport/                how requests come in
+    │   ├── httpapi/              REST + SSE: handlers_<area>.go, ports.go (interfaces it needs)
+    │   └── cli/                  cobra commands: one file per command (agent.go, server.go, …)
+    ├── domain/                   business logic, no SQL, one package per concern
+    │   ├── <area>/ports.go       the Store (and other) interfaces the package consumes
+    │   ├── observe/              shared data types (collected data, catalog, changes, log events)
+    │   ├── collector/            manager, per-target workers, one file per collector
+    │   ├── rules/ finding/       deterministic rules and findings
+    │   ├── incidents/            incident recorder
+    │   ├── insight/              impact scores and hypotheses (uses changes and logs)
+    │   ├── optimizer/            recommendations, life cycle, what-if
+    │   ├── changes/              change timeline: diffs of settings, server facts, schema; reports
+    │   ├── logs/                 log event classification, redaction, ingest validation, summaries
+    │   ├── cluster/              several servers: leases, singleton jobs, message bus
+    │   ├── tokens/               API tokens for machines (pipelines, log agents)
+    │   └── …                     auth, targets, onboard, workspace, notify, baseline, rollup, retention, settings, export, plans, report, graph
+    ├── repository/               monitoring store: executes SQL and scans rows (one file per area)
+    │   └── queries/              the store's SQL: <area>/<name>.sql embedded by <area>.go; builders.go fills templates from fixed lists
+    ├── targetdb/                 the monitored PostgreSQL: connections, read-only collection (one file per area)
+    │   ├── queries/              the SQL sent to monitored servers, same layout
+    │   └── investigate/          the on-demand investigation workspace (catalog, data, EXPLAIN, what-if)
+    ├── agent/                    the log agent runtime: tailing, spool, shipping
+    └── lib/                      generic helpers with no LockLens knowledge (pglog, sqlparse, secret, obs, …)
+```
+
+Where to make a change:
+
+| To change | Look in |
+| --- | --- |
+| A query against the monitoring store | `repository/queries/<area>/*.sql`, then the Go method in `repository/<area>.go` |
+| A query sent to monitored servers | `targetdb/queries/<area>/*.sql`, then `targetdb/<area>.go` |
+| What a collector reads or how often | `domain/collector/<collector>.go` and the job list in `worker.go` |
+| A rule or threshold | `domain/rules/` and `domain/settings/` |
+| An API endpoint | `transport/httpapi/handlers_<area>.go`, routes in `server.go`, dependencies in `ports.go` |
+| The schema of the store | a new file in `migrations/` |
+| Wiring (which implementation is used) | `app/app.go` |
+
+Domain packages depend on interfaces, not on concrete types: each declares
+in `ports.go` the methods it uses (`Store`, `Workspace`, `Events`, …), with a
+compile-time check that `*repository.Store` implements them. Tests pass
+fakes; `httpapi.Deps` likewise holds interfaces (`TargetService`,
+`ChangeService`, `LogService`, …).
+
 | Package | Responsibility |
 | --- | --- |
-| `backend/internal/app` | Wiring and startup of `locklens server` (store and migrations, admin bootstrap, bootstrap targets, restart recovery), graceful shutdown |
-| `backend/internal/config` | Server settings from the environment; PostgreSQL connection settings and credential redaction |
-| `backend/internal/lib/logger` | Structured loggers (text or JSON) on stderr |
-| `backend/internal/repository` | Monitoring store: embedded migrations with an advisory lock, TimescaleDB setup (hypertables, compression, chunk retention) when available, all SQL for targets, metrics, statements, snapshots, findings, incidents, sessions, retention |
-| `backend/internal/lib/secret` | AES-256-GCM sealing of DSNs with the master key |
-| `backend/internal/domain/auth` | bcrypt passwords, server-side sessions, CSRF and Origin checks, login rate limiting |
-| `backend/internal/domain/targets` | Target validation, encryption, connection tests, bootstrap file |
-| `backend/internal/domain/collector` | Manager, per-target workers, collectors, counters and deltas, capability detection, writer, target state |
-| `backend/internal/domain/observe` | Shared types for collected data (capabilities, points, statement deltas, replication, table health) |
-| `backend/internal/lib/hostmetrics` | node_exporter scraping and parsing (size-limited) |
-| `backend/internal/domain/rules`, `backend/internal/domain/finding` | Deterministic rules, thresholds, findings with evidence |
-| `backend/internal/domain/baseline` | Statement baselines: robust statistics (median, MAD) per measure and hour of day from five-minute rollups; a service that keeps rollups current and holds the baselines of active statements in memory |
-| `backend/internal/domain/insight` | Explainable impact scores and the deterministic correlation of an anomaly's evidence into ranked hypotheses; gathers signals from the store |
-| `backend/internal/domain/optimizer` | Query optimizer: recommendations from the catalog and workload, their life cycle (applied detection, before/after verification), HypoPG what-if checks through the workspace |
-| `backend/internal/domain/rollup` | One-minute and hourly metric rollups, kept current every minute |
-| `backend/internal/lib/sqlparse` | PostgreSQL's parser (libpg_query via pg_query_go, cgo): tables, predicates, sort order, and lints of a statement; a stub without cgo |
-| `backend/internal/domain/plans` | Parsing saved EXPLAIN output (JSON or text), plan-shape fingerprints, plan comparison, index candidates |
-| `backend/internal/domain/incidents` | Incident recorder: pre-trigger buffer, lifecycle, limits, recovery |
-| `backend/internal/domain/settings` | Rule thresholds persisted in the store (demo defaults in demo mode) |
-| `backend/internal/domain/export` | Incident JSON (versioned) and standalone HTML reports; import validation |
-| `backend/internal/transport/httpapi` | HTTP handlers, middleware (request IDs, security headers, limits), SSE hub |
-| `backend/internal/lib/obs` | Prometheus-format metrics with bounded labels |
-| `backend/internal/domain/retention` | Periodic cleanup loop |
-| `backend/internal/domain/onboard` | Adding an instance from one connection string, including LockLens's own least-privilege roles |
-| `web/` | React + TypeScript UI (Vite, React Router, TanStack Query, Apache ECharts, Tailwind CSS), its Dockerfile, and the nginx configuration of the frontend image |
+| `internal/app` | Wiring and startup of `locklens server` (store and migrations, admin bootstrap, bootstrap targets, cluster membership, singleton jobs), graceful shutdown |
+| `internal/config` | Server settings from the environment; PostgreSQL connection settings and credential redaction |
+| `internal/repository` | Monitoring store: embedded migrations with an advisory lock, TimescaleDB setup when available, execution and scanning of the SQL in `repository/queries` |
+| `internal/targetdb` | Connections to monitored servers (read-only transactions, timeouts) and the collection reads, with the SQL in `targetdb/queries` |
+| `internal/targetdb/investigate` | The investigation workspace's operations: catalog browsing, data, EXPLAIN, HypoPG what-if, managed roles |
+| `internal/domain/collector` | Manager, per-target workers, collectors, counters and deltas, writer, target state, per-database connections, live views for other servers |
+| `internal/domain/observe` | Shared types for collected data, catalogs, change events, log events |
+| `internal/domain/rules`, `internal/domain/finding` | Deterministic rules, thresholds, findings with evidence |
+| `internal/domain/baseline` | Statement baselines from five-minute rollups |
+| `internal/domain/insight` | Impact scores and ranked hypotheses from findings, waits, changes, and server log events |
+| `internal/domain/optimizer` | Recommendations per database from its catalog and workload, life cycle, HypoPG what-if |
+| `internal/domain/changes` | The change timeline: diffs of settings, restarts, promotions, upgrades, and schema; reported deploys |
+| `internal/domain/logs` | Classification of server log records into events, redaction, ingest validation, summaries |
+| `internal/domain/cluster` | Several servers sharing a store: heartbeats, target leases, singleton jobs, LISTEN/NOTIFY bus |
+| `internal/domain/tokens` | API tokens (hashed) with a scope and an optional instance |
+| `internal/domain/incidents` | Incident recorder: pre-trigger buffer, lifecycle, limits, adoption of a target's open incidents |
+| `internal/domain/auth` | bcrypt passwords, server-side sessions, CSRF and Origin checks, login rate limiting |
+| `internal/domain/targets`, `internal/domain/onboard` | Target validation and encryption; adding an instance from one connection string |
+| `internal/domain/workspace` | Policy and connection handling of the investigation workspace |
+| `internal/domain/notify` | Notification channels, deliveries, reminders |
+| `internal/domain/rollup`, `internal/domain/retention` | Metric rollups; periodic cleanup |
+| `internal/domain/settings`, `internal/domain/export`, `internal/domain/plans` | Thresholds; incident exports; saved EXPLAIN parsing and comparison |
+| `internal/agent` | The log agent: follows log files (rotation, positions), batches, spools, ships |
+| `internal/lib/pglog` | Reading PostgreSQL logs: jsonlog, csvlog, stderr with log_line_prefix |
+| `internal/lib/sqlparse` | PostgreSQL's parser (pg_query_go, cgo): analysis, normalisation, fingerprints; a lexical normaliser without cgo |
+| `internal/lib/secret`, `internal/lib/obs`, `internal/lib/hostmetrics`, `internal/lib/logger` | AES-GCM sealing, metrics, node_exporter scraping, loggers |
+| `internal/transport/httpapi` | HTTP handlers, middleware, SSE hub (forwarded to other servers) |
+| `internal/transport/cli` | The command-line interface, including `locklens agent` |
+| `web/` | React + TypeScript UI (Vite, React Router, TanStack Query, Apache ECharts, Tailwind CSS) and the nginx frontend image |
 
 ### Frontend
 
@@ -133,18 +191,78 @@ Settings (targets, thresholds, store size), Lab guide (demo mode).
   queue is bounded.
 - The recorder serialises rule evaluation and incident updates with a mutex,
   so incidents of one target are updated in order.
+- With several servers on one store, each target is collected by exactly one
+  server at a time (a lease), and each once-per-cluster job runs on one
+  server (see [Several servers](#several-servers)).
 
 ### Startup and shutdown
 
 Startup: load and validate configuration → open the store → apply
-migrations → bootstrap the administrator → create bootstrap targets → reattach
-open incidents (`recorder_restarted`) → start manager, writer, retention, HTTP
-server. `/readyz` reports ready once the store answers.
+migrations → bootstrap the administrator → create bootstrap targets → join
+the cluster (heartbeat, bus) → start manager, writer, singleton jobs
+(retention, rollups, baselines, optimizer, notification reminders), HTTP
+server. When the manager starts collecting a target (at startup or after
+taking it over), the recorder reattaches its open incidents
+(`recorder_restarted`). `/readyz` reports ready once the store answers.
 
 Shutdown (SIGINT/SIGTERM): stop accepting requests and finish in-flight ones,
 cancel workers (closing their pools), and let the writer flush queued batches
 for up to 5 seconds, all within `LOCKLENS_SHUTDOWN_TIMEOUT`. Batches still
 queued after that are lost.
+
+## Several databases per instance
+
+A target names which databases tables, indexes, the catalog, and optimizer
+recommendations come from (`database_scope`): only the connection string's
+database (default), every database the role can connect to (at most 20), or
+a list. Cluster-wide data (sessions, statements, replication, settings) is
+read once on the main connection; each other database gets one extra
+connection, opened on first use and retried after a minute when it fails.
+Tables and indexes carry their database; recommendations are kept per
+database; what-if checks run only on the connection string's database.
+
+## Change timeline
+
+The `changes` collector reads `pg_settings` and the server facts
+(`pg_postmaster_start_time()`, `pg_conf_load_time()`, recovery state,
+version) every minute; the catalog collector's schema (tables, index
+definitions and validity) is compared every 15 minutes. Each reading is
+compared with the previous one (kept in `change_state`), and what differs is
+recorded in `change_events` with the window in which it happened. Settings
+that can hold secrets (connection strings, shell commands) are compared by a
+fingerprint. People and pipelines report deploys and migrations
+(`POST /api/v1/changes`, with a session or an API token). Changes are drawn
+on every chart of an instance and weighed by the insight engine as leads,
+never as confirmed causes.
+
+## Several servers
+
+Several `locklens server` processes can share one monitoring store, for
+availability. Each registers in `servers` with a heartbeat. On every sync
+(15 s) the manager asks the cluster which targets it collects: a server
+renews its leases (`leases`, `target:<id>`, 45 s) up to an even share,
+releases the rest, and takes free or expired ones. A stopped server releases
+its leases; a crashed one loses them when they expire, so its targets move
+within about a minute. Once-per-cluster jobs hold a `job:<name>` lease.
+
+Browser events are published on the server that observed them and carried
+to the others over PostgreSQL `LISTEN/NOTIFY`, as are requests (collect a
+target now) and settings changes. The collecting server publishes each
+target's live view to `live_state` every 5 seconds while it is not alone, so
+any server answers API requests for any target.
+
+## Log agent
+
+`locklens agent` runs on the database host and never connects to
+PostgreSQL. It follows the log files (jsonlog, csvlog, or stderr with
+`log_line_prefix`), keeps read positions, and turns messages into events:
+slow statements, auto_explain plans, lock waits, deadlocks, autovacuum and
+autoanalyze runs, temporary files, checkpoints, and errors. Statement texts
+are normalised (constants become `$n`, with PostgreSQL's parser when the
+build has it), plan conditions and error messages are redacted, and DETAIL
+lines of errors are dropped before anything leaves the host. Batches go to
+`POST /api/v1/ingest/logs` with a token of scope `ingest` that belongs to
+one instance; while the server cannot be reached, they are spooled to disk.
 
 ## CLI components
 

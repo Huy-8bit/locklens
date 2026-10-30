@@ -1,0 +1,1 @@
+SELECT hypopg_reset()

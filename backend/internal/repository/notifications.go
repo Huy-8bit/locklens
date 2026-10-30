@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/locklens/locklens/internal/repository/queries"
 )
 
 // NotificationChannel is a destination for incident notifications. The
@@ -46,7 +48,7 @@ func scanChannel(row pgx.Row) (NotificationChannel, error) {
 
 // ListNotificationChannels returns every channel by name.
 func (s *Store) ListNotificationChannels(ctx context.Context) ([]NotificationChannel, error) {
-	rows, err := s.pool.Query(ctx, "SELECT "+channelColumns+" FROM notification_channels ORDER BY name")
+	rows, err := s.pool.Query(ctx, queries.ListNotificationChannels)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -59,7 +61,7 @@ func (s *Store) ListNotificationChannels(ctx context.Context) ([]NotificationCha
 
 // GetNotificationChannel returns one channel.
 func (s *Store) GetNotificationChannel(ctx context.Context, id int64) (NotificationChannel, error) {
-	c, err := scanChannel(s.pool.QueryRow(ctx, "SELECT "+channelColumns+" FROM notification_channels WHERE id = $1", id))
+	c, err := scanChannel(s.pool.QueryRow(ctx, queries.GetNotificationChannel, id))
 	if errors.Is(err, ErrNotFound) {
 		return c, err
 	}
@@ -75,17 +77,9 @@ func (s *Store) SaveNotificationChannel(ctx context.Context, c NotificationChann
 	}
 	var row pgx.Row
 	if c.ID == 0 {
-		row = s.pool.QueryRow(ctx, `
-INSERT INTO notification_channels (name, kind, enabled, min_severity, environments, on_open, on_escalate, on_resolve, reminder_seconds, config_ciphertext, display)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-RETURNING `+channelColumns, c.Name, c.Kind, c.Enabled, c.MinSeverity, c.Environments, c.OnOpen, c.OnEscalate, c.OnResolve, c.ReminderSeconds, c.ConfigCiphertext, c.Display)
+		row = s.pool.QueryRow(ctx, queries.InsertNotificationChannel, c.Name, c.Kind, c.Enabled, c.MinSeverity, c.Environments, c.OnOpen, c.OnEscalate, c.OnResolve, c.ReminderSeconds, c.ConfigCiphertext, c.Display)
 	} else {
-		row = s.pool.QueryRow(ctx, `
-UPDATE notification_channels SET name = $2, enabled = $3, min_severity = $4, environments = $5, on_open = $6, on_escalate = $7,
-    on_resolve = $8, reminder_seconds = $9, config_ciphertext = coalesce($10, config_ciphertext),
-    display = CASE WHEN $10::bytea IS NULL THEN display ELSE $11 END, updated_at = now()
-WHERE id = $1
-RETURNING `+channelColumns, c.ID, c.Name, c.Enabled, c.MinSeverity, c.Environments, c.OnOpen, c.OnEscalate, c.OnResolve, c.ReminderSeconds, c.ConfigCiphertext, c.Display)
+		row = s.pool.QueryRow(ctx, queries.UpdateNotificationChannel, c.ID, c.Name, c.Enabled, c.MinSeverity, c.Environments, c.OnOpen, c.OnEscalate, c.OnResolve, c.ReminderSeconds, c.ConfigCiphertext, c.Display)
 	}
 	out, err := scanChannel(row)
 	switch {
@@ -99,7 +93,7 @@ RETURNING `+channelColumns, c.ID, c.Name, c.Enabled, c.MinSeverity, c.Environmen
 
 // DeleteNotificationChannel removes a channel and its delivery history.
 func (s *Store) DeleteNotificationChannel(ctx context.Context, id int64) error {
-	tag, err := s.pool.Exec(ctx, "DELETE FROM notification_channels WHERE id = $1", id)
+	tag, err := s.pool.Exec(ctx, queries.DeleteNotificationChannel, id)
 	if err != nil {
 		return s.red.Error(err)
 	}
@@ -123,9 +117,6 @@ type Silence struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-const silenceSelect = `SELECT s.id, s.target_id, t.name, s.rule_id, s.starts_at, s.ends_at, s.reason, s.created_by, s.created_at
-FROM notification_silences s LEFT JOIN targets t ON t.id = s.target_id`
-
 func scanSilence(r pgx.CollectableRow) (Silence, error) {
 	var x Silence
 	err := r.Scan(&x.ID, &x.TargetID, &x.TargetName, &x.RuleID, &x.StartsAt, &x.EndsAt, &x.Reason, &x.CreatedBy, &x.CreatedAt)
@@ -135,7 +126,7 @@ func scanSilence(r pgx.CollectableRow) (Silence, error) {
 // ListSilences returns silences that have not ended (all of them when
 // includeEnded), the latest ending first.
 func (s *Store) ListSilences(ctx context.Context, includeEnded bool, limit int) ([]Silence, error) {
-	rows, err := s.pool.Query(ctx, silenceSelect+` WHERE $1 OR s.ends_at > now() ORDER BY s.ends_at DESC LIMIT $2`, includeEnded, limit)
+	rows, err := s.pool.Query(ctx, queries.ListSilences, includeEnded, limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -151,12 +142,10 @@ func (s *Store) ListSilences(ctx context.Context, includeEnded bool, limit int) 
 // LockLens and its store never keeps an ended silence active.
 func (s *Store) CreateSilence(ctx context.Context, x Silence) (Silence, error) {
 	var id int64
-	if err := s.pool.QueryRow(ctx, `
-INSERT INTO notification_silences (target_id, rule_id, starts_at, ends_at, reason, created_by) VALUES ($1, $2, now(), $3, $4, $5)
-RETURNING id`, x.TargetID, x.RuleID, x.EndsAt.UTC(), x.Reason, x.CreatedBy).Scan(&id); err != nil {
+	if err := s.pool.QueryRow(ctx, queries.CreateSilence, x.TargetID, x.RuleID, x.EndsAt.UTC(), x.Reason, x.CreatedBy).Scan(&id); err != nil {
 		return x, s.red.Error(err)
 	}
-	rows, err := s.pool.Query(ctx, silenceSelect+" WHERE s.id = $1", id)
+	rows, err := s.pool.Query(ctx, queries.GetSilence, id)
 	if err != nil {
 		return x, s.red.Error(err)
 	}
@@ -169,9 +158,7 @@ func (s *Store) EndSilence(ctx context.Context, id int64) error {
 	// A silence ended right after it was created (or whose start is ahead of
 	// the database clock) gets its start moved back, so it ends now and the
 	// ends_at > starts_at constraint holds.
-	tag, err := s.pool.Exec(ctx, `
-UPDATE notification_silences SET starts_at = least(starts_at, now() - interval '1 millisecond'), ends_at = now()
-WHERE id = $1 AND ends_at > now()`, id)
+	tag, err := s.pool.Exec(ctx, queries.EndSilence, id)
 	if err != nil {
 		return s.red.Error(err)
 	}
@@ -184,10 +171,7 @@ WHERE id = $1 AND ends_at > now()`, id)
 // ActiveSilence returns a silence that covers the target and rule now (by
 // the database clock).
 func (s *Store) ActiveSilence(ctx context.Context, targetID *int64, ruleID string) (*Silence, error) {
-	rows, err := s.pool.Query(ctx, silenceSelect+`
-WHERE s.starts_at <= now() AND s.ends_at > now()
-  AND (s.target_id IS NULL OR s.target_id = $1) AND (s.rule_id IS NULL OR s.rule_id = $2)
-ORDER BY s.ends_at DESC LIMIT 1`, targetID, ruleID)
+	rows, err := s.pool.Query(ctx, queries.ActiveSilence, targetID, ruleID)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -214,20 +198,14 @@ type Delivery struct {
 
 // InsertDelivery records a notification attempt.
 func (s *Store) InsertDelivery(ctx context.Context, d Delivery) error {
-	_, err := s.pool.Exec(ctx, `
-INSERT INTO notification_deliveries (channel_id, incident_id, event, severity, status, attempts, error, at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, d.ChannelID, d.IncidentID, d.Event, d.Severity, d.Status, d.Attempts, d.Error, d.At.UTC())
+	_, err := s.pool.Exec(ctx, queries.InsertDelivery, d.ChannelID, d.IncidentID, d.Event, d.Severity, d.Status, d.Attempts, d.Error, d.At.UTC())
 	return s.red.Error(err)
 }
 
 // ListDeliveries returns the latest deliveries, of one incident when
 // incidentID is set.
 func (s *Store) ListDeliveries(ctx context.Context, incidentID *int64, limit int) ([]Delivery, error) {
-	rows, err := s.pool.Query(ctx, `
-SELECT d.id, d.channel_id, c.name, d.incident_id, d.event, d.severity, d.status, d.attempts, d.error, d.at
-FROM notification_deliveries d JOIN notification_channels c ON c.id = d.channel_id
-WHERE $1::bigint IS NULL OR d.incident_id = $1
-ORDER BY d.at DESC, d.id DESC LIMIT $2`, incidentID, limit)
+	rows, err := s.pool.Query(ctx, queries.ListDeliveries, incidentID, limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -245,7 +223,7 @@ ORDER BY d.at DESC, d.id DESC LIMIT $2`, incidentID, limit)
 // OpenUnacknowledgedIncidents returns open incidents nobody acknowledged
 // (candidates for reminders).
 func (s *Store) OpenUnacknowledgedIncidents(ctx context.Context) ([]Incident, error) {
-	rows, err := s.pool.Query(ctx, "SELECT "+incidentColumns+" FROM incidents WHERE state = 'open' AND acknowledged_at IS NULL ORDER BY id LIMIT 500")
+	rows, err := s.pool.Query(ctx, queries.OpenUnacknowledgedIncidents)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}

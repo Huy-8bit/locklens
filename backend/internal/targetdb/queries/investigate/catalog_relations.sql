@@ -1,0 +1,2 @@
+-- At most 200 rows are shown (201 are read to tell that there are more).
+SELECT c.relname AS relation,c.relkind::text AS kind,CASE WHEN c.reltuples<0 THEN NULL ELSE c.reltuples::bigint END AS estimated_rows,pg_total_relation_size(c.oid) AS total_bytes,s.n_live_tup AS estimated_live_tuples,s.n_dead_tup AS estimated_dead_tuples,s.last_autovacuum,s.last_autoanalyze FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_stat_user_tables s ON s.relid=c.oid WHERE n.nspname=$1 AND c.relkind IN ('r','p','v','m','f') ORDER BY c.relname LIMIT 201

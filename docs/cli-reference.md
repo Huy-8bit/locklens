@@ -266,6 +266,36 @@ server gracefully (exit code 0).
 LOCKLENS_STORE_DSN=... LOCKLENS_MASTER_KEY=... locklens server --listen 127.0.0.1:9090
 ```
 
+## `locklens agent`
+
+Runs the log agent on the database host: follows PostgreSQL log files and
+ships slow statements, auto_explain plans, lock waits, deadlocks, autovacuum
+runs, temporary files, checkpoints, and errors to a LockLens server
+(statements normalised, messages redacted on the host). It never connects to
+PostgreSQL. Stops on SIGINT/SIGTERM after sending or spooling what it read.
+
+```bash
+LOCKLENS_AGENT_TOKEN=llk_... locklens agent --server https://locklens.example.com \
+  --log /var/lib/postgresql/data/log --state-dir /var/lib/locklens-agent
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--server` | `$LOCKLENS_SERVER_URL` | LockLens URL |
+| `--token-file` | `$LOCKLENS_AGENT_TOKEN` | File holding the API token (scope `ingest`) |
+| `--log` | required | Log file, directory, or glob (repeatable) |
+| `--format` | `auto` | `jsonlog`, `csvlog`, `stderr`, or from the file extension |
+| `--log-line-prefix` | `%m [%p] ` | The server's `log_line_prefix` (stderr logs) |
+| `--state-dir` | `locklens-agent` | Read positions and spool |
+| `--from-start` | off | Read existing files from the beginning on the first start |
+| `--flush-interval` | `5s` | Longest time before an event is sent |
+| `--max-spool-bytes` | 256 MiB | Spool limit while the server is unreachable |
+| `--allow-http` | off | Allow a non-local `http://` server |
+| `--hostname` | host name | Name reported to the server |
+
+See [collectors.md](collectors.md#server-log-agent) and
+[configuration.md](configuration.md#log-agent).
+
 ## `locklens migrate`
 
 Applies pending monitoring store migrations to `LOCKLENS_STORE_DSN` and exits.
@@ -323,6 +353,7 @@ The JSON and HTML formats are described in [incidents.md](incidents.md#exports).
 | `LOCKLENS_DSN` | all connecting commands | Connection string when `--dsn` is not given |
 | `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`, `PGSSLMODE`, `PGPASSFILE`, ... | pgx | Defaults for fields missing from the DSN |
 | `LOCKLENS_STORE_DSN`, `LOCKLENS_MASTER_KEY`, `LOCKLENS_ADMIN_*`, ... | `server`, `migrate`, `incident export` | See [configuration.md](configuration.md) |
+| `LOCKLENS_AGENT_TOKEN`, `LOCKLENS_SERVER_URL` | `agent` | API token and server URL of the log agent |
 | `LOCKLENS_DEMO_DSN` | `locklens-demo` only | Role that creates demo contention |
 | `LOCKLENS_LAB_DSN`, `LOCKLENS_LAB_ADMIN_DSN`, `LOCKLENS_LAB_STANDBY_ADMIN_DSN` | `locklens-lab` only | Lab scenario connections (set in deploy/compose.yaml) |
 | `LOCKLENS_PG_VERSION`, `LOCKLENS_PG_PORT`, `LOCKLENS_STANDBY_PORT`, `LOCKLENS_STORE_PORT`, `LOCKLENS_HTTP_PORT` | `docker compose`, `make` | Lab image version and host ports |

@@ -97,6 +97,24 @@ settings in the DSN are honoured and never weakened.
   read on every request.
 - No tokens are kept in `localStorage` or `sessionStorage`. The CSRF token is
   held in memory by the UI.
+- **API tokens** (Settings → API tokens) are for machines only: scope
+  `events` reports changes, scope `ingest` ships log events and belongs to one
+  instance. A token is 24 random bytes (`llk_…`), shown once; the store keeps
+  its SHA-256 hash. Token requests carry no cookie and need no CSRF header;
+  a token can do nothing else (no reads, no other endpoints). Revoking takes
+  effect at once.
+
+## Log agent
+
+- `locklens agent` reads log files only and never connects to PostgreSQL.
+  It takes its token from `LOCKLENS_AGENT_TOKEN` or a file, never from a
+  flag, and refuses a non-local `http://` server unless `--allow-http`.
+- Before sending, it replaces the constants of statements (also in deadlock
+  reports) with `$n`, constants in plan conditions with `?`, and quoted values
+  in error messages with `"?"`, and drops error DETAIL lines (which carry key
+  values). Values the server writes unquoted in a message are not
+  recognised. Its spool and read positions are files with mode 0600 in
+  `--state-dir`.
 
 ## Web application protections
 

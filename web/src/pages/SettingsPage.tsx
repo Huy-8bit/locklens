@@ -1,16 +1,17 @@
 import { useState, type ReactNode } from 'react'
 import { Link, Navigate, NavLink, useNavigate, useParams } from 'react-router'
-import { Bell, HardDrive, Plus, Server, SlidersHorizontal, Users } from 'lucide-react'
-import { useDeleteTarget, useImportIncident, useStorage, useTargets } from '../api/hooks'
+import { Bell, HardDrive, KeyRound, Plus, Server, SlidersHorizontal, Users } from 'lucide-react'
+import { useDeleteTarget, useImportIncident, useStorage, useSystem, useTargets } from '../api/hooks'
 import type { Permission, Target } from '../api/types'
 import { PageHeader } from '../components/Shell'
 import { UsersCard } from '../components/UsersCard'
+import { ApiTokensCard } from '../components/ChangesCard'
 import { NotificationsCard, SilencesCard } from '../components/NotificationsCard'
 import { useCan } from '../auth'
 import { ThresholdsForm } from '../components/ThresholdsForm'
 import { tableCls, tdCls, tdNum, Th, trCls } from '../components/Table'
 import { Badge, Button, Card, Confirm, cx, Empty, ErrorBox, Load, StateBadge } from '../components/ui'
-import { bytes, compact, seconds } from '../lib/format'
+import { ago, bytes, compact, seconds } from '../lib/format'
 
 function Targets() {
   const q = useTargets()
@@ -97,6 +98,42 @@ function Targets() {
         </label>
         {del.error && <ErrorBox error={del.error} />}
       </Confirm>
+    </Card>
+  )
+}
+
+/** The LockLens servers sharing the store; each instance is collected by one of them. */
+function Servers() {
+  const q = useSystem()
+  const servers = q.data?.cluster?.servers ?? []
+  if (servers.length <= 1) return null
+  return (
+    <Card pad={false} title="LockLens servers" subtitle="Servers sharing this store split the instances between them; if one stops, the others take its instances over within about a minute.">
+      <div className="overflow-x-auto">
+        <table className={tableCls}>
+          <thead>
+            <tr>
+              <Th>Server</Th>
+              <Th>Version</Th>
+              <Th>Started</Th>
+              <Th>Last heartbeat</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {servers.map((x) => (
+              <tr key={x.id} className={trCls}>
+                <td className={tdCls}>
+                  <span className="font-mono text-xs">{x.id}</span> {x.id === q.data?.cluster?.server_id && <Badge tone="accent">this server</Badge>}{' '}
+                  {!x.alive && <Badge tone="warn">not responding</Badge>}
+                </td>
+                <td className={tdCls}>{x.version}</td>
+                <td className={`${tdCls} text-xs text-muted`}>{ago(x.started_at)}</td>
+                <td className={`${tdCls} text-xs text-muted`}>{ago(x.heartbeat_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </Card>
   )
 }
@@ -246,6 +283,14 @@ const SECTIONS: Section[] = [
     ),
   },
   {
+    id: 'tokens',
+    label: 'API tokens',
+    description: 'Tokens for deploy pipelines and log agents.',
+    icon: <KeyRound />,
+    perm: 'settings.manage',
+    render: () => <ApiTokensCard />,
+  },
+  {
     id: 'data',
     label: 'Data and storage',
     description: "LockLens' own database, retention, and incident import.",
@@ -253,6 +298,7 @@ const SECTIONS: Section[] = [
     perm: 'settings.manage',
     render: () => (
       <div className="space-y-4">
+        <Servers />
         <Storage />
         <ImportIncident />
       </div>

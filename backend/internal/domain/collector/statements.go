@@ -10,29 +10,19 @@ import (
 
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/repository"
+	"github.com/locklens/locklens/internal/targetdb"
 )
 
 // maxStatementDeltas caps how many changed entries are stored per collection
 // (largest execution-time deltas first). The rest are counted as truncated.
 const maxStatementDeltas = 2000
 
-// statementCounters is the cumulative state of one entry.
-type statementCounters struct {
-	calls   int64
-	totalMS float64
-	rows    int64
-	hit     int64
-	read    int64
-	tempW   int64
-	wal     *float64
-}
-
 // statementsState is what a worker remembers between collections.
 type statementsState struct {
 	at         time.Time
 	statsReset *time.Time
 	dealloc    *int64
-	entries    map[observe.QueryKey]statementCounters
+	entries    map[observe.QueryKey]observe.StatementCounters
 }
 
 // stmtMeta is what a worker remembers about one entry between collections:
@@ -51,58 +41,28 @@ type stmtCache struct {
 	meta     map[observe.QueryKey]stmtMeta
 }
 
-// readStatements reads the counters of pg_stat_statements without the
-// statement texts (pg_stat_statements(false)): texts live in a file that the
-// extension reads in full whenever they are requested, the most expensive
-// part of a collection. Texts are read only for entries the cache does not
-// know (new statements, or every entry after text collection was turned on),
-// to classify their command; they are kept only when the target collects
-// query text.
-func readStatements(ctx context.Context, tx pgx.Tx, caps observe.Capabilities, includeText bool, cache *stmtCache) (map[observe.QueryKey]statementCounters, map[observe.QueryKey][4]*string, int, error) {
-	fn := pgx.Identifier{caps.StatementsSchema, "pg_stat_statements"}.Sanitize()
-	// Rows of other roles without pg_read_all_stats have a NULL queryid and
-	// are counted as hidden.
-	rows, err := tx.Query(ctx, `
-SELECT s.userid, s.dbid, s.toplevel, s.queryid,
-       coalesce(d.datname, s.dbid::text), coalesce(r.rolname, s.userid::text),
-       s.calls, s.total_exec_time, s.rows, s.shared_blks_hit, s.shared_blks_read,
-       s.temp_blks_written, s.wal_bytes::float8
-FROM `+fn+`(false) AS s
-LEFT JOIN pg_catalog.pg_database AS d ON d.oid = s.dbid
-LEFT JOIN pg_catalog.pg_roles AS r ON r.oid = s.userid`)
+// readStatements reads the pg_stat_statements counters and returns, per
+// entry, its names, text, and command class from the cache. Texts are read
+// only for entries the cache does not know (new statements, or every entry
+// after text collection was turned on), to classify their command; they are
+// kept only when the target collects query text.
+func readStatements(ctx context.Context, tx pgx.Tx, caps observe.Capabilities, includeText bool, cache *stmtCache) (map[observe.QueryKey]observe.StatementCounters, map[observe.QueryKey][4]*string, int, error) {
+	major := caps.Major()
+	rows, hidden, err := targetdb.ReadStatementCounters(ctx, tx, caps.StatementsSchema, major)
 	if err != nil {
 		return nil, nil, 0, err
 	}
 	if cache.withText != includeText {
 		cache.meta, cache.withText = nil, includeText
 	}
-	entries := map[observe.QueryKey]statementCounters{}
+	entries := map[observe.QueryKey]observe.StatementCounters{}
 	names := map[observe.QueryKey][2]string{}
-	hidden := 0
-	var (
-		userid, dbid uint32
-		toplevel     bool
-		queryid      *int64
-		datname, usr string
-		c            statementCounters
-	)
-	major := caps.Major()
-	_, err = pgx.ForEachRow(rows, []any{&userid, &dbid, &toplevel, &queryid, &datname, &usr,
-		&c.calls, &c.totalMS, &c.rows, &c.hit, &c.read, &c.tempW, &c.wal}, func() error {
-		if queryid == nil {
-			hidden++
-			return nil
+	for _, r := range rows {
+		if prev, ok := entries[r.Key]; ok && prev.Calls >= r.Counters.Calls {
+			continue // duplicate keys should not happen; keep the larger counters
 		}
-		k := observe.QueryKey{ServerMajor: major, DBID: dbid, UserID: userid, TopLevel: toplevel, QueryID: *queryid}
-		if prev, ok := entries[k]; ok && prev.calls >= c.calls {
-			return nil // duplicate keys should not happen; keep the larger counters
-		}
-		entries[k] = c
-		names[k] = [2]string{datname, usr}
-		return nil
-	})
-	if err != nil {
-		return nil, nil, 0, err
+		entries[r.Key] = r.Counters
+		names[r.Key] = [2]string{r.DatName, r.UserName}
 	}
 	var missing []int64
 	for k := range entries {
@@ -112,7 +72,7 @@ LEFT JOIN pg_catalog.pg_roles AS r ON r.oid = s.userid`)
 	}
 	texts := map[observe.QueryKey]string{}
 	if len(missing) > 0 {
-		if texts, err = readStatementTexts(ctx, tx, fn, major, missing); err != nil {
+		if texts, err = targetdb.ReadStatementTexts(ctx, tx, caps.StatementsSchema, major, missing); err != nil {
 			return nil, nil, 0, err
 		}
 	}
@@ -141,38 +101,6 @@ LEFT JOIN pg_catalog.pg_roles AS r ON r.oid = s.userid`)
 	}
 	cache.meta = next
 	return entries, meta, hidden, nil
-}
-
-// readStatementTexts reads the normalised texts of some queryids.
-func readStatementTexts(ctx context.Context, tx pgx.Tx, fn string, major int, queryids []int64) (map[observe.QueryKey]string, error) {
-	rows, err := tx.Query(ctx, `SELECT userid, dbid, toplevel, queryid, query FROM `+fn+`(true) WHERE queryid = ANY($1)`, queryids)
-	if err != nil {
-		return nil, err
-	}
-	out := map[observe.QueryKey]string{}
-	var (
-		userid, dbid uint32
-		toplevel     bool
-		queryid      int64
-		text         *string
-	)
-	_, err = pgx.ForEachRow(rows, []any{&userid, &dbid, &toplevel, &queryid, &text}, func() error {
-		if text != nil {
-			out[observe.QueryKey{ServerMajor: major, DBID: dbid, UserID: userid, TopLevel: toplevel, QueryID: queryid}] = *text
-		}
-		return nil
-	})
-	return out, err
-}
-
-func readStatementsInfo(ctx context.Context, tx pgx.Tx, caps observe.Capabilities) (*int64, *time.Time, error) {
-	view := pgx.Identifier{caps.StatementsSchema, "pg_stat_statements_info"}.Sanitize()
-	var dealloc int64
-	var reset time.Time
-	if err := tx.QueryRow(ctx, "SELECT dealloc, stats_reset FROM "+view).Scan(&dealloc, &reset); err != nil {
-		return nil, nil, err
-	}
-	return &dealloc, &reset, nil
 }
 
 // diffStatements computes per-entry deltas.
@@ -206,13 +134,13 @@ func diffStatements(prev *statementsState, cur statementsState, meta map[observe
 	for k, c := range cur.entries {
 		p, seen := prev.entries[k]
 		var d observe.QueryDelta
-		if reset || !seen || c.calls < p.calls {
-			d = observe.QueryDelta{Calls: c.calls, TotalMS: c.totalMS, Rows: c.rows, BlkHit: c.hit, BlkRead: c.read, TempW: c.tempW, WAL: c.wal}
+		if reset || !seen || c.Calls < p.Calls {
+			d = observe.QueryDelta{Calls: c.Calls, TotalMS: c.TotalMS, Rows: c.Rows, BlkHit: c.BlkHit, BlkRead: c.BlkRead, TempW: c.TempW, WAL: c.WAL}
 		} else {
-			d = observe.QueryDelta{Calls: c.calls - p.calls, TotalMS: c.totalMS - p.totalMS, Rows: c.rows - p.rows,
-				BlkHit: c.hit - p.hit, BlkRead: c.read - p.read, TempW: c.tempW - p.tempW}
-			if c.wal != nil && p.wal != nil {
-				w := *c.wal - *p.wal
+			d = observe.QueryDelta{Calls: c.Calls - p.Calls, TotalMS: c.TotalMS - p.TotalMS, Rows: c.Rows - p.Rows,
+				BlkHit: c.BlkHit - p.BlkHit, BlkRead: c.BlkRead - p.BlkRead, TempW: c.TempW - p.TempW}
+			if c.WAL != nil && p.WAL != nil {
+				w := *c.WAL - *p.WAL
 				d.WAL = &w
 			}
 		}
@@ -235,7 +163,7 @@ func diffStatements(prev *statementsState, cur statementsState, meta map[observe
 
 func (w *worker) collectStatements(ctx context.Context) error {
 	var (
-		entries map[observe.QueryKey]statementCounters
+		entries map[observe.QueryKey]observe.StatementCounters
 		meta    map[observe.QueryKey][4]*string
 		hidden  int
 		dealloc *int64
@@ -246,7 +174,7 @@ func (w *worker) collectStatements(ctx context.Context) error {
 		if entries, meta, hidden, err = readStatements(ctx, tx, *w.caps, w.target.QueryTextEnabled, &w.stmtCache); err != nil {
 			return err
 		}
-		dealloc, reset, err = readStatementsInfo(ctx, tx, *w.caps)
+		dealloc, reset, err = targetdb.ReadStatementsInfo(ctx, tx, w.caps.StatementsSchema)
 		return err
 	}); err != nil {
 		return err
@@ -283,7 +211,7 @@ func (w *worker) collectStatements(ctx context.Context) error {
 
 	id, at, text := w.target.ID, coll.At, w.target.QueryTextEnabled
 	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorStatements, At: at,
-		Write: func(ctx context.Context, s *repository.Store, cache repository.IdentityCache) error {
+		Write: func(ctx context.Context, s Store, cache repository.IdentityCache) error {
 			if err := s.InsertStatements(ctx, id, coll, text, cache); err != nil {
 				return err
 			}

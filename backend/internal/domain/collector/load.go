@@ -8,6 +8,7 @@ import (
 
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/repository"
+	"github.com/locklens/locklens/internal/targetdb"
 )
 
 // maxLoadGroups bounds the groups of one bucket; further groups are merged
@@ -18,20 +19,6 @@ const maxLoadGroups = 300
 // maxLoadHistory is how many finished buckets stay in memory (10 minutes),
 // for the incident recorder.
 const maxLoadHistory = 40
-
-// sqlLoadSample reads the sessions that are load right now: client backends,
-// parallel workers, and autovacuum workers that are not idle. Only labels
-// and wait information are read; the statement is identified by query_id
-// (PostgreSQL 14+, computed when compute_query_id is on or auto with
-// pg_stat_statements loaded), never by its text.
-const sqlLoadSample = `
-SELECT a.state, a.wait_event_type, coalesce(a.wait_event, ''), coalesce(a.backend_type, ''),
-       coalesce(a.datid::bigint, 0), coalesce(a.datname, ''), coalesce(a.usesysid::bigint, 0), coalesce(a.usename, ''),
-       left(coalesce(a.application_name, ''), 64), coalesce(a.query_id, 0)
-FROM pg_catalog.pg_stat_activity AS a
-WHERE a.pid <> ALL ($1::int[])
-  AND a.backend_type IN ('client backend', 'parallel worker', 'autovacuum worker')
-  AND a.state IS DISTINCT FROM 'idle'`
 
 type loadKey struct {
 	class, event, backend string
@@ -68,27 +55,23 @@ func (a *loadAgg) bucket(interval time.Duration) observe.LoadBucket {
 }
 
 func (w *worker) collectLoad(ctx context.Context) error {
-	var keys []loadKey
+	var sessions []observe.LoadSession
 	if err := w.obs.ReadOnly(ctx, func(ctx context.Context, tx pgx.Tx, own []int32) error {
-		rows, err := tx.Query(ctx, sqlLoadSample, own)
-		if err != nil {
-			return err
-		}
-		keys, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (loadKey, error) {
-			var state, waitType *string
-			var k loadKey
-			var dbid, userid int64
-			err := r.Scan(&state, &waitType, &k.event, &k.backend, &dbid, &k.datname, &userid, &k.user, &k.app, &k.queryid)
-			k.dbid, k.userid = uint32(dbid), uint32(userid)
-			k.class, _ = observe.WaitClass(state, waitType)
-			if k.class == observe.WaitCPU || k.class == observe.WaitIdleTx || k.class == observe.WaitUnknown {
-				k.event = ""
-			}
-			return k, err
-		})
+		var err error
+		sessions, err = targetdb.ReadLoadSample(ctx, tx, own)
 		return err
 	}); err != nil {
 		return err
+	}
+	keys := make([]loadKey, len(sessions))
+	for i, s := range sessions {
+		k := loadKey{event: s.WaitEvent, backend: s.BackendType, dbid: s.DBID, datname: s.DatName, userid: s.UserID, user: s.UserName,
+			app: s.Application, queryid: s.QueryID}
+		k.class, _ = observe.WaitClass(s.State, s.WaitEventType)
+		if k.class == observe.WaitCPU || k.class == observe.WaitIdleTx || k.class == observe.WaitUnknown {
+			k.event = ""
+		}
+		keys[i] = k
 	}
 	now := time.Now().UTC()
 	start := now.Truncate(observe.LoadBucketSize)
@@ -116,7 +99,7 @@ func (w *worker) flushLoad() {
 	w.state.addLoad(b)
 	id := w.target.ID
 	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorLoad, At: b.At,
-		Write: func(ctx context.Context, s *repository.Store, _ repository.IdentityCache) error {
+		Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
 			return s.InsertLoadBucket(ctx, id, b)
 		}})
 }

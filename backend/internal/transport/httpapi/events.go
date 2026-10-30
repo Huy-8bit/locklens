@@ -16,15 +16,30 @@ type Hub struct {
 	clients map[chan []byte]struct{}
 	max     int
 	onCount func(int)
+	// forward also sends published events to the other servers' hubs.
+	forward func(kind string, payload any)
 }
+
+// Forward sets where published events also go (the cluster bus), so the
+// browsers connected to other servers receive them.
+func (h *Hub) Forward(fn func(kind string, payload any)) { h.forward = fn }
 
 // NewHub returns a hub accepting at most max clients.
 func NewHub(max int, onCount func(int)) *Hub {
 	return &Hub{clients: map[chan []byte]struct{}{}, max: max, onCount: onCount}
 }
 
-// Publish implements collector.EventSink.
+// Publish implements collector.EventSink: it sends an event to this
+// server's browsers and, in a cluster, to the other servers'.
 func (h *Hub) Publish(kind string, payload any) {
+	h.PublishLocal(kind, payload)
+	if h.forward != nil {
+		h.forward(kind, payload)
+	}
+}
+
+// PublishLocal sends an event to this server's browsers only.
+func (h *Hub) PublishLocal(kind string, payload any) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return

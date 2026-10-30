@@ -28,6 +28,11 @@ func (s *Service) Publish(kind string, payload any) {
 	if !ok {
 		return
 	}
+	s.enqueue(id)
+}
+
+// enqueue queues an incident for processing once.
+func (s *Service) enqueue(id int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.pending[id] {
@@ -41,11 +46,9 @@ func (s *Service) Publish(kind string, payload any) {
 	}
 }
 
-// Run processes queued incidents and, every minute, open unacknowledged
-// incidents for reminders, until ctx ends.
+// Run processes queued incidents until ctx ends. Incidents are queued by
+// the server that records them, so each change is sent once.
 func (s *Service) Run(ctx context.Context) {
-	tick := time.NewTicker(time.Minute)
-	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -55,15 +58,28 @@ func (s *Service) Run(ctx context.Context) {
 			delete(s.pending, id)
 			s.mu.Unlock()
 			s.process(ctx, id)
+		}
+	}
+}
+
+// RunReminders queues the open unacknowledged incidents every minute, so
+// due reminders are sent, until ctx ends. With several servers, one runs it.
+func (s *Service) RunReminders(ctx context.Context) {
+	tick := time.NewTicker(time.Minute)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
 		case <-tick.C:
-			ins, err := s.store.OpenUnacknowledgedIncidents(ctx)
-			if err != nil {
-				s.log.Warn("notification reminders: list incidents failed", "error", err.Error())
-				continue
-			}
-			for _, in := range ins {
-				s.process(ctx, in.ID)
-			}
+		}
+		ins, err := s.store.OpenUnacknowledgedIncidents(ctx)
+		if err != nil {
+			s.log.Warn("notification reminders: list incidents failed", "error", err.Error())
+			continue
+		}
+		for _, in := range ins {
+			s.enqueue(in.ID)
 		}
 	}
 }

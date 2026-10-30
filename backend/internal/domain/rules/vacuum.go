@@ -53,8 +53,13 @@ func vacuumRules(in Input, th Thresholds) []Finding {
 	}
 	for _, c := range cands {
 		s := t.Tables[c.i]
-		name := s.Schema + "." + s.Name
-		f := newFinding(RuleDeadTuples, "rel:"+strconv.FormatUint(uint64(s.RelID), 10), Warning,
+		// Table OIDs are unique per database: tables of databases other than
+		// the connected one carry the database in their key and name.
+		name, key := s.Schema+"."+s.Name, "rel:"+strconv.FormatUint(uint64(s.RelID), 10)
+		if s.DatName != "" && s.DatName != t.DatName {
+			name, key = s.DatName+"."+name, "rel:"+s.DatName+":"+strconv.FormatUint(uint64(s.RelID), 10)
+		}
+		f := newFinding(RuleDeadTuples, key, Warning,
 			fmt.Sprintf("Table %s has an estimated %.0f%% dead tuples", name, c.ratio*100), t.At, t.At)
 		lastStr := "never (since statistics were last reset)"
 		if s.LastAutovacuum != nil || s.LastVacuum != nil {

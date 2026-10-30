@@ -80,11 +80,26 @@ the detailed explanation.
 - **Query baselines and anomalies** need history: until a statement has
   `baseline_warmup_points` covered points, rules compare with the previous
   window only. Correlated root causes are ranked hypotheses from collected
-  evidence, never confirmed causes; deployments and configuration changes are
-  not recorded. See [query-intelligence.md](query-intelligence.md#limitations).
-- **Table statistics** cover only the database LockLens connects to and only
-  the 200 largest tables; tuple counts are estimates, and a dead-tuple ratio is
-  not measured bloat.
+  evidence, never confirmed causes. See [query-intelligence.md](query-intelligence.md#limitations).
+- **Change timeline.** Settings and server facts are compared every minute,
+  the schema every 15 minutes: a change is known to have happened between two
+  readings, not at an exact moment (restarts and reloads are exact, from
+  `pg_postmaster_start_time()` and `pg_conf_load_time()`). Schema comparison
+  is skipped while the catalog is cut at its limits. Deploys and migrations
+  are known only when a person or pipeline reports them.
+- **Table statistics** cover the databases of the target's scope (by default
+  only the connection string's, at most 20) and only the largest tables of
+  each; tuple counts are estimates, and a dead-tuple ratio is not measured
+  bloat. Each extra database uses one more connection. What-if checks
+  (HypoPG) run only on the connection string's database.
+- **Server log events** need the log agent on the database host (managed
+  services usually do not give file access) and the logging settings that
+  produce them. Durations from the slow statement log describe only
+  executions slower than `log_min_duration_statement`: their percentiles are
+  of those executions, not of all executions. Without cgo, the agent
+  normalises statements lexically (constants replaced, no parser
+  fingerprint). Redaction removes quoted values and constants; it cannot
+  recognise values the server writes without quotes.
 - **Findings are heuristics** with explicit evidence and limitations, not
   confirmed root causes. Thresholds are generic defaults; tune them per
   environment. Demo-mode thresholds are for the lab only.
@@ -103,9 +118,13 @@ the detailed explanation.
   ([test-report.md](test-report.md)). Larger fleets have not been measured;
   storage grows with the number of targets and their intervals
   ([storage-and-retention.md](storage-and-retention.md#storage-growth)).
-- **One server per store.** Running two `locklens server` processes against
-  the same monitoring store collects every target twice and makes their
-  incident recorders compete; it is not supported.
+- **Several servers** share a store by leases: when a server crashes, its
+  targets are collected again only after their leases expire (about a
+  minute), and that time is a gap. For a moment around a takeover two servers
+  can collect the same target. Login rate limiting is per server, and a
+  running workspace statement can be cancelled only on the server that runs
+  it (use sticky sessions in the load balancer). Messages between servers
+  (browser events) larger than about 8 KB are not forwarded.
 
 ## Unsupported behaviour
 

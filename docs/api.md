@@ -98,9 +98,9 @@ Every read needs a session (any role). Changes need a permission; a missing one 
 | `GET /api/v1/fleet/metrics?names=a,b` | Metric series combined across the enabled targets (1h default range; 1–12 names; `environment` filters). Each series names its `aggregation`: `sum` (rates, counts, sizes), `mean` (names ending in `_ratio`, over the targets that report them), or `max` (lag, delay, `max_`, oldest, `_seconds`). Points are `{t, v, targets}`: `v` is null when no target has a value in the bucket; `targets` says how many contributed. |
 | `GET /api/v1/fleet/queries` | Statements across targets (1h default): `sort` (`total_time`, `calls`, `mean_time`, `rows`), `limit` (1–50, default 10), `command`, `q` (SQL text), `include_text`, `environment`. Items are query rows plus `target_id` and `target_name`; the monitoring role's own statements are excluded. |
 | `GET /api/v1/fleet/live` | Current state of every enabled target of the `environment`: `connected`, `observed_at`, latest values, session counts, the activity report (at most 200 sessions per target), replication, `connection_groups` (client sessions grouped by `database`, `user`, `application`, `client_addr`, `state`, with `count` and `oldest_seconds`; at most 200 groups, LockLens's own connections excluded), and host metrics. |
-| `GET /api/v1/system` | LockLens itself: `version`, `demo_mode`, store reachability and schema version, writer queue and errors, targets by state, enabled and failing collectors, open and critical incidents. |
+| `GET /api/v1/system` | LockLens itself: `version`, `demo_mode`, `cluster` (`server_id` of the answering server and the `servers` sharing the store, with `alive`), store reachability and schema version, writer queue and errors, targets by state, enabled and failing collectors, open and critical incidents. |
 | `GET /api/v1/targets` | Targets with status. |
-| `POST /api/v1/targets` | Create. Body: `name`, `description`, `dsn`, `enabled`, `interval_seconds`, `max_connections`, `query_text_enabled` (default `true`), `node_exporter_url`, `environment` (lowercase letters, digits, `-`, `_`, at most 40 characters; default `default`). `201` with the target; `422` with `fields`; `409` on a duplicate name. |
+| `POST /api/v1/targets` | Create. Body: `name`, `description`, `dsn`, `enabled`, `interval_seconds`, `max_connections`, `query_text_enabled` (default `true`), `node_exporter_url`, `environment` (lowercase letters, digits, `-`, `_`, at most 40 characters; default `default`), `database_scope` (`connected` (default), `all`, or `list`) and `databases` (names, for `list`; at most 20). `201` with the target; `422` with `fields`; `409` on a duplicate name. |
 | `POST /api/v1/targets/test` | Test a DSN without saving it. Body `{"dsn"}`. |
 | `POST /api/v1/targets/inspect` | Plan for adding a connection string (body `{"dsn"}`): `ok`, `error`, `hint`, `mode` (`direct`, `create_roles`, `reuse_roles`, `unsupported`), `reason`, server facts (`host`, `port`, `database`, `user`, `server_version`, `is_standby`, `superuser`, `sees_all_sessions`, `workspace_allowed`, `pg_stat_statements`), `suggested_name`, `statements` (for `create_roles`, passwords masked), `existing_roles`, `warnings`. A connection failure is `200` with `ok: false`. |
 | `POST /api/v1/targets/quick` | Add an instance from a connection string: `dsn`, optional `name` and `environment`, `browse_data`, `run_sql`, and `confirm` (required for `create_roles`, else `409 confirmation_required`). `201 {"target", "mode", "warnings"}`; `422 setup_failed` with a message the administrator can act on. The administrative DSN is never stored. |
@@ -166,9 +166,9 @@ are strings (64-bit values do not fit JavaScript numbers). See
 
 | Method and path | Description |
 | --- | --- |
-| `GET /api/v1/optimizer` | Recommendations across the fleet (`environment`), the largest benefit first; `status` (comma-separated, `all`; default: open, accepted, applied, verified, no_effect, regressed) and `kind` filters; `counts` by status; per target `catalog_at`, `database`, `query_text_enabled`, `hypopg_enabled`, `hypopg_installed`, `warnings`; `parser_available`. |
+| `GET /api/v1/optimizer` | Recommendations across the fleet (`environment`), the largest benefit first; `status` (comma-separated, `all`; default: open, accepted, applied, verified, no_effect, regressed) and `kind` filters; `counts` by status; per target `catalog_at`, `database` (the connection string's, where what-if checks run), `databases` (every database with a catalog), `query_text_enabled`, `hypopg_enabled`, `hypopg_installed`, `warnings`; `parser_available`. |
 | `GET /api/v1/targets/{id}/recommendations` | One target's recommendations (same filters). |
-| `GET /api/v1/targets/{id}/recommendations/{rid}` | One recommendation: `kind`, `status`, `severity`, `title`, `summary`, `details` (evidence and statements), `ddl`, `benefit`, `confidence`, decision, `applied_at`/`applied_how`, `before_ms`/`after_ms`, `whatif`. |
+| `GET /api/v1/targets/{id}/recommendations/{rid}` | One recommendation: `database`, `kind`, `status`, `severity`, `title`, `summary`, `details` (evidence and statements), `ddl`, `benefit`, `confidence`, decision, `applied_at`/`applied_how`, `before_ms`/`after_ms`, `whatif`. |
 | `POST /api/v1/targets/{id}/recommendations/{rid}/decision` | `{"status": "accepted" \| "dismissed" \| "open", "note"}` (operators and administrators). 409 once the change was applied. |
 | `POST /api/v1/targets/{id}/recommendations/{rid}/whatif` | `{"request_id"}`: check an index recommendation with a hypothetical index (HypoPG) through the workspace (SQL permission; the policy must allow SQL and HypoPG). Returns the costs per statement and the updated recommendation. |
 | `POST /api/v1/targets/{id}/optimizer/refresh` | Collect a fresh catalog (waits up to 20 s) and run the optimizer for the target now; returns `derived` and `fresh_catalog`. |
@@ -186,6 +186,23 @@ and the `recommendations` that name the statement. See
 | `GET /api/v1/performance` | Current statement anomalies (`anomalies`) and statements running for long (`running`) across the fleet (`environment` filter), each with its finding, `impact` (score 0–100 with explained `components` and the `confidence_factor`), and the resolved `statement` identity. Also `unavailable` targets (no pg_stat_statements), `insufficient` rule results, warm `baselines` per target, `baseline_config`, and `percentiles` (always unavailable). |
 
 See [query-intelligence.md](query-intelligence.md) for baselines, rules, impact, and correlation.
+
+## Changes
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/v1/changes` | Changes in a period (`range`/`from`/`to`, 24h default), the newest first: `target_id` (repeatable or comma-separated; changes for every instance are always included), `kind`, `limit` (≤ 1,000). Each has `id`, `target_id` (null: every instance), `at`, `kind` (`settings`, `restart`, `promotion`, `demotion`, `upgrade`, `schema`, `deploy`, `migration`, `config`, `note`), `source` (`detected`, `api`, `user`), `title`, `details` (for detected ones `detected_after`/`detected_by` and the list of `changes`), `created_by`. |
+| `POST /api/v1/changes` | Report a change: `{"kind": "deploy" \| "migration" \| "config" \| "note", "title", "target_id" (optional; null for every instance), "at" (optional, within 30 days), "details" (≤ 16 KiB)}`. With a session (operators and administrators, CSRF header) or with `Authorization: Bearer <token>` of scope `events` (no session or CSRF; a token limited to an instance reports for that instance only). `201` with the change. |
+| `DELETE /api/v1/changes/{id}` | Delete a reported change (administrators); detected changes cannot be deleted. |
+| `GET /api/v1/tokens` · `POST` · `DELETE /{id}` | API tokens (administrators). Create with `{"name", "scope": "events" \| "ingest", "target_id"}` (`ingest` needs an instance); the response holds the `secret` once (`llk_…`), only its hash is kept. `DELETE` revokes. |
+
+## Server logs
+
+| Method and path | Description |
+| --- | --- |
+| `POST /api/v1/ingest/logs` | For the log agent only: `Authorization: Bearer <token>` of scope `ingest`; the token decides the instance. Body `{"agent": {"hostname", "version", "sources"}, "events": [...]}` (≤ 1,000 events, ≤ 4 MiB; events within the last 7 days). Events already stored (same `id`) are skipped: `{"received", "stored"}`. `400` for an invalid batch (the agent drops it), `401`/`403` for a bad token (the agent keeps it). |
+| `GET /api/v1/targets/{id}/logs` | Summary for a period: `counts` per kind and bucket, `statements` (per fingerprint: `source`, normalised `query`, `query_id`, `count`, `p50_ms`/`p95_ms`/`p99_ms`/`max_ms` of the logged executions, `total_ms`, `plans`), `agents`, and `settings` (the instance's logging settings, each `ok` or with advice). |
+| `GET /api/v1/targets/{id}/logs/events` | Events, the newest first: `kind` (repeatable or comma-separated), `fingerprint`, `limit` (≤ 1,000). Each has `at`, `kind`, `pid`, `datname`, `username`, `application`, `severity`, `sqlstate`, `duration_ms`, `query_id`, `fingerprint`, `query` (normalised), `message` (redacted), `details` (plan, lock mode and holders, deadlock cycle, table, bytes, …). |
 
 ## Incidents
 
@@ -214,7 +231,7 @@ See [incidents.md](incidents.md) for the format.
 | `GET /api/v1/settings/rules` | Current rule thresholds, defaults, and descriptions. |
 | `PUT /api/v1/settings/rules` | Replace thresholds (validated ranges). |
 | `GET /api/v1/storage` | Monitoring store table sizes and row estimates. |
-| `GET /api/v1/events` | Server-sent events: `target.collected`, `target.status`, `incident.updated` with `{"target_id"}` or `{"incident_id"}` payloads. The UI uses them to refresh; they carry no data themselves. |
+| `GET /api/v1/events` | Server-sent events: `target.collected`, `target.status`, `incident.updated`, `recommendation.updated`, `change.created` with `{"target_id"}` or `{"incident_id"}` payloads. The UI uses them to refresh; they carry no data themselves. With several servers, events reach the browsers of every server. |
 
 ## Example
 

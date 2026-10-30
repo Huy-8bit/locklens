@@ -5,10 +5,12 @@ package repository_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -517,11 +519,11 @@ func TestTimescaleHypertablesCompressionAndRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !st.Enabled || !st.Compression || st.License != "timescale" || len(st.Hypertables) != 13 {
+	if !st.Enabled || !st.Compression || st.License != "timescale" || len(st.Hypertables) != 14 {
 		t.Fatalf("status = %+v", st)
 	}
 	// Idempotent: a restart changes nothing.
-	if st2, err := s.SetupTimescale(ctx, repository.TimescaleAuto, time.Hour); err != nil || len(st2.Hypertables) != 13 {
+	if st2, err := s.SetupTimescale(ctx, repository.TimescaleAuto, time.Hour); err != nil || len(st2.Hypertables) != 14 {
 		t.Fatalf("second setup: %+v %v", st2, err)
 	}
 	var n int
@@ -794,5 +796,275 @@ func TestMetricRollupsMatchRawPoints(t *testing.T) {
 	hourly, err = s.QuerySeries(ctx, tg.ID, []string{"deadlocks.delta"}, from, to, 3*time.Hour)
 	if err != nil || len(hourly[0].Points) != 1 {
 		t.Fatalf("hourly after minute retention: %+v %v", hourly, err)
+	}
+}
+
+func TestSeveralDatabasesOfOneTarget(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+	tg := target(t, s, "dbs")
+	at := time.Now().UTC().Truncate(time.Second)
+	i64 := func(v int64) *int64 { return &v }
+	// The connected database reads cluster-wide data; another one only its
+	// tables. Both have a table with OID 16384.
+	main := observe.TableHealth{At: at, DatName: "app", Databases: []observe.DatabaseAge{{DatName: "app"}, {DatName: "reports"}},
+		Settings: map[string]string{"autovacuum_freeze_max_age": "200000000"},
+		Tables:   []observe.TableStat{{RelID: 16384, DatName: "app", Schema: "public", Name: "orders", TotalBytes: i64(10)}},
+		Indexes:  []observe.IndexStat{{IndexRelID: 16390, RelID: 16384, DatName: "app", Schema: "public", Table: "orders", Name: "orders_pkey", Bytes: i64(5)}}}
+	other := observe.TableHealth{At: at.Add(time.Millisecond), DatName: "reports",
+		Tables:  []observe.TableStat{{RelID: 16384, DatName: "reports", Schema: "public", Name: "daily", TotalBytes: i64(20)}},
+		Indexes: []observe.IndexStat{{IndexRelID: 16390, RelID: 16384, DatName: "reports", Schema: "public", Table: "daily", Name: "daily_pkey", Bytes: i64(7)}}}
+	for _, h := range []observe.TableHealth{main, other} {
+		if err := s.InsertTableHealth(ctx, tg.ID, h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := s.LatestTableHealth(ctx, tg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.DatName != "app" || len(h.Databases) != 2 || h.Settings["autovacuum_freeze_max_age"] == "" {
+		t.Fatalf("cluster-wide data should come from the connected database: %+v", h)
+	}
+	if len(h.Tables) != 2 || h.Tables[0].DatName != "reports" || h.Tables[1].DatName != "app" {
+		t.Fatalf("tables of both databases, largest first: %+v", h.Tables)
+	}
+	if len(h.Indexes) != 2 || h.Indexes[0].DatName != "reports" || h.Indexes[1].DatName != "app" {
+		t.Fatalf("indexes of both databases: %+v", h.Indexes)
+	}
+
+	// One catalog per database; pruning drops those that left the scope.
+	for _, c := range []observe.Catalog{{At: at, DatName: "app"}, {At: at.Add(time.Second), DatName: "reports"}} {
+		if err := s.SaveCatalog(ctx, tg.ID, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cats, err := s.Catalogs(ctx, tg.ID); err != nil || len(cats) != 2 || cats[0].DatName != "app" {
+		t.Fatalf("catalogs %+v %v", cats, err)
+	}
+	if c, err := s.LatestCatalog(ctx, tg.ID); err != nil || c.DatName != "reports" {
+		t.Fatalf("latest catalog %+v %v", c, err)
+	}
+
+	// The same recommendation key in two databases is two recommendations,
+	// and a pass over one database leaves the other's alone.
+	rec := repository.RecommendationInput{Kind: "missing_index", Key: "public.t(a)", Severity: "warning", Title: "x", Summary: "y",
+		Details: map[string]any{}, Benefit: 1}
+	for _, db := range []string{"app", "reports"} {
+		if err := s.SyncRecommendations(ctx, tg.ID, db, at, []repository.RecommendationInput{rec}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SyncRecommendations(ctx, tg.ID, "app", at.Add(time.Minute), nil); err != nil {
+		t.Fatal(err)
+	}
+	open, err := s.ListRecommendations(ctx, repository.RecommendationFilter{TargetID: tg.ID, Statuses: []string{repository.RecOpen}})
+	if err != nil || len(open) != 1 || open[0].Database != "reports" {
+		t.Fatalf("open recommendations %+v %v", open, err)
+	}
+	app := "app"
+	if resolved, err := s.ListRecommendations(ctx, repository.RecommendationFilter{TargetID: tg.ID, Database: &app}); err != nil ||
+		len(resolved) != 1 || resolved[0].Status != repository.RecResolved {
+		t.Fatalf("app recommendations %+v %v", resolved, err)
+	}
+
+	if err := s.PruneCatalogs(ctx, tg.ID, []string{"app"}); err != nil {
+		t.Fatal(err)
+	}
+	if cats, err := s.Catalogs(ctx, tg.ID); err != nil || len(cats) != 1 || cats[0].DatName != "app" {
+		t.Fatalf("pruned catalogs %+v %v", cats, err)
+	}
+}
+
+func TestChangesAndTokens(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+	tg := target(t, s, "chg")
+	other := target(t, s, "chg2")
+	at := time.Now().UTC().Truncate(time.Second)
+	events := []observe.ChangeEvent{
+		{TargetID: &tg.ID, At: at.Add(-time.Hour), Kind: "settings", Source: "detected", Title: "work_mem changed",
+			Details: map[string]any{"changes": []map[string]any{{"name": "work_mem"}}}},
+		{At: at.Add(-30 * time.Minute), Kind: "deploy", Source: "api", Title: "api v2", CreatedBy: "token:ci"},
+		{TargetID: &other.ID, At: at.Add(-10 * time.Minute), Kind: "restart", Source: "detected", Title: "restarted"},
+	}
+	if err := s.InsertChanges(ctx, events); err != nil || events[0].ID == 0 {
+		t.Fatalf("insert %v %+v", err, events)
+	}
+	// One instance's changes include those for every instance.
+	got, err := s.ListChanges(ctx, repository.ChangeFilter{From: at.Add(-2 * time.Hour), To: at, TargetIDs: []int64{tg.ID}})
+	if err != nil || len(got) != 2 || got[0].Kind != "deploy" || got[0].TargetID != nil || got[1].Details["changes"] == nil {
+		t.Fatalf("list %+v %v", got, err)
+	}
+	if got, err := s.ListChanges(ctx, repository.ChangeFilter{From: at.Add(-2 * time.Hour), To: at, Kinds: []string{"restart"}}); err != nil || len(got) != 1 {
+		t.Fatalf("by kind %+v %v", got, err)
+	}
+	// Detected changes cannot be deleted; reported ones can.
+	if _, err := s.DeleteChange(ctx, events[0].ID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("delete detected: %v", err)
+	}
+	if e, err := s.DeleteChange(ctx, events[1].ID); err != nil || e.Title != "api v2" {
+		t.Fatalf("delete reported: %+v %v", e, err)
+	}
+
+	if _, err := s.ChangeState(ctx, tg.ID, "server"); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("no state yet: %v", err)
+	}
+	for _, v := range []string{`{"a":1}`, `{"a":2}`} {
+		if err := s.SaveChangeState(ctx, tg.ID, "server", at, []byte(v)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if raw, err := s.ChangeState(ctx, tg.ID, "server"); err != nil || string(raw) != `{"a": 2}` {
+		t.Fatalf("state %s %v", raw, err)
+	}
+
+	hash := []byte("0123456789abcdef0123456789abcdef")
+	tok, err := s.CreateToken(ctx, "ci", repository.TokenEvents, nil, hash, "llk_abcd", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.TokenByHash(ctx, hash); err != nil || got.ID != tok.ID || got.Name != "ci" {
+		t.Fatalf("by hash %+v %v", got, err)
+	}
+	if err := s.RevokeToken(ctx, tok.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TokenByHash(ctx, hash); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("revoked: %v", err)
+	}
+	if err := s.RevokeToken(ctx, tok.ID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("revoke twice: %v", err)
+	}
+}
+
+func TestClusterLeasesLiveStateAndBus(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+	tg := target(t, s, "cl")
+	for _, id := range []string{"a", "b"} {
+		if err := s.Heartbeat(ctx, repository.Server{ID: id, Hostname: "h", Version: "v", StartedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sv, err := s.Servers(ctx, time.Minute); err != nil || len(sv) != 2 || !sv[0].Alive {
+		t.Fatalf("servers %+v %v", sv, err)
+	}
+	// One holder at a time; the holder renews; an expired lease is taken.
+	if ok, _, err := s.HoldLease(ctx, "target:1", "a", time.Minute); err != nil || !ok {
+		t.Fatalf("a takes: %v %v", ok, err)
+	}
+	if ok, _, err := s.HoldLease(ctx, "target:1", "b", time.Minute); err != nil || ok {
+		t.Fatalf("b must wait: %v %v", ok, err)
+	}
+	first, second := time.Time{}, time.Time{}
+	_, first, _ = s.HoldLease(ctx, "target:1", "a", time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
+	if ok, at, err := s.HoldLease(ctx, "target:1", "b", time.Minute); err != nil || !ok || !at.After(first) {
+		t.Fatalf("b takes the expired lease: %v %v %v", ok, at, err)
+	}
+	_, second, _ = s.HoldLease(ctx, "target:1", "b", time.Minute)
+	if ls, err := s.Leases(ctx, "target:"); err != nil || len(ls) != 1 || ls[0].Holder != "b" || !ls[0].Live || !ls[0].AcquiredAt.Equal(second) {
+		t.Fatalf("leases %+v %v", ls, err)
+	}
+	if err := s.ReleaseLease(ctx, "target:1", "a"); err != nil { // not a's: no effect
+		t.Fatal(err)
+	}
+	if err := s.ReleaseLease(ctx, "target:1", "b"); err != nil {
+		t.Fatal(err)
+	}
+	if ls, _ := s.Leases(ctx, "target:"); len(ls) != 0 {
+		t.Fatalf("released: %+v", ls)
+	}
+
+	if err := s.SaveLiveState(ctx, tg.ID, "a", time.Now(), []byte(`{"Connected":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if sid, _, raw, err := s.LiveState(ctx, tg.ID); err != nil || sid != "a" || !strings.Contains(string(raw), "Connected") {
+		t.Fatalf("live state %s %s %v", sid, raw, err)
+	}
+
+	// A message sent on the bus channel reaches a listener.
+	lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	got := make(chan string, 1)
+	go func() {
+		_ = s.Listen(lctx, "locklens_bus", func(p string) {
+			select {
+			case got <- p:
+			default:
+			}
+		})
+	}()
+	deadline := time.After(8 * time.Second)
+	for {
+		if err := s.Notify(ctx, "locklens_bus", `{"kind":"x"}`); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case p := <-got:
+			if p != `{"kind":"x"}` {
+				t.Fatalf("payload %q", p)
+			}
+			return
+		case <-time.After(200 * time.Millisecond): // the listener may not be subscribed yet
+		case <-deadline:
+			t.Fatal("no message received")
+		}
+	}
+}
+
+func TestLogEvents(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+	tg := target(t, s, "logs")
+	tok, err := s.CreateToken(ctx, "agent", repository.TokenIngest, &tg.ID, []byte("logs-token-hash-0123456789abcdef"), "llk_x", "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Hour)
+	f := func(v float64) *float64 { return &v }
+	qid := int64(77)
+	var events []observe.LogEvent
+	for i := range 100 {
+		events = append(events, observe.LogEvent{ID: fmt.Sprintf("s%d", i), At: at.Add(time.Duration(i) * time.Second), Kind: "slow_query",
+			Severity: "LOG", DurationMS: f(float64(i + 1)), QueryID: &qid, Fingerprint: "fp1", Query: "select $1", Message: "duration"})
+	}
+	// The same execution in auto_explain is not added to the statement's count.
+	events = append(events, observe.LogEvent{ID: "p1", At: at, Kind: "plan", Severity: "LOG", DurationMS: f(100), Fingerprint: "fp1",
+		Query: "select $1", Message: "auto_explain plan", Details: map[string]any{"plan": "Seq Scan on t"}},
+		observe.LogEvent{ID: "p2", At: at, Kind: "plan", Severity: "LOG", DurationMS: f(9), Fingerprint: "fp2", Query: "select 2", Message: "plan"},
+		observe.LogEvent{ID: "d1", At: at.Add(time.Minute), Kind: "deadlock", Severity: "ERROR", SQLState: "40P01", Message: "deadlock detected",
+			Details: map[string]any{"cycle": []any{}}})
+	n, err := s.InsertLogEvents(ctx, tg.ID, tok.ID, "db1", "v1", []string{"/log/postgresql.log"}, events)
+	if err != nil || n != int64(len(events)) {
+		t.Fatalf("insert %d %v", n, err)
+	}
+	// A batch sent again is stored once.
+	if n, err := s.InsertLogEvents(ctx, tg.ID, tok.ID, "db1", "v1", nil, events[:10]); err != nil || n != 0 {
+		t.Fatalf("again %d %v", n, err)
+	}
+	stmts, err := s.LogStatements(ctx, tg.ID, at.Add(-time.Minute), at.Add(time.Hour), 10)
+	if err != nil || len(stmts) != 2 {
+		t.Fatalf("statements %+v %v", stmts, err)
+	}
+	st := stmts[0]
+	if st.Fingerprint != "fp1" || st.Source != "slow_query" || st.Count != 100 || st.Plans != 1 || math.Abs(st.P95MS-95.05) > 0.01 || st.MaxMS != 100 || *st.QueryID != 77 {
+		t.Fatalf("fp1 %+v", st)
+	}
+	if stmts[1].Source != "plan" || stmts[1].Count != 1 {
+		t.Fatalf("fp2 %+v", stmts[1])
+	}
+	ev, err := s.LogEvents(ctx, repository.LogEventFilter{TargetID: tg.ID, From: at.Add(-time.Minute), To: at.Add(time.Hour), Kinds: []string{"deadlock", "plan"}})
+	if err != nil || len(ev) != 3 || ev[0].Kind != "deadlock" || ev[0].SQLState != "40P01" {
+		t.Fatalf("events %+v %v", ev, err)
+	}
+	counts, err := s.LogCounts(ctx, tg.ID, at.Add(-time.Minute), at.Add(time.Hour), 10*time.Minute)
+	if err != nil || len(counts) == 0 {
+		t.Fatalf("counts %+v %v", counts, err)
+	}
+	agents, err := s.LogAgents(ctx, tg.ID)
+	if err != nil || len(agents) != 1 || agents[0].Received != int64(len(events)) || agents[0].Hostname != "db1" || len(agents[0].Sources) != 0 {
+		t.Fatalf("agents %+v %v", agents, err)
 	}
 }

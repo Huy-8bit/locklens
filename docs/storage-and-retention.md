@@ -28,8 +28,12 @@ recorded in `schema_migrations`; `/readyz` reports the schema version.
 | `query_identities`, `query_samples`, `statement_collections` | Query identities (text only with opt-in), per-collection statement deltas, collection metadata (interval, reset, evictions) | History |
 | `query_rollups`, `statement_coverage` | Five-minute statement rollups and collection coverage per bucket (with resets), the source of query baselines | Baselines |
 | `metric_rollups_1m`, `metric_rollups_1h` | Downsampled metrics: per bucket the sample counts (known and all), sum, max, last value, and time-weighted sums, so every aggregation (and "unknown") is the same as from raw points | Minute / hour rollups |
-| `catalog_state` | The latest schema catalog of each target (indexes, tables, foreign keys, column statistics without data values) | Replaced on each collection |
-| `recommendations` | Optimizer recommendations with evidence, SQL, decisions, application, before/after measurement, and what-if results | Findings (resolved and dismissed ones) |
+| `catalog_state` | The latest schema catalog of each database of a target (indexes, tables, foreign keys, column statistics without data values) | Replaced on each collection; removed when the database leaves the scope |
+| `recommendations` | Optimizer recommendations per database with evidence, SQL, decisions, application, before/after measurement, and what-if results | Findings (resolved and dismissed ones) |
+| `change_events`, `change_state` | Detected changes (settings, restarts, promotions, upgrades, schema) and reported ones (deploys, migrations); the last reading each detection compares against | Incidents |
+| `log_events`, `log_agents` | Server log events from the log agent (normalised statements, redacted messages, plans); the agents that sent them | History |
+| `api_tokens` | Tokens for pipelines and log agents (SHA-256 of the token only) | Until revoked; deleted with their target |
+| `servers`, `leases`, `live_state` | Servers sharing the store, the leases on target collection and once-per-cluster jobs, live views published for the other servers | Servers silent for a day are forgotten |
 | `query_plans` | Execution plans saved on request (EXPLAIN output, shape fingerprint, cost, who and how) | Incidents |
 | `activity_snapshots` | Full activity snapshots (sessions, blocking edges, waiting locks) | History |
 | `table_stats`, `index_stats`, `state_snapshots` | Table/index statistics, replication and other state | History |
@@ -42,7 +46,7 @@ recorded in `schema_migrations`; `/readyz` reports the schema version.
 
 With TimescaleDB, the history tables (`metric_points`, `query_samples`,
 `statement_collections`, `activity_snapshots`, `table_stats`, `index_stats`,
-`state_snapshots`, `load_samples`, `load_buckets`) and the baseline rollups
+`state_snapshots`, `load_samples`, `load_buckets`, `log_events`) and the baseline rollups
 (`query_rollups`, weekly chunks; `statement_coverage`, 30-day chunks) and the
 metric rollups (`metric_rollups_1m`, weekly; `metric_rollups_1h`, 30-day) are
 **hypertables**:

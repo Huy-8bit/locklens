@@ -32,7 +32,11 @@ statement before and after.
 | Statement rollups and normalised texts | `statements` | 15 s | The busiest statements of the last day, their conditions, rows, I/O, temporary files |
 | Saved plans | on request | — | Estimated rows for misestimates |
 
-The catalog covers the database LockLens connects to. It reads system
+The catalog covers each database of the target's scope (the connection
+string's by default; see [configuration.md](configuration.md#targets)), and
+recommendations are kept per database: a statement is matched only with the
+catalog of the database it ran in. What-if checks run only on the connection
+string's database, where the workspace connects. The catalog reads system
 catalogs and statistics views only, with relation sizes from `relpages`
 (no size functions), so it takes no relation locks. The catalog is bounded
 to the 2,000 largest tables and 5,000 indexes.

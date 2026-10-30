@@ -239,7 +239,7 @@ func TestRestartRecovery(t *testing.T) {
 	}
 	// A new recorder, as after a restart: in-memory history is gone.
 	rec := h.newRecorder()
-	if err := rec.Recover(context.Background()); err != nil {
+	if err := rec.Adopt(context.Background(), h.target.ID); err != nil {
 		t.Fatal(err)
 	}
 	if h.kinds(list[0].ID)["recorder_restarted"] != 1 {

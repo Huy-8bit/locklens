@@ -23,9 +23,9 @@ import (
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/lib/hostmetrics"
-	"github.com/locklens/locklens/internal/lib/postgres"
 	"github.com/locklens/locklens/internal/lib/secret"
 	"github.com/locklens/locklens/internal/repository"
+	"github.com/locklens/locklens/internal/targetdb"
 )
 
 // Input is a create or update request. DSN may be empty on update to keep
@@ -44,7 +44,17 @@ type Input struct {
 	// Environment labels the target (production, staging, …); empty means
 	// "default" on create and keeps the stored value on update.
 	Environment string `json:"environment"`
+	// DatabaseScope says which databases tables, indexes, the catalog, and
+	// recommendations are collected for: "connected" (the connection
+	// string's database, the default), "all" (every database LockLens may
+	// connect to, at most MaxDatabases), or "list" (Databases). Empty keeps
+	// the stored value on update.
+	DatabaseScope string   `json:"database_scope"`
+	Databases     []string `json:"databases"`
 }
+
+// MaxDatabases bounds the databases collected per instance.
+const MaxDatabases = 20
 
 // envPattern matches the store's CHECK constraint on targets.environment.
 var envPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
@@ -77,6 +87,8 @@ type View struct {
 	MaxConnections   int        `json:"max_connections"`
 	NodeExporterURL  *string    `json:"node_exporter_url"`
 	Environment      string     `json:"environment"`
+	DatabaseScope    string     `json:"database_scope"`
+	Databases        []string   `json:"databases"`
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 	Status           StatusView `json:"status"`
@@ -101,14 +113,14 @@ type Reloader interface{ Reload() }
 
 // Service implements target management.
 type Service struct {
-	store   *repository.Store
+	store   Store
 	box     *secret.Box
 	reload  Reloader
 	version string
 }
 
 // NewService returns a service.
-func NewService(store *repository.Store, box *secret.Box, reload Reloader, version string) *Service {
+func NewService(store Store, box *secret.Box, reload Reloader, version string) *Service {
 	return &Service{store: store, box: box, reload: reload, version: version}
 }
 
@@ -145,6 +157,20 @@ func (s *Service) validate(in *Input, requireDSN bool) (config.Target, error) {
 	in.Environment = strings.ToLower(strings.TrimSpace(in.Environment))
 	if in.Environment != "" && !envPattern.MatchString(in.Environment) {
 		fields["environment"] = "lowercase letters, digits, - or _, at most 40 characters"
+	}
+	switch in.DatabaseScope {
+	case "", repository.DatabaseConnected, repository.DatabaseAll:
+	case repository.DatabaseList:
+		if len(in.Databases) == 0 || len(in.Databases) > MaxDatabases {
+			fields["databases"] = fmt.Sprintf("list 1 to %d databases", MaxDatabases)
+		}
+		for _, d := range in.Databases {
+			if d == "" || len(d) > 63 {
+				fields["databases"] = "database names have 1 to 63 characters"
+			}
+		}
+	default:
+		fields["database_scope"] = "must be connected, all, or list"
 	}
 	if in.MaxConnections < 1 || in.MaxConnections > 5 {
 		fields["max_connections"] = "must be between 1 and 5"
@@ -192,7 +218,8 @@ func (s *Service) Create(ctx context.Context, in Input) (View, error) {
 	t, err := s.store.CreateTarget(ctx, repository.Target{Name: in.Name, Description: in.Description, DSNCiphertext: ct,
 		DisplayHost: tgt.Host, DisplayPort: int(tgt.Port), DisplayDatabase: tgt.Database, DisplayUser: tgt.User,
 		Enabled: enabled, IntervalSeconds: in.IntervalSeconds, QueryTextEnabled: in.QueryTextEnabled == nil || *in.QueryTextEnabled,
-		MaxConnections: in.MaxConnections, NodeExporterURL: in.NodeExporterURL, Environment: in.Environment})
+		MaxConnections: in.MaxConnections, NodeExporterURL: in.NodeExporterURL, Environment: in.Environment,
+		DatabaseScope: in.DatabaseScope, Databases: in.Databases})
 	if err != nil {
 		return View{}, err
 	}
@@ -219,6 +246,12 @@ func (s *Service) Update(ctx context.Context, id int64, in Input) (View, error) 
 	}
 	if in.Environment != "" {
 		t.Environment = in.Environment
+	}
+	if in.DatabaseScope != "" {
+		t.DatabaseScope, t.Databases = in.DatabaseScope, in.Databases
+		if in.DatabaseScope != repository.DatabaseList {
+			t.Databases = nil
+		}
 	}
 	if in.Enabled != nil {
 		t.Enabled = *in.Enabled
@@ -299,7 +332,10 @@ func toView(t repository.Target, st repository.TargetStatus) View {
 	v := View{ID: t.ID, Name: t.Name, Description: t.Description, Host: t.DisplayHost, Port: t.DisplayPort,
 		Database: t.DisplayDatabase, User: t.DisplayUser, Enabled: t.Enabled, IntervalSeconds: t.IntervalSeconds,
 		QueryTextEnabled: t.QueryTextEnabled, MaxConnections: t.MaxConnections, NodeExporterURL: t.NodeExporterURL,
-		Environment: t.Environment, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt}
+		Environment: t.Environment, CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt, DatabaseScope: t.DatabaseScope, Databases: t.Databases}
+	if v.Databases == nil {
+		v.Databases = []string{}
+	}
 	v.Status.State = st.State
 	if v.Status.State == "" {
 		v.Status.State = collector.StatePending
@@ -333,7 +369,7 @@ type TestResult struct {
 	DurationMS   int64                 `json:"duration_ms"`
 	Target       string                `json:"target"`
 	Capabilities *observe.Capabilities `json:"capabilities"`
-	Checks       []postgres.Check      `json:"checks"`
+	Checks       []targetdb.Check      `json:"checks"`
 	Error        *string               `json:"error"`
 	Hint         *string               `json:"hint"`
 }
@@ -357,15 +393,15 @@ func (s *Service) Test(ctx context.Context, id int64, dsn string) (TestResult, e
 		return TestResult{}, &ValidationError{Fields: map[string]string{"dsn": err.Error()}}
 	}
 	cfg.MaxConns = 1
-	res := TestResult{Target: config.TargetOf(cfg).String(), Checks: []postgres.Check{}}
+	res := TestResult{Target: config.TargetOf(cfg).String(), Checks: []targetdb.Check{}}
 	start := time.Now()
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	c, err := postgres.Connect(cctx, cfg, red, model.Tool{Name: "locklens", Version: s.version})
+	c, err := targetdb.Connect(cctx, cfg, red, model.Tool{Name: "locklens", Version: s.version})
 	if err != nil {
 		msg := strings.Join(strings.Fields(red.String(err.Error())), " ")
 		res.Error = &msg
-		if h := postgres.Hint(err); h != "" {
+		if h := targetdb.Hint(err); h != "" {
 			res.Hint = &h
 		}
 		res.DurationMS = time.Since(start).Milliseconds()
@@ -375,7 +411,7 @@ func (s *Service) Test(ctx context.Context, id int64, dsn string) (TestResult, e
 	var caps observe.Capabilities
 	if err := c.ReadOnly(cctx, func(ctx context.Context, tx pgx.Tx, _ []int32) error {
 		var err error
-		caps, err = collector.DetectCapabilities(ctx, tx)
+		caps, err = targetdb.DetectCapabilities(ctx, tx)
 		return err
 	}); err != nil {
 		msg := strings.Join(strings.Fields(err.Error()), " ")
@@ -384,10 +420,10 @@ func (s *Service) Test(ctx context.Context, id int64, dsn string) (TestResult, e
 		return res, nil
 	}
 	res.Capabilities = &caps
-	res.Checks = c.Diagnose(cctx, postgres.Options{QueryMaxLength: 200, MinTxAge: time.Minute})
+	res.Checks = c.Diagnose(cctx, targetdb.Options{QueryMaxLength: 200, MinTxAge: time.Minute})
 	res.OK = true
 	for _, ch := range res.Checks {
-		if ch.Status == postgres.StatusFail {
+		if ch.Status == targetdb.StatusFail {
 			res.OK = false
 		}
 	}

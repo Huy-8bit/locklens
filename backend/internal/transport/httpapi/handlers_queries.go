@@ -110,7 +110,7 @@ func (s *Server) listQueries(w http.ResponseWriter, r *http.Request) {
 		}
 		resp["previous_coverage"] = prevCov
 	}
-	if v, ok := s.view(t.ID); ok && v.Capabilities != nil {
+	if v, ok := s.view(r, t.ID); ok && v.Capabilities != nil {
 		resp["available"] = v.Capabilities.StatStatements
 		resp["unavailable_reason"] = v.Capabilities.StatementsReason
 	} else if t.Status.Capabilities != nil {
@@ -145,7 +145,7 @@ func (s *Server) getQuery(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	step, err := metricStep(r, from, to, s.statementsStep(t))
+	step, err := metricStep(r, from, to, s.statementsStep(r, t))
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -204,7 +204,7 @@ func (s *Server) queryCommands(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("include_monitoring") == "true" {
 		exclude = ""
 	}
-	step := stepFor(from, to, s.statementsStep(t))
+	step := stepFor(from, to, s.statementsStep(r, t))
 	totals, buckets, coverage, err := s.d.Store.CommandBreakdown(r.Context(), t.ID, from, to, step, exclude)
 	if err != nil {
 		s.internal(w, r, err)
@@ -217,7 +217,7 @@ func (s *Server) queryCommands(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := map[string]any{"from": from, "to": to, "step_seconds": step.Seconds(), "commands": observe.Commands,
 		"totals": totals, "buckets": buckets, "coverage_buckets": coverage, "coverage": cov, "monitoring_user": t.User, "monitoring_hidden": exclude != ""}
-	if v, ok := s.view(t.ID); ok && v.Capabilities != nil {
+	if v, ok := s.view(r, t.ID); ok && v.Capabilities != nil {
 		resp["available"] = v.Capabilities.StatStatements
 		resp["unavailable_reason"] = v.Capabilities.StatementsReason
 	} else if t.Status.Capabilities != nil {

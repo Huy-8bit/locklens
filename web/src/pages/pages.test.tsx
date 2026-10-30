@@ -31,6 +31,8 @@ const target: Target = {
   max_connections: 2,
   node_exporter_url: null,
   environment: 'lab',
+  database_scope: 'connected',
+  databases: [],
   created_at: '2026-10-24T00:00:00Z',
   updated_at: '2026-10-24T00:00:00Z',
   status: { state: 'healthy', server_version: '18.6', is_standby: false, capabilities: null, collectors: {}, last_attempt_at: null, last_success_at: null, last_error: null, last_error_at: null, freshness_seconds: 1 },

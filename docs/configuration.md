@@ -47,6 +47,7 @@ All problems are reported at once.
 | `LOCKLENS_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `LOCKLENS_LOG_FORMAT` | `text` | `text` or `json` (stderr). Logs never contain DSNs, passwords, or query text. |
 | `LOCKLENS_SHUTDOWN_TIMEOUT` | `10s` | Grace period for in-flight requests and collectors on SIGINT/SIGTERM. |
+| `LOCKLENS_SERVER_ID` | host name + random suffix | Names this server among the servers sharing the store (shown in Settings → Data and storage). Unique per running server. See [Several servers](#several-servers). |
 
 ## Users and the environment administrator
 
@@ -100,6 +101,7 @@ Per target:
 | SQL text | on | | Collected by default. Turning it off deletes the stored statement texts of that target. |
 | node_exporter URL | unset | `http(s)://` | Optional host metrics. |
 | Enabled | on | | Disabled targets keep their history but are not contacted. |
+| Databases | connection string's | `connected`, `all` (at most 20), or `list` | Where tables, indexes, the catalog, and recommendations come from. Each other database uses one more connection with the same credentials; the role needs `CONNECT` on it. |
 
 Use a dedicated login role with `pg_read_all_stats` (or `pg_monitor`); a
 superuser is not needed. See
@@ -137,6 +139,43 @@ reading rows, and `sql` enables the read-only SQL editor. It is applied only whi
 configuration yet; a failure (for example an unreachable server) is logged and
 does not stop startup. The Docker lab uses
 [demo/targets.json](../demo/targets.json).
+
+## Several servers
+
+Several `locklens server` processes may share one monitoring store (same
+`LOCKLENS_STORE_DSN` and `LOCKLENS_MASTER_KEY`). They split the instances
+between them by leases, run each once-per-cluster job (retention, rollups,
+baselines, the optimizer, notification reminders) on one of them, and pass
+browser events to each other through the store, so a load balancer can send
+any request to any server (use sticky sessions so that a running SQL
+workspace statement can be cancelled). Nothing else needs configuring; when a
+server stops, the others take its instances over within about a minute.
+
+## Log agent
+
+`locklens agent` runs on the database host and ships events from the
+PostgreSQL server log (see [collectors.md](collectors.md#server-log-agent)).
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `LOCKLENS_AGENT_TOKEN` (or `--token-file`) | required | An API token of scope `ingest` for the instance (Settings → API tokens). Never passed as a flag. |
+| `--server` / `LOCKLENS_SERVER_URL` | required | The LockLens URL. `http://` is accepted only for a local server unless `--allow-http`. |
+| `--log` | required | Log file, directory (every `*.log`, `*.csv`, `*.json`), or glob; repeatable. |
+| `--format` | `auto` | `jsonlog`, `csvlog`, `stderr`, or `auto` from the file extension. |
+| `--log-line-prefix` | `%m [%p] ` | The server's `log_line_prefix`, for stderr logs. |
+| `--state-dir` | `locklens-agent` | Read positions and the spool. |
+| `--from-start` | off | On the first start, read existing files from the beginning (otherwise from their end). |
+| `--flush-interval` | `5s` | Longest time an event waits before it is sent. |
+| `--max-spool-bytes` | 256 MiB | Spool limit while the server cannot be reached; the oldest batches are dropped beyond it. |
+
+The events depend on the server's logging settings, which LockLens never
+changes: `logging_collector`, `log_min_duration_statement` (slow statements),
+`auto_explain` with `auto_explain.log_min_duration` (plans; add
+`auto_explain.log_format = json` for structured plans), `log_lock_waits`,
+`log_autovacuum_min_duration`, `log_temp_files`, `log_checkpoints`. With
+`compute_query_id = on` and jsonlog or csvlog, events carry the statement's
+`queryid`, which links them to pg_stat_statements. The instance's **Logs**
+tab shows which of these are set.
 
 ## Rule thresholds
 

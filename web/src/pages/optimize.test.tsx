@@ -12,6 +12,7 @@ afterEach(() => vi.unstubAllGlobals())
 const rec = (over: Partial<Recommendation>): Recommendation => ({
   id: 1,
   target_id: 1,
+  database: 'app',
   kind: 'missing_index',
   key: 'shop.orders(customer_id)',
   status: 'open',
@@ -51,7 +52,7 @@ const overview: OptimizerResponse = {
     rec({ id: 2, kind: 'unused_index', key: 'shop.orders_status_idx', title: 'Unused index shop.orders_status_idx (50 MiB)', severity: 'info', benefit: 7, ddl: 'DROP INDEX CONCURRENTLY shop.orders_status_idx;', details: { index: 'shop.orders_status_idx', size_bytes: 50 << 20 } }),
     rec({ id: 3, kind: 'fk_without_index', status: 'verified', title: 'Index the foreign key items_order_fk', benefit: 20, before_ms: 100, after_ms: 18, applied_at: '2026-10-28T10:00:00Z', applied_how: 'index shop.items_order_idx was created' }),
   ],
-  targets: [{ target_id: 1, target_name: 'orders-db', catalog_at: '2026-10-29T11:55:00Z', database: 'app', query_text_enabled: true, hypopg_enabled: false, hypopg_installed: '1.4.1', sql_enabled: true, warnings: [] }],
+  targets: [{ target_id: 1, target_name: 'orders-db', catalog_at: '2026-10-29T11:55:00Z', database: 'app', databases: ['app'], query_text_enabled: true, hypopg_enabled: false, hypopg_installed: '1.4.1', sql_enabled: true, warnings: [] }],
   counts: { open: 2, verified: 1 },
   parser_available: true,
   note: 'LockLens never changes the database.',

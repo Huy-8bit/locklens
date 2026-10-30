@@ -2,11 +2,11 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { ApiError } from '../api/client'
 import { useSaveTarget, useTarget, useTestConnection } from '../api/hooks'
-import type { Target, TargetInput, TestResult } from '../api/types'
+import type { DatabaseScope, Target, TargetInput, TestResult } from '../api/types'
 import { PageHeader } from '../components/Shell'
 import { Badge, Button, Card, ErrorBox, Field, inputCls, Load } from '../components/ui'
 
-const empty: TargetInput = { name: '', description: '', dsn: '', enabled: true, interval_seconds: 10, query_text_enabled: true, max_connections: 2, node_exporter_url: null, environment: 'default' }
+const empty: TargetInput = { name: '', description: '', dsn: '', enabled: true, interval_seconds: 10, query_text_enabled: true, max_connections: 2, node_exporter_url: null, environment: 'default', database_scope: 'connected', databases: [] }
 
 function TestResultView({ r }: { r: TestResult }) {
   return (
@@ -40,6 +40,8 @@ function TargetForm({ id, initial }: { id?: number; initial: TargetInput }) {
   const save = useSaveTarget(id)
   const test = useTestConnection()
   const [input, setInput] = useState<TargetInput>(initial)
+  // The list is edited as text so separators can be typed.
+  const [databasesText, setDatabasesText] = useState(initial.databases.join(', '))
   const set = <K extends keyof TargetInput>(k: K, v: TargetInput[K]) => setInput((x) => ({ ...x, [k]: v }))
   const fields = save.error instanceof ApiError ? save.error.fields : {}
   const submit = (e: FormEvent) => {
@@ -97,6 +99,22 @@ function TargetForm({ id, initial }: { id?: number; initial: TargetInput }) {
           <Field label="node_exporter URL (optional)" hint="Host CPU, memory, and disk; the exporter must run on the database host." error={fields.node_exporter_url}>
             <input className={`${inputCls} font-mono`} placeholder="http://db-host:9100/metrics" value={input.node_exporter_url ?? ''} onChange={(e) => set('node_exporter_url', e.target.value || null)} />
           </Field>
+          <Field label="Databases" hint="Tables, indexes, the schema catalog, and recommendations are per database; sessions, statements, and replication are read once for the instance either way." error={fields.database_scope ?? fields.databases}>
+            <select className={`${inputCls} w-auto`} value={input.database_scope} onChange={(e) => set('database_scope', e.target.value as DatabaseScope)}>
+              <option value="connected">Only the database of the connection string</option>
+              <option value="all">Every database the role can connect to (at most 20)</option>
+              <option value="list">The connection string's database and these…</option>
+            </select>
+          </Field>
+          {input.database_scope === 'list' && (
+            <Field label="Other databases" hint="Comma-separated names. The role needs CONNECT on each." error={fields.databases}>
+              <input className={`${inputCls} font-mono`} placeholder="reports, billing" value={databasesText}
+                onChange={(e) => {
+                  setDatabasesText(e.target.value)
+                  set('databases', e.target.value.split(',').map((d) => d.trim()).filter(Boolean))
+                }} />
+            </Field>
+          )}
           <label className="flex items-start gap-2 text-sm">
             <input type="checkbox" className="mt-1" checked={input.query_text_enabled} onChange={(e) => set('query_text_enabled', e.target.checked)} />
             <span>
@@ -118,7 +136,7 @@ function TargetForm({ id, initial }: { id?: number; initial: TargetInput }) {
 }
 
 function fromTarget(t: Target): TargetInput {
-  return { name: t.name, description: t.description, dsn: '', enabled: t.enabled, interval_seconds: t.interval_seconds, query_text_enabled: t.query_text_enabled, max_connections: t.max_connections, node_exporter_url: t.node_exporter_url, environment: t.environment }
+  return { name: t.name, description: t.description, dsn: '', enabled: t.enabled, interval_seconds: t.interval_seconds, query_text_enabled: t.query_text_enabled, max_connections: t.max_connections, node_exporter_url: t.node_exporter_url, environment: t.environment, database_scope: t.database_scope, databases: t.databases }
 }
 
 export default function TargetFormPage() {

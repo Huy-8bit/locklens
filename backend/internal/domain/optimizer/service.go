@@ -17,6 +17,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/workspace"
 	"github.com/locklens/locklens/internal/lib/sqlparse"
 	"github.com/locklens/locklens/internal/repository"
+	"github.com/locklens/locklens/internal/targetdb/investigate"
 )
 
 // Lifecycle settings.
@@ -37,21 +38,16 @@ const (
 	regressedRatio = 1.2
 )
 
-// Events receives recommendation changes for the browsers.
-type Events interface {
-	Publish(kind string, payload any)
-}
-
 // Service runs the optimizer over the stored catalog and workload.
 type Service struct {
-	store     *repository.Store
-	workspace *workspace.Service
+	store     Store
+	workspace Workspace
 	events    Events
 	log       *slog.Logger
 }
 
 // NewService returns an optimizer service.
-func NewService(store *repository.Store, ws *workspace.Service, events Events, log *slog.Logger) *Service {
+func NewService(store Store, ws Workspace, events Events, log *slog.Logger) *Service {
 	return &Service{store: store, workspace: ws, events: events, log: log}
 }
 
@@ -81,14 +77,18 @@ func (s *Service) Run(ctx context.Context, every time.Duration) {
 	}
 }
 
-// Refresh runs one optimizer pass for a target: it records which
-// recommendations were applied (from the catalog), measures applied ones,
-// and stores the current recommendations. It returns how many it derived.
-// ErrNotFound means no catalog was collected yet.
+// Refresh runs one optimizer pass for a target, over the catalog of each of
+// its databases: it records which recommendations were applied (from the
+// catalog), measures applied ones, and stores the current recommendations.
+// It returns how many it derived. ErrNotFound means no catalog was
+// collected yet.
 func (s *Service) Refresh(ctx context.Context, t repository.Target, now time.Time) (int, error) {
-	cat, err := s.store.LatestCatalog(ctx, t.ID)
+	cats, err := s.store.Catalogs(ctx, t.ID)
 	if err != nil {
 		return 0, err
+	}
+	if len(cats) == 0 {
+		return 0, repository.ErrNotFound
 	}
 	stmts, err := s.store.StatementWorkload(ctx, t.ID, now.Add(-workloadWindow), maxStatements, t.QueryTextEnabled)
 	if err != nil {
@@ -116,20 +116,59 @@ func (s *Service) Refresh(ctx context.Context, t repository.Target, now time.Tim
 		}
 		parsedPlans[id] = ParsedPlan{TopRows: pp.Nodes[0].Rows, Relations: rels, Analyzed: pp.Analyzed}
 	}
-	if err := s.lifecycle(ctx, t.ID, cat, now); err != nil {
-		return 0, err
+	derived := 0
+	for _, cat := range cats {
+		if err := s.lifecycle(ctx, t.ID, cat, now); err != nil {
+			return 0, err
+		}
+		recs := Analyze(Input{Now: now, Catalog: cat, Statements: databaseStatements(stmts, cat.DatName, len(cats) == 1),
+			Plans: parsedPlans, Parser: sqlparse.Available()})
+		if err := s.store.SyncRecommendations(ctx, t.ID, cat.DatName, now, recs); err != nil {
+			return 0, err
+		}
+		derived += len(recs)
 	}
-	recs := Analyze(Input{Now: now, Catalog: cat, Statements: stmts, Plans: parsedPlans, Parser: sqlparse.Available()})
-	if err := s.store.SyncRecommendations(ctx, t.ID, now, recs); err != nil {
-		return 0, err
-	}
-	return len(recs), nil
+	return derived, s.resolveDropped(ctx, t.ID, cats, now)
 }
 
-// lifecycle detects applied recommendations in the catalog and judges the
-// effect of applied ones on their statements.
+// databaseStatements are the statements that ran in a database; with a
+// single catalog, statements of an unknown database count too.
+func databaseStatements(stmts []repository.WorkloadStatement, datname string, only bool) []repository.WorkloadStatement {
+	var out []repository.WorkloadStatement
+	for _, st := range stmts {
+		if st.DatName == datname || only && st.DatName == "" {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+// resolveDropped resolves the open recommendations of databases that no
+// longer have a catalog (they left the target's scope).
+func (s *Service) resolveDropped(ctx context.Context, targetID int64, cats []observe.Catalog, now time.Time) error {
+	open, err := s.store.ListRecommendations(ctx, repository.RecommendationFilter{TargetID: targetID, Statuses: []string{repository.RecOpen}})
+	if err != nil {
+		return err
+	}
+	done := map[string]bool{}
+	for _, c := range cats {
+		done[c.DatName] = true
+	}
+	for _, r := range open {
+		if !done[r.Database] {
+			done[r.Database] = true
+			if err := s.store.SyncRecommendations(ctx, targetID, r.Database, now, nil); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// lifecycle detects applied recommendations of a database in its catalog
+// and judges the effect of applied ones on their statements.
 func (s *Service) lifecycle(ctx context.Context, targetID int64, cat observe.Catalog, now time.Time) error {
-	recs, err := s.store.ListRecommendations(ctx, repository.RecommendationFilter{TargetID: targetID,
+	recs, err := s.store.ListRecommendations(ctx, repository.RecommendationFilter{TargetID: targetID, Database: &cat.DatName,
 		Statuses: []string{repository.RecOpen, repository.RecAccepted, repository.RecDismissed, repository.RecApplied,
 			repository.RecVerified, repository.RecNoEffect, repository.RecRegressed}})
 	if err != nil {
@@ -303,11 +342,11 @@ func (s *Service) publish(targetID, id int64, status string) {
 // WhatIfResult is the outcome of a what-if check of an index
 // recommendation.
 type WhatIfResult struct {
-	At         time.Time                   `json:"at"`
-	Index      string                      `json:"index"`
-	Statements []WhatIfStatementResult     `json:"statements"`
-	Summary    string                      `json:"summary"`
-	Raw        []workspace.WhatIfStatement `json:"-"`
+	At         time.Time                     `json:"at"`
+	Index      string                        `json:"index"`
+	Statements []WhatIfStatementResult       `json:"statements"`
+	Summary    string                        `json:"summary"`
+	Raw        []investigate.WhatIfStatement `json:"-"`
 }
 
 // WhatIfStatementResult is one statement of a what-if check.
@@ -335,6 +374,11 @@ func (s *Service) WhatIf(ctx context.Context, t repository.Target, recID int64, 
 	if r.Kind != KindMissingIndex && r.Kind != KindFKIndex {
 		return WhatIfResult{}, ErrNotIndex
 	}
+	// The workspace connects to the target's own database only.
+	if r.Database != "" && r.Database != t.DisplayDatabase {
+		return WhatIfResult{}, &workspace.Error{Code: "unsupported", Message: fmt.Sprintf(
+			"What-if checks run on the connected database (%s); this recommendation is for database %s.", t.DisplayDatabase, r.Database)}
+	}
 	var d struct {
 		Table      string         `json:"table"`
 		Columns    []string       `json:"columns"`
@@ -360,12 +404,12 @@ func (s *Service) WhatIf(ctx context.Context, t repository.Target, recID int64, 
 		return WhatIfResult{}, &workspace.Error{Code: "unsupported", Message: "The statements' texts are not collected for this instance (query text collection is off), so they cannot be planned."}
 	}
 	out, err := s.workspace.Run(ctx, t.ID, owner, "whatif", requestID, func(ctx context.Context, tx pgx.Tx) (any, error) {
-		return workspace.WhatIfIndex(ctx, tx, create, sqls)
+		return investigate.WhatIfIndex(ctx, tx, create, sqls)
 	})
 	if err != nil {
 		return WhatIfResult{}, err
 	}
-	raw := out.([]workspace.WhatIfStatement)
+	raw := out.([]investigate.WhatIfStatement)
 	res := WhatIfResult{At: time.Now().UTC(), Index: create, Raw: raw}
 	used, better, failed := 0, 0, 0
 	for i, w := range raw {

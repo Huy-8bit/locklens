@@ -20,7 +20,7 @@ import (
 	"github.com/locklens/locklens/internal/config"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/report"
-	"github.com/locklens/locklens/internal/lib/postgres"
+	"github.com/locklens/locklens/internal/targetdb"
 )
 
 // A. Healthy database.
@@ -680,13 +680,13 @@ func TestSessionsDisappearingDuringCollection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	collector, err := postgres.Connect(ctx, cfg, red, model.Tool{Name: "locklens", Version: "it"})
+	collector, err := targetdb.Connect(ctx, cfg, red, model.Tool{Name: "locklens", Version: "it"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	deadline = time.Now().Add(4 * time.Second)
 	for time.Now().Before(deadline) {
-		snap, err := collector.Collect(ctx, postgres.Options{QueryMaxLength: 200, MinTxAge: time.Minute})
+		snap, err := collector.Collect(ctx, targetdb.Options{QueryMaxLength: 200, MinTxAge: time.Minute})
 		if err != nil {
 			t.Errorf("in-process collect during churn: %v", err)
 			continue

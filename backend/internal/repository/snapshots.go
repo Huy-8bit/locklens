@@ -1,14 +1,17 @@
 package repository
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/locklens/locklens/internal/domain/observe"
+	"github.com/locklens/locklens/internal/repository/queries"
 )
 
 // SnapshotMeta describes a stored activity snapshot.
@@ -22,10 +25,7 @@ type SnapshotMeta struct {
 
 // ListActivitySnapshots returns snapshot metadata in (from, to], newest first.
 func (s *Store) ListActivitySnapshots(ctx context.Context, targetID int64, from, to time.Time, onlyBlocking bool, limit int) ([]SnapshotMeta, error) {
-	rows, err := s.pool.Query(ctx, `
-SELECT id, ts, blocked_sessions, root_blockers, long_transactions FROM activity_snapshots
-WHERE target_id = $1 AND ts > $2 AND ts <= $3 AND (NOT $4 OR blocked_sessions > 0)
-ORDER BY ts DESC LIMIT $5`, targetID, from.UTC(), to.UTC(), onlyBlocking, limit)
+	rows, err := s.pool.Query(ctx, queries.ListActivitySnapshots, targetID, from.UTC(), to.UTC(), onlyBlocking, limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -44,9 +44,7 @@ ORDER BY ts DESC LIMIT $5`, targetID, from.UTC(), to.UTC(), onlyBlocking, limit)
 func (s *Store) GetActivitySnapshot(ctx context.Context, targetID, id int64) (SnapshotMeta, json.RawMessage, error) {
 	var m SnapshotMeta
 	var raw json.RawMessage
-	err := s.pool.QueryRow(ctx, `
-SELECT id, ts, blocked_sessions, root_blockers, long_transactions, snapshot FROM activity_snapshots
-WHERE target_id = $1 AND id = $2`, targetID, id).Scan(&m.ID, &m.At, &m.BlockedSessions, &m.RootBlockers, &m.LongTransactions, &raw)
+	err := s.pool.QueryRow(ctx, queries.GetActivitySnapshot, targetID, id).Scan(&m.ID, &m.At, &m.BlockedSessions, &m.RootBlockers, &m.LongTransactions, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return m, nil, ErrNotFound
 	}
@@ -57,9 +55,7 @@ WHERE target_id = $1 AND id = $2`, targetID, id).Scan(&m.ID, &m.At, &m.BlockedSe
 func (s *Store) LatestActivitySnapshot(ctx context.Context, targetID int64) (SnapshotMeta, json.RawMessage, error) {
 	var m SnapshotMeta
 	var raw json.RawMessage
-	err := s.pool.QueryRow(ctx, `
-SELECT id, ts, blocked_sessions, root_blockers, long_transactions, snapshot FROM activity_snapshots
-WHERE target_id = $1 ORDER BY ts DESC LIMIT 1`, targetID).Scan(&m.ID, &m.At, &m.BlockedSessions, &m.RootBlockers, &m.LongTransactions, &raw)
+	err := s.pool.QueryRow(ctx, queries.LatestActivitySnapshot, targetID).Scan(&m.ID, &m.At, &m.BlockedSessions, &m.RootBlockers, &m.LongTransactions, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return m, nil, ErrNotFound
 	}
@@ -70,7 +66,7 @@ WHERE target_id = $1 ORDER BY ts DESC LIMIT 1`, targetID).Scan(&m.ID, &m.At, &m.
 func (s *Store) LatestState(ctx context.Context, targetID int64, kind string) (time.Time, json.RawMessage, error) {
 	var ts time.Time
 	var raw json.RawMessage
-	err := s.pool.QueryRow(ctx, `SELECT ts, payload FROM state_snapshots WHERE target_id = $1 AND kind = $2 ORDER BY ts DESC LIMIT 1`,
+	err := s.pool.QueryRow(ctx, queries.LatestState,
 		targetID, kind).Scan(&ts, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ts, nil, ErrNotFound
@@ -78,33 +74,80 @@ func (s *Store) LatestState(ctx context.Context, targetID int64, kind string) (t
 	return ts, raw, s.red.Error(err)
 }
 
-// LatestTableHealth rebuilds the newest table health collection from rows.
+// LatestTableHealth rebuilds the newest table health collection of every
+// database from rows: the tables and indexes of all of them, with the
+// cluster-wide data (database ages, settings) of the main database.
 func (s *Store) LatestTableHealth(ctx context.Context, targetID int64) (*observe.TableHealth, error) {
-	ts, raw, err := s.LatestState(ctx, targetID, "table_health")
-	if err != nil {
-		return nil, err
-	}
-	var meta struct {
-		DatName    string                `json:"datname"`
-		SizeSource string                `json:"size_source"`
-		Databases  []observe.DatabaseAge `json:"databases"`
-		Settings   map[string]string     `json:"settings"`
-		Warnings   []string              `json:"warnings"`
-	}
-	if err := json.Unmarshal(raw, &meta); err != nil {
-		return nil, err
-	}
-	h := &observe.TableHealth{At: ts.UTC(), DatName: meta.DatName, SizeSource: meta.SizeSource, Databases: meta.Databases,
-		Settings: meta.Settings, Warnings: meta.Warnings, Tables: []observe.TableStat{}, Indexes: []observe.IndexStat{}}
-	rows, err := s.pool.Query(ctx, `
-SELECT relid, datname, schemaname, relname, n_live_tup, n_dead_tup, n_mod_since_analyze, last_vacuum, last_autovacuum,
-       last_analyze, last_autoanalyze, vacuum_count, autovacuum_count, analyze_count, autoanalyze_count,
-       table_bytes, indexes_bytes, total_bytes, frozenxid_age
-FROM table_stats WHERE target_id = $1 AND ts = $2 ORDER BY total_bytes DESC NULLS LAST`, targetID, ts)
+	rows, err := s.pool.Query(ctx, queries.LatestTableHealthStates, targetID)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
-	h.Tables, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (observe.TableStat, error) {
+	type state struct {
+		ts   time.Time
+		meta tableHealthMeta
+	}
+	states, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (state, error) {
+		var st state
+		var raw []byte
+		if err := r.Scan(&st.ts, &raw); err != nil {
+			return st, err
+		}
+		return st, json.Unmarshal(raw, &st.meta)
+	})
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	if len(states) == 0 {
+		return nil, ErrNotFound
+	}
+	// The main database is the one that read cluster-wide data; the newest
+	// collection stands in for it before one did.
+	main, newest := -1, 0
+	for i, st := range states {
+		if st.ts.After(states[newest].ts) {
+			newest = i
+		}
+		if len(st.meta.Databases) > 0 && (main < 0 || st.ts.After(states[main].ts)) {
+			main = i
+		}
+	}
+	if main < 0 {
+		main = newest
+	}
+	m := states[main]
+	h := &observe.TableHealth{At: m.ts.UTC(), DatName: m.meta.DatName, SizeSource: m.meta.SizeSource, Databases: m.meta.Databases,
+		Settings: m.meta.Settings, Warnings: m.meta.Warnings, Tables: []observe.TableStat{}, Indexes: []observe.IndexStat{}}
+	for _, st := range states {
+		if st.ts.After(h.At) {
+			h.At = st.ts.UTC()
+		}
+		tables, indexes, err := s.tableHealthRows(ctx, targetID, st.ts)
+		if err != nil {
+			return nil, err
+		}
+		h.Tables, h.Indexes = append(h.Tables, tables...), append(h.Indexes, indexes...)
+	}
+	slices.SortStableFunc(h.Tables, func(a, b observe.TableStat) int { return cmpDesc(a.TotalBytes, b.TotalBytes) })
+	slices.SortStableFunc(h.Indexes, func(a, b observe.IndexStat) int { return cmpDesc(a.Bytes, b.Bytes) })
+	return h, nil
+}
+
+// tableHealthMeta is the state snapshot of a table health collection.
+type tableHealthMeta struct {
+	DatName    string                `json:"datname"`
+	SizeSource string                `json:"size_source"`
+	Databases  []observe.DatabaseAge `json:"databases"`
+	Settings   map[string]string     `json:"settings"`
+	Warnings   []string              `json:"warnings"`
+}
+
+// tableHealthRows returns the table and index rows of one collection.
+func (s *Store) tableHealthRows(ctx context.Context, targetID int64, ts time.Time) ([]observe.TableStat, []observe.IndexStat, error) {
+	rows, err := s.pool.Query(ctx, queries.LatestTableStats, targetID, ts)
+	if err != nil {
+		return nil, nil, s.red.Error(err)
+	}
+	tables, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (observe.TableStat, error) {
 		var t observe.TableStat
 		err := r.Scan(&t.RelID, &t.DatName, &t.Schema, &t.Name, &t.LiveTuples, &t.DeadTuples, &t.ModSinceAnalyze,
 			&t.LastVacuum, &t.LastAutovacuum, &t.LastAnalyze, &t.LastAutoanalyze, &t.VacuumCount, &t.AutovacuumCount,
@@ -112,24 +155,29 @@ FROM table_stats WHERE target_id = $1 AND ts = $2 ORDER BY total_bytes DESC NULL
 		return t, err
 	})
 	if err != nil {
-		return nil, s.red.Error(err)
+		return nil, nil, s.red.Error(err)
 	}
-	rows, err = s.pool.Query(ctx, `
-SELECT indexrelid, relid, schemaname, relname, indexrelname, idx_scan, index_bytes, is_unique, is_primary, is_constraint
-FROM index_stats WHERE target_id = $1 AND ts = $2 ORDER BY index_bytes DESC NULLS LAST`, targetID, ts)
+	rows, err = s.pool.Query(ctx, queries.LatestIndexStats, targetID, ts)
 	if err != nil {
-		return nil, s.red.Error(err)
+		return nil, nil, s.red.Error(err)
 	}
-	h.Indexes, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (observe.IndexStat, error) {
+	indexes, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (observe.IndexStat, error) {
 		var i observe.IndexStat
-		err := r.Scan(&i.IndexRelID, &i.RelID, &i.Schema, &i.Table, &i.Name, &i.Scans, &i.Bytes, &i.IsUnique, &i.IsPrimary, &i.IsConstraint)
+		err := r.Scan(&i.IndexRelID, &i.RelID, &i.DatName, &i.Schema, &i.Table, &i.Name, &i.Scans, &i.Bytes, &i.IsUnique, &i.IsPrimary, &i.IsConstraint)
 		return i, err
 	})
-	if h.Tables == nil {
-		h.Tables = []observe.TableStat{}
+	return tables, indexes, s.red.Error(err)
+}
+
+// cmpDesc orders known sizes largest first, unknown ones last.
+func cmpDesc(a, b *int64) int {
+	switch {
+	case a == nil && b == nil:
+		return 0
+	case a == nil:
+		return 1
+	case b == nil:
+		return -1
 	}
-	if h.Indexes == nil {
-		h.Indexes = []observe.IndexStat{}
-	}
-	return h, s.red.Error(err)
+	return cmp.Compare(*b, *a)
 }

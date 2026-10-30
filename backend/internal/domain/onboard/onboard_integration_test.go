@@ -17,6 +17,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/workspace"
 	"github.com/locklens/locklens/internal/lib/secret"
 	"github.com/locklens/locklens/internal/repository"
+	"github.com/locklens/locklens/internal/targetdb/investigate"
 )
 
 type noReload struct{}
@@ -114,11 +115,11 @@ func TestOneConnectionString(t *testing.T) {
 		t.Fatalf("workspace policy %+v %v", pol, err)
 	}
 	// The Explorer runs as the reader role, which cannot signal backends.
-	run := func(sql string) (workspace.Result, error) {
+	run := func(sql string) (investigate.Result, error) {
 		out, err := ws.Run(ctx, v.ID, "session", "sql", fmt.Sprintf("it-%d", time.Now().UnixNano()), func(c context.Context, tx pgx.Tx) (any, error) {
-			return workspace.Execute(c, tx, sql, "public", false)
+			return investigate.Execute(c, tx, sql, "public", false)
 		})
-		r, _ := out.(workspace.Result)
+		r, _ := out.(investigate.Result)
 		return r, err
 	}
 	r, err := run("SELECT current_user")

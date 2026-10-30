@@ -110,7 +110,7 @@ export function InvestigationView({ investigation: inv }: { investigation: Inves
             {inv.timeline.map((t, i) => (
               <li key={i} className="flex gap-2">
                 <span className="num w-36 shrink-0 text-muted">{time(t.at, { date: true })}</span>
-                <Badge tone={t.kind === 'anomaly' ? 'warn' : t.kind === 'gap' ? 'muted' : 'accent'}>{t.kind === 'anomaly' ? statementRule(t.rule_id ?? '').short : t.kind}</Badge>
+                <Badge tone={t.kind === 'anomaly' ? 'warn' : t.kind === 'gap' || t.kind === 'change' ? 'muted' : 'accent'}>{t.kind === 'anomaly' ? statementRule(t.rule_id ?? '').short : t.kind}</Badge>
                 <span className="min-w-0 text-ink-2">{t.summary}</span>
               </li>
             ))}

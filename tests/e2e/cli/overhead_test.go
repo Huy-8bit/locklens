@@ -11,7 +11,7 @@ import (
 
 	"github.com/locklens/locklens/internal/config"
 	"github.com/locklens/locklens/internal/domain/model"
-	"github.com/locklens/locklens/internal/lib/postgres"
+	"github.com/locklens/locklens/internal/targetdb"
 )
 
 // TestObserverOverheadSmoke repeatedly collects snapshots from a quiet
@@ -27,11 +27,11 @@ func TestObserverOverheadSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := postgres.Connect(ctx, cfg, red, model.Tool{Name: "locklens", Version: "it"})
+	c, err := targetdb.Connect(ctx, cfg, red, model.Tool{Name: "locklens", Version: "it"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts := postgres.Options{QueryMaxLength: 200, MinTxAge: time.Minute}
+	opts := targetdb.Options{QueryMaxLength: 200, MinTxAge: time.Minute}
 	for range warmup {
 		if _, err := c.Collect(ctx, opts); err != nil {
 			t.Fatal(err)

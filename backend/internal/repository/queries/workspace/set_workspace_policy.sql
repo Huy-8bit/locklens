@@ -1,0 +1,1 @@
+INSERT INTO workspace_policies(target_id,metadata_enabled,data_enabled,sql_enabled,history_enabled,hypopg_enabled,dsn_ciphertext) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(target_id) DO UPDATE SET metadata_enabled=$2,data_enabled=$3,sql_enabled=$4,history_enabled=$5,hypopg_enabled=$6,dsn_ciphertext=$7,updated_at=now()

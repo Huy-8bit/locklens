@@ -6,3 +6,5 @@ const available = false
 
 // Analyze returns ErrUnavailable: this build has no parser.
 func Analyze(string) (Analysis, error) { return Analysis{}, ErrUnavailable }
+
+func normalizeParsed(string) (string, string, bool) { return "", "", false }

@@ -8,8 +8,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/locklens/locklens/internal/domain/report"
-	"github.com/locklens/locklens/internal/lib/postgres"
 	"github.com/locklens/locklens/internal/lib/render"
+	"github.com/locklens/locklens/internal/targetdb"
 )
 
 // Terminal control used only when stdout is a TTY and the format is table:
@@ -69,7 +69,7 @@ func (a *app) watch(ctx context.Context, f reportFlags, interval time.Duration) 
 	}
 	tty := f.format == "table" && a.isTTY(a.stdout)
 
-	var collector *postgres.Collector
+	var collector *targetdb.Collector
 	defer func() {
 		if collector != nil {
 			collector.Close()
@@ -106,13 +106,13 @@ func (a *app) watch(ctx context.Context, f reportFlags, interval time.Duration) 
 
 		delay := interval - time.Since(started)
 		if err != nil {
-			if postgres.IsFatal(err) {
+			if targetdb.IsFatal(err) {
 				return err
 			}
 			failures++
 			delay = backoff(interval, failures)
 			a.log.Error("collection failed; retrying", "attempt", failures, "retry_in", delay.String(),
-				"error", a.red.String(err.Error()), "hint", postgres.Hint(err))
+				"error", a.red.String(err.Error()), "hint", targetdb.Hint(err))
 		} else {
 			if failures > 0 {
 				a.log.Info("collection recovered", "after_failures", failures)

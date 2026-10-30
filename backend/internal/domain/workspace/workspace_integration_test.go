@@ -6,13 +6,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/jackc/pgx/v5"
-	"github.com/locklens/locklens/internal/lib/secret"
-	"github.com/locklens/locklens/internal/repository"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/locklens/locklens/internal/lib/secret"
+	"github.com/locklens/locklens/internal/repository"
+	"github.com/locklens/locklens/internal/targetdb/investigate"
 )
 
 func TestWorkspaceReadOnlyAndBounds(t *testing.T) {
@@ -49,14 +52,14 @@ func TestWorkspaceReadOnlyAndBounds(t *testing.T) {
 	for _, sql := range []string{"INSERT INTO " + table + " VALUES(601,'x',null)", "SELECT 1; COMMIT; SELECT 2", "WITH x AS (DELETE FROM " + table + " RETURNING *) SELECT * FROM x", "SELECT * FROM " + table + " FOR UPDATE", "COPY " + table + " TO STDOUT", "EXPLAIN ANALYZE SELECT 1"} {
 		t.Run(sql[:min(20, len(sql))], func(t *testing.T) {
 			run(func(tx pgx.Tx) {
-				if _, err := Execute(ctx, tx, sql, "public", false); err == nil {
+				if _, err := investigate.Execute(ctx, tx, sql, "public", false); err == nil {
 					t.Fatal("write or multi-statement accepted")
 				}
 			})
 		})
 	}
 	run(func(tx pgx.Tx) {
-		r, err := Execute(ctx, tx, "SELECT * FROM "+table+" ORDER BY id", "public", false)
+		r, err := investigate.Execute(ctx, tx, "SELECT * FROM "+table+" ORDER BY id", "public", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -65,65 +68,65 @@ func TestWorkspaceReadOnlyAndBounds(t *testing.T) {
 		}
 	})
 	run(func(tx pgx.Tx) {
-		r, err := Execute(ctx, tx, "SELECT repeat('&',8000) FROM generate_series(1,500)", "public", false)
+		r, err := investigate.Execute(ctx, tx, "SELECT repeat('&',8000) FROM generate_series(1,500)", "public", false)
 		if err != nil {
 			t.Fatal(err)
 		}
 		encoded, _ := json.Marshal(r)
-		if len(encoded) > MaxBytes || !r.Truncated || len(r.Rows) >= 500 {
+		if len(encoded) > investigate.MaxBytes || !r.Truncated || len(r.Rows) >= 500 {
 			t.Fatalf("escaped JSON result unbounded: %d", len(encoded))
 		}
 	})
 	run(func(tx pgx.Tx) {
-		r, err := Execute(ctx, tx, "SELECT repeat('x',9000)", "public", false)
-		if err != nil || !r.CellTruncated || len(*r.Rows[0][0]) != MaxCell {
+		r, err := investigate.Execute(ctx, tx, "SELECT repeat('x',9000)", "public", false)
+		if err != nil || !r.CellTruncated || len(*r.Rows[0][0]) != investigate.MaxCell {
 			t.Fatalf("cell limit: %+v %v", r, err)
 		}
 	})
 	run(func(tx pgx.Tx) {
-		r, err := Execute(ctx, tx, "SELECT * FROM "+table, "public", true)
+		r, err := investigate.Execute(ctx, tx, "SELECT * FROM "+table, "public", true)
 		if err != nil || len(r.Rows) != 1 {
 			t.Fatalf("explain: %v", err)
 		}
 	})
 	run(func(tx pgx.Tx) {
-		r, err := Data(ctx, tx, DataRequest{Schema: "public", Relation: name, Limit: 25})
+		r, err := investigate.Data(ctx, tx, investigate.DataRequest{Schema: "public", Relation: name, Limit: 25})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(r.Rows) != 25 || r.Next == nil || *r.Next != "25" {
 			t.Fatalf("keyset: %+v", r)
 		}
-		r, err = Data(ctx, tx, DataRequest{Schema: "public", Relation: name, Limit: 25, After: r.Next})
+		r, err = investigate.Data(ctx, tx, investigate.DataRequest{Schema: "public", Relation: name, Limit: 25, After: r.Next})
 		if err != nil || *r.Rows[0][0] != "26" {
 			t.Fatalf("next page %v", err)
 		}
 	})
 	run(func(tx pgx.Tx) {
-		r, err := Data(ctx, tx, DataRequest{Schema: "public", Relation: name, FilterColumn: "label", FilterOp: "eq", FilterValue: "' OR true --"})
+		r, err := investigate.Data(ctx, tx, investigate.DataRequest{Schema: "public", Relation: name, FilterColumn: "label", FilterOp: "eq", FilterValue: "' OR true --"})
 		if err != nil || len(r.Rows) != 0 {
 			t.Fatalf("filter injection: %v", err)
 		}
-		if _, err = Data(ctx, tx, DataRequest{Schema: "public", Relation: name, Sort: "id; DROP TABLE x"}); err == nil {
+		if _, err = investigate.Data(ctx, tx, investigate.DataRequest{Schema: "public", Relation: name, Sort: "id; DROP TABLE x"}); err == nil {
 			t.Fatal("sort identifier accepted")
 		}
 	})
 	run(func(tx pgx.Tx) {
 		c, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
 		defer cancel()
-		if _, err := Execute(c, tx, "SELECT pg_sleep(10)", "public", false); err == nil {
+		if _, err := investigate.Execute(c, tx, "SELECT pg_sleep(10)", "public", false); err == nil {
 			t.Fatal("deadline not enforced")
 		}
 	})
 	run(func(tx pgx.Tx) {
-		_, err := Execute(ctx, tx, "SELECT repeat('x',2000000)", "public", false)
+		_, err := investigate.Execute(ctx, tx, "SELECT repeat('x',2000000)", "public", false)
 		if err == nil {
 			t.Fatal("oversized protocol value accepted")
 		}
 	})
 	run(func(tx pgx.Tx) {
 		for _, kind := range []string{"databases", "schemas", "relations", "detail"} {
-			if _, err := Catalog(ctx, tx, kind, "public", name); err != nil {
+			if _, err := investigate.Catalog(ctx, tx, kind, "public", name); err != nil {
 				t.Fatalf("catalog %s: %v", kind, err)
 			}
 		}
@@ -155,7 +158,7 @@ func TestWorkspacePolicyIsolation(t *testing.T) {
 		t.Fatalf("default policy %+v %v", p, err)
 	}
 	fn := func(c context.Context, tx pgx.Tx) (any, error) {
-		return Execute(c, tx, "SELECT 1 AS safe", "public", false)
+		return investigate.Execute(c, tx, "SELECT 1 AS safe", "public", false)
 	}
 	if _, err = svc.Run(ctx, target.ID, "session", "sql", "denied-request", fn); SafeError(err).Code != "forbidden" {
 		t.Fatal("default allowed")
@@ -183,7 +186,7 @@ func TestWorkspacePolicyIsolation(t *testing.T) {
 	for _, id := range []string{"slow-request-1", "slow-request-2"} {
 		go func() {
 			_, e := svc.Run(ctx, target.ID, "session", "sql", id, func(c context.Context, tx pgx.Tx) (any, error) {
-				return Execute(c, tx, "SELECT pg_sleep(10)", "public", false)
+				return investigate.Execute(c, tx, "SELECT pg_sleep(10)", "public", false)
 			})
 			done <- e
 		}()
@@ -255,7 +258,7 @@ func TestExplainGenericPlan(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		return ExplainGeneric(ctx, tx, sql)
+		return investigate.ExplainGeneric(ctx, tx, sql)
 	}
 	if _, err := explain("SELECT 1; SELECT 2"); err == nil {
 		t.Fatal("several statements must be refused")

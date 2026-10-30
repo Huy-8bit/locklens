@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/locklens/locklens/internal/config"
+	"github.com/locklens/locklens/internal/repository/queries"
 	"github.com/locklens/locklens/migrations"
 )
 
@@ -78,7 +79,7 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 		return nil, err
 	}
 	var num int
-	if err := pool.QueryRow(ctx, "SELECT current_setting('server_version_num')::int").Scan(&num); err != nil {
+	if err := pool.QueryRow(ctx, queries.ServerVersionNum).Scan(&num); err != nil {
 		pool.Close()
 		return nil, red.Error(err)
 	}
@@ -159,19 +160,16 @@ func (s *Store) Migrate(ctx context.Context) ([]int, error) {
 		return nil, s.red.Error(err)
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+	if _, err := conn.Exec(ctx, queries.AdvisoryLock, migrationLockKey); err != nil {
 		return nil, s.red.Error(err)
 	}
-	defer conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrationLockKey) //nolint:errcheck
+	defer conn.Exec(context.WithoutCancel(ctx), queries.AdvisoryUnlock, migrationLockKey) //nolint:errcheck
 
-	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-		version    integer PRIMARY KEY,
-		name       text        NOT NULL,
-		applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+	if _, err := conn.Exec(ctx, queries.CreateSchemaMigrations); err != nil {
 		return nil, s.red.Error(err)
 	}
 	applied := map[int]bool{}
-	rows, err := conn.Query(ctx, "SELECT version FROM schema_migrations")
+	rows, err := conn.Query(ctx, queries.AppliedMigrations)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -201,7 +199,7 @@ func (s *Store) Migrate(ctx context.Context) ([]int, error) {
 			if _, err := tx.Exec(ctx, m.SQL); err != nil {
 				return err
 			}
-			_, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version, name) VALUES ($1, $2)", m.Version, m.Name)
+			_, err := tx.Exec(ctx, queries.RecordMigration, m.Version, m.Name)
 			return err
 		})
 		if err != nil {
@@ -215,7 +213,7 @@ func (s *Store) Migrate(ctx context.Context) ([]int, error) {
 // SchemaVersion returns the highest applied migration, or 0.
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 	var v *int
-	err := s.pool.QueryRow(ctx, "SELECT max(version) FROM schema_migrations").Scan(&v)
+	err := s.pool.QueryRow(ctx, queries.SchemaVersion).Scan(&v)
 	if err != nil {
 		return 0, s.red.Error(err)
 	}

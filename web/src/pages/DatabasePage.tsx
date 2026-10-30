@@ -4,10 +4,12 @@ import { Activity, ArrowRight, Gauge, Lock, Timer, Users, Zap } from 'lucide-rea
 import { useActivity, useCommands, useOverview, useQueries, useTarget } from '../api/hooks'
 import type { OverviewResponse } from '../api/types'
 import { CommandMix, CommandsChart } from '../components/Commands'
+import { ChangesCard } from '../components/ChangesCard'
 import { MetricCard, slot } from '../components/MetricCard'
 import { PageHeader, useNumParam } from '../components/Shell'
 import { SqlText } from '../components/SqlText'
 import { Badge, Card, cx, ErrorBox, Load, Meter, Notice, SeverityBadge, Spinner, Stat, StateBadge } from '../components/ui'
+import { ChangeMarkers } from '../lib/changes'
 import { commandColor, COMMAND_LABEL } from '../lib/commands'
 import { ageOf, bytes, compact, ms, num, pct, rate, seconds } from '../lib/format'
 import { useRange } from '../lib/scope'
@@ -204,6 +206,7 @@ export function DatabaseOverview() {
               <MetricCard id={id} range={range} title={t.status.is_standby ? 'WAL received' : 'WAL generated'} format={(n) => `${bytes(n)}/s`} height={180} defs={[{ metric: t.status.is_standby ? 'wal.received_bytes.per_s' : 'wal.bytes.per_s', label: 'WAL', color: slot(0) }]} />
               <MetricCard id={id} range={range} title="Temporary files" format={(n) => `${bytes(n)}/s`} height={180} defs={[{ metric: 'temp.bytes.per_s', label: 'Temp bytes', color: slot(0) }]} />
             </div>
+            <ChangesCard targetId={id} />
           </div>
           <div className="space-y-3">
             <Card title="Query mix" subtitle="Share of executions and time by statement type in the selected range">
@@ -272,6 +275,7 @@ const TABS: [string, string][] = [
   ['activity', 'Activity'],
   ['replication', 'Replication'],
   ['alerts', 'Alerts'],
+  ['logs', 'Logs'],
 ]
 
 /** One instance: its name and state, and tabs for its detail views. */
@@ -318,7 +322,10 @@ export default function DatabasePage() {
           </NavLink>
         ))}
       </nav>
-      <Outlet />
+      {/* Changes are drawn on every chart of the instance's views. */}
+      <ChangeMarkers targetIds={[id]}>
+        <Outlet />
+      </ChangeMarkers>
     </>
   )
 }

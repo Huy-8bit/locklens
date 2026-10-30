@@ -24,6 +24,9 @@ type Catalog struct {
 	// InRecovery is true on a standby: the schema is its primary's, and
 	// changes are made there.
 	InRecovery bool `json:"in_recovery"`
+	// Truncated is true when tables or indexes were cut at their limit, so
+	// the lists are not the whole schema.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // CatalogTable is one table with its size estimates and access counters.

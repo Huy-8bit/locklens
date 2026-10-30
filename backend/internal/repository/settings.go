@@ -6,13 +6,15 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/locklens/locklens/internal/repository/queries"
 )
 
 // GetSetting decodes a JSON setting into dst. It returns ErrNotFound when the
 // key has never been set.
 func (s *Store) GetSetting(ctx context.Context, key string, dst any) error {
 	var raw []byte
-	err := s.pool.QueryRow(ctx, "SELECT value FROM settings WHERE key = $1", key).Scan(&raw)
+	err := s.pool.QueryRow(ctx, queries.GetSetting, key).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -28,8 +30,6 @@ func (s *Store) PutSetting(ctx context.Context, key string, value any) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `
-INSERT INTO settings (key, value) VALUES ($1, $2)
-ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, key, raw)
+	_, err = s.pool.Exec(ctx, queries.PutSetting, key, raw)
 	return s.red.Error(err)
 }

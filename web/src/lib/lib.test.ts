@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { toMarkers } from './changes'
 import { commandColor, commandGroup } from './commands'
 import { bytes, compact, ms, num, pct, rate, seconds, UNKNOWN } from './format'
 import { absolute, isAbsolute, rangeQuery, rangeWindow, shifted, zoomedOut } from './scope'
@@ -88,5 +89,18 @@ describe('incident timeline', () => {
     const key = { server_major: 18, dbid: 16384, userid: 10, toplevel: true, queryid: '6328518588233945134' }
     expect(findingQueryKey({ key: `q:${queryKey(key)}` } as Finding)).toBe(queryKey(key))
     expect(findingQueryKey({ key: 'root:42' } as Finding)).toBeNull()
+  })
+})
+
+describe('change markers', () => {
+  it('names each change by its kind and title at its time', () => {
+    const m = toMarkers([
+      { id: 1, target_id: 1, at: '2026-10-30T10:00:00Z', kind: 'deploy', source: 'api', title: 'api v2', details: {}, created_by: 'token:ci' },
+      { id: 2, target_id: null, at: '2026-10-30T11:00:00Z', kind: 'settings', source: 'detected', title: 'Setting work_mem changed', details: {}, created_by: '' },
+    ])
+    expect(m).toEqual([
+      { at: Date.parse('2026-10-30T10:00:00Z'), label: 'Deploy: api v2' },
+      { at: Date.parse('2026-10-30T11:00:00Z'), label: 'Settings: Setting work_mem changed' },
+    ])
   })
 })

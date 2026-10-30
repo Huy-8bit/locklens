@@ -10,8 +10,8 @@ import (
 
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/lib/hostmetrics"
-	"github.com/locklens/locklens/internal/lib/postgres"
 	"github.com/locklens/locklens/internal/repository"
+	"github.com/locklens/locklens/internal/targetdb"
 )
 
 // Collector names. They are bounded metric label values.
@@ -27,10 +27,13 @@ const (
 	CollectorTableActivity = "table_activity"
 	// CollectorCatalog reads the schema for the query optimizer.
 	CollectorCatalog = "catalog"
+	// CollectorChanges reads settings and server facts to detect changes.
+	CollectorChanges = "changes"
 )
 
 // AllCollectors lists collectors in display order.
-var AllCollectors = []string{CollectorActivity, CollectorLoad, CollectorDatabase, CollectorStatements, CollectorReplication, CollectorTables, CollectorHost}
+var AllCollectors = []string{CollectorActivity, CollectorLoad, CollectorDatabase, CollectorStatements, CollectorReplication, CollectorTables,
+	CollectorTableActivity, CollectorCatalog, CollectorChanges, CollectorHost}
 
 const (
 	capabilitiesMaxAge     = 10 * time.Minute
@@ -64,16 +67,20 @@ type worker struct {
 	target repository.Target
 	state  *State
 
-	obs  *postgres.Collector
+	obs  *targetdb.Collector
 	caps *observe.Capabilities
 
-	prevDB    *CounterSample
+	prevDB    *observe.CounterSample
 	prevStmt  *statementsState
 	stmtCache stmtCache
 	prevHost  *hostmetrics.Scrape
 	// prevTables holds the table counters of the last table activity
 	// collection.
-	prevTables *tableActivityState
+	prevTables map[string]*tableActivityState
+	// dbs are the connections to the other databases in scope.
+	dbs databaseSet
+	// lastTableAt is the time of the last table collection of any database.
+	lastTableAt time.Time
 
 	load *loadAgg
 
@@ -107,6 +114,7 @@ func newWorker(m *Manager, t repository.Target, st *State) *worker {
 		{name: CollectorReplication, every: max(iv, 30*time.Second), burst: 10 * time.Second, timeout: 15 * time.Second, run: w.collectReplication},
 		{name: CollectorTables, every: 5 * time.Minute, timeout: 60 * time.Second, run: w.collectTables},
 		{name: CollectorCatalog, every: 15 * time.Minute, timeout: 60 * time.Second, run: w.collectCatalog},
+		{name: CollectorChanges, every: time.Minute, timeout: 15 * time.Second, run: w.collectChanges},
 		{name: CollectorTableActivity, every: max(iv, time.Minute), burst: 15 * time.Second, timeout: 15 * time.Second, run: w.collectTableActivity},
 		{name: CollectorLoad, every: max(m.loadEvery, time.Second), timeout: 5 * time.Second, run: w.collectLoad,
 			enabled: func() (bool, string) {
@@ -247,7 +255,7 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 			}
 			from := *j.status.LastSuccess
 			w.m.writer.Enqueue(WriteOp{TargetID: w.target.ID, Collector: j.name, At: now,
-				Write: func(ctx context.Context, s *repository.Store, _ repository.IdentityCache) error {
+				Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
 					return s.InsertGap(ctx, w.target.ID, j.name, from, now, reason)
 				}})
 		}

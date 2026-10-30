@@ -1,0 +1,1 @@
+SELECT clock_timestamp()

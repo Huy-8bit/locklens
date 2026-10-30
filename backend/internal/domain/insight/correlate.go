@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/finding"
+	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/rules"
 )
 
@@ -53,6 +54,16 @@ type Signals struct {
 	SamplingEnabled  bool
 	// PlanHistory is true when execution plans of the statement were saved.
 	PlanHistory bool
+	// Changes are the instance's changes from two hours before the anomaly
+	// to now (detected and reported).
+	Changes []observe.ChangeEvent
+	// QueryID is the statement's queryid, when known.
+	QueryID *int64
+	// Logs are server log events (lock waits, deadlocks, temporary files,
+	// plans) from shortly before the anomaly to now; LogsShipped is false
+	// when no log agent sends this instance's logs.
+	Logs        []observe.LogEvent
+	LogsShipped bool
 }
 
 // Strength of the evidence for a hypothesis. It grades evidence; a
@@ -77,7 +88,7 @@ type Hypothesis struct {
 // TimelineEntry is one dated event around the anomaly.
 type TimelineEntry struct {
 	At      time.Time `json:"at"`
-	Kind    string    `json:"kind"` // anomaly, finding, gap
+	Kind    string    `json:"kind"` // anomaly, finding, gap, change
 	RuleID  string    `json:"rule_id,omitempty"`
 	Summary string    `json:"summary"`
 }
@@ -310,6 +321,9 @@ func Correlate(sig Signals) Investigation {
 		}
 	}
 
+	weighChanges(sig, add, plan, sat)
+	weighLogs(sig, lock, plan)
+
 	for _, h := range hs {
 		h.Score = math.Round(clamp01(h.score)*100) / 100
 		switch {
@@ -347,6 +361,9 @@ func timeline(sig Signals) []TimelineEntry {
 	for _, o := range sig.Others {
 		out = append(out, TimelineEntry{At: o.FirstSeen, Kind: "finding", RuleID: o.Finding.RuleID, Summary: o.Finding.Title})
 	}
+	for _, c := range sig.Changes {
+		out = append(out, TimelineEntry{At: c.At, Kind: "change", Summary: c.Title})
+	}
 	for _, g := range sig.Gaps {
 		out = append(out, TimelineEntry{At: g.From, Kind: "gap",
 			Summary: fmt.Sprintf("No %s data for %s", g.What, g.To.Sub(g.From).Round(time.Second))})
@@ -371,7 +388,12 @@ func missing(sig Signals) []string {
 	if len(sig.Gaps) > 0 {
 		out = append(out, fmt.Sprintf("%d collection gap(s) in the period: events in them were not observed.", len(sig.Gaps)))
 	}
-	out = append(out, "Application deployments and configuration changes are not recorded by LockLens.")
+	if len(sig.Changes) == 0 {
+		out = append(out, "No changes were detected or reported in the period; deploys are known only when a person or pipeline reports them.")
+	}
+	if !sig.LogsShipped {
+		out = append(out, "The server log is not shipped (locklens agent), so lock waits, temporary files, and auto_explain plans from the log are not used.")
+	}
 	return out
 }
 

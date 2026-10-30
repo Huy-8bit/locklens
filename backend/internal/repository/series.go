@@ -3,11 +3,12 @@ package repository
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/locklens/locklens/internal/repository/queries"
 )
 
 // SeriesPoint represents a bucket in (from, to]. Unknown or interrupted buckets
@@ -91,34 +92,15 @@ func (s *Store) QuerySeries(ctx context.Context, targetID int64, metrics []strin
 	total := 0
 	for _, m := range metrics {
 		agg, collector := MetricAggregation(m), MetricCollector(m)
-		expression := "(array_agg(value ORDER BY ts DESC))[1]"
-		switch agg {
-		case "sum", "max":
-			expression = agg + "(value)"
-		case "mean_interval_ratio":
-			expression = "avg(value)"
-		case "time_weighted_mean":
-			expression = "CASE WHEN count(interval_seconds)=count(*) THEN sum(value * interval_seconds) / NULLIF(sum(interval_seconds),0) END"
-		}
 		res := s.seriesSource(from, step, time.Now())
-		sql := fmt.Sprintf(`
-WITH buckets AS (
- SELECT label, date_bin($5::interval, ts - interval '1 microsecond', $3::timestamptz) AS bucket,
- CASE WHEN count(value)=count(*) THEN %s END AS value, count(*) AS samples, count(value) AS known, max(ts) AS last_sample
- FROM metric_points WHERE target_id=$1 AND metric=$2 AND ts>$3 AND ts<=$4
- GROUP BY label, bucket
-)
-SELECT label, bucket, value, samples, known, last_sample,
- EXISTS (SELECT 1 FROM collection_gaps g WHERE g.target_id=$1 AND g.collector=$6
- AND g.ended_at>bucket AND g.started_at<bucket+$5::interval) AS gap
-FROM buckets ORDER BY label, bucket LIMIT $7`, expression)
+		sql := queries.RawSeries(agg)
 		args := []any{targetID, m, from.UTC(), to.UTC(), max(step, res), collector, MaxSeriesPoints - total + 1}
 		if res > 0 {
-			table := "metric_rollups_1m"
+			table := queries.MinuteRollupTable
 			if res == HourRollup {
-				table = "metric_rollups_1h"
+				table = queries.HourRollupTable
 			}
-			sql = rollupSeriesSQL(table, rollupExpression(agg))
+			sql = queries.RollupSeries(table, agg)
 			args = append(args, res)
 		}
 		rows, err := s.pool.Query(ctx, sql, args...)
@@ -178,9 +160,7 @@ type Gap struct {
 
 // ListGaps returns gaps overlapping (from, to].
 func (s *Store) ListGaps(ctx context.Context, targetID int64, from, to time.Time, limit int) ([]Gap, error) {
-	rows, err := s.pool.Query(ctx, `
-SELECT collector, started_at, ended_at, reason FROM collection_gaps
-WHERE target_id = $1 AND ended_at > $2 AND started_at <= $3 ORDER BY ended_at DESC LIMIT $4`,
+	rows, err := s.pool.Query(ctx, queries.ListGaps,
 		targetID, from.UTC(), to.UTC(), limit)
 	if err != nil {
 		return nil, s.red.Error(err)

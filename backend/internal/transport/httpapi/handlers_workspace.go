@@ -2,13 +2,16 @@ package httpapi
 
 import (
 	"context"
-	"github.com/jackc/pgx/v5"
-	"github.com/locklens/locklens/internal/domain/auth"
-	"github.com/locklens/locklens/internal/domain/workspace"
-	"github.com/locklens/locklens/internal/repository"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/locklens/locklens/internal/domain/auth"
+	"github.com/locklens/locklens/internal/domain/workspace"
+	"github.com/locklens/locklens/internal/repository"
+	"github.com/locklens/locklens/internal/targetdb/investigate"
 )
 
 func (s *Server) workspaceError(w http.ResponseWriter, r *http.Request, err error) {
@@ -60,13 +63,13 @@ func (s *Server) workspaceRun(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	var in struct {
-		Action    string                `json:"action"`
-		RequestID string                `json:"request_id"`
-		Kind      string                `json:"kind"`
-		Schema    string                `json:"schema"`
-		Relation  string                `json:"relation"`
-		SQL       string                `json:"sql"`
-		Data      workspace.DataRequest `json:"data"`
+		Action    string                  `json:"action"`
+		RequestID string                  `json:"request_id"`
+		Kind      string                  `json:"kind"`
+		Schema    string                  `json:"schema"`
+		Relation  string                  `json:"relation"`
+		SQL       string                  `json:"sql"`
+		Data      investigate.DataRequest `json:"data"`
 	}
 	if !decodeWorkspace(w, r, &in) {
 		return
@@ -84,11 +87,11 @@ func (s *Server) workspaceRun(w http.ResponseWriter, r *http.Request) {
 	out, err := s.d.Workspace.Run(ctx, id, sessionOf(r).CSRFToken, in.Action, in.RequestID, func(ctx context.Context, tx pgx.Tx) (any, error) {
 		switch in.Action {
 		case "metadata":
-			return workspace.Catalog(ctx, tx, in.Kind, in.Schema, in.Relation)
+			return investigate.Catalog(ctx, tx, in.Kind, in.Schema, in.Relation)
 		case "data":
-			return workspace.Data(ctx, tx, in.Data)
+			return investigate.Data(ctx, tx, in.Data)
 		case "sql", "explain":
-			return workspace.Execute(ctx, tx, in.SQL, in.Schema, in.Action == "explain")
+			return investigate.Execute(ctx, tx, in.SQL, in.Schema, in.Action == "explain")
 		}
 		return nil, &workspace.Error{Code: "invalid_action", Message: "Unsupported workspace action."}
 	})

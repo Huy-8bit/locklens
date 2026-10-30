@@ -63,6 +63,8 @@ export interface Target {
   max_connections: number
   node_exporter_url: string | null
   environment: string
+  database_scope: DatabaseScope
+  databases: string[]
   created_at: string
   updated_at: string
   status: TargetStatus
@@ -78,7 +80,12 @@ export interface TargetInput {
   max_connections: number
   node_exporter_url: string | null
   environment: string
+  database_scope: DatabaseScope
+  databases: string[]
 }
+
+/** Which databases tables, indexes, the catalog, and recommendations come from. */
+export type DatabaseScope = 'connected' | 'all' | 'list'
 
 export interface LatestValue { at: string; value: number | null }
 
@@ -462,6 +469,7 @@ export interface TableStat {
 export interface IndexStat {
   indexrelid: number
   relid: number
+  datname: string
   schema: string
   table: string
   name: string
@@ -485,6 +493,7 @@ export interface TableHealth {
 
 export interface TableActivity {
   relid: number
+  datname: string
   schema: string
   name: string
   seq_scans_per_s: number
@@ -668,7 +677,18 @@ export interface FleetLiveTarget {
 }
 export interface FleetLiveResponse { targets: FleetLiveTarget[]; generated_at: string }
 
+export interface ClusterServer {
+  id: string
+  hostname: string
+  version: string
+  started_at: string
+  heartbeat_at: string
+  alive: boolean
+}
+
 export interface SystemResponse {
+  /** Servers sharing the monitoring store (absent on older servers). */
+  cluster?: { server_id: string; servers: ClusterServer[] }
   version: string
   demo_mode: boolean
   time: string
@@ -843,7 +863,7 @@ export interface Investigation {
   since: string
   summary: string
   hypotheses: Hypothesis[]
-  timeline: { at: string; kind: 'anomaly' | 'finding' | 'gap'; rule_id?: string; summary: string }[]
+  timeline: { at: string; kind: 'anomaly' | 'finding' | 'gap' | 'change'; rule_id?: string; summary: string }[]
   missing_evidence: string[]
   disclaimer: string
 }
@@ -919,6 +939,7 @@ export interface WhatIfResult {
 export interface Recommendation {
   id: number
   target_id: number
+  database: string
   kind: RecommendationKind
   key: string
   status: RecommendationStatus
@@ -950,6 +971,7 @@ export interface OptimizerTarget {
   target_name: string
   catalog_at: string | null
   database: string
+  databases: string[]
   query_text_enabled: boolean
   hypopg_enabled: boolean
   hypopg_installed?: string
@@ -968,3 +990,108 @@ export interface OptimizerResponse {
 export interface SqlPredicate { table: string; column: string; op: string; wrapped?: string; in_or?: boolean }
 export interface SqlLint { code: string; message: string; severity: 'info' | 'warning' }
 export interface SqlAnalysis { fingerprint: string; command: string; tables: { schema?: string; name: string; alias?: string }[]; predicates: SqlPredicate[]; order_by: { table: string; column: string; desc?: boolean }[]; has_limit: boolean; lints: SqlLint[] }
+
+/** A detected or reported change on an instance (null target: every instance). */
+export type ChangeKind = 'settings' | 'restart' | 'promotion' | 'demotion' | 'upgrade' | 'schema' | 'deploy' | 'migration' | 'config' | 'note'
+
+export interface ChangeEvent {
+  id: number
+  target_id: number | null
+  at: string
+  kind: ChangeKind
+  source: 'detected' | 'api' | 'user'
+  title: string
+  details: Record<string, unknown>
+  created_by: string
+}
+
+export interface ChangesResponse {
+  from: string
+  to: string
+  changes: ChangeEvent[]
+}
+
+export interface ChangeReport {
+  target_id: number | null
+  kind: 'deploy' | 'migration' | 'config' | 'note'
+  title: string
+  at?: string
+  details?: Record<string, unknown>
+}
+
+export interface ApiToken {
+  id: number
+  name: string
+  scope: 'events' | 'ingest'
+  target_id: number | null
+  prefix: string
+  created_by: string
+  created_at: string
+  last_used_at: string | null
+  revoked_at: string | null
+}
+
+export type LogKind = 'slow_query' | 'plan' | 'lock_wait' | 'deadlock' | 'autovacuum' | 'autoanalyze' | 'temp_file' | 'checkpoint' | 'error'
+
+/** An event from the server log, shipped by the log agent (statements normalised, messages redacted). */
+export interface LogEvent {
+  id: string
+  at: string
+  kind: LogKind
+  pid?: number
+  datname?: string
+  username?: string
+  application?: string
+  severity: string
+  sqlstate?: string
+  duration_ms?: number
+  query_id?: number
+  fingerprint?: string
+  query?: string
+  message: string
+  details?: Record<string, unknown>
+}
+
+export interface LogStatement {
+  fingerprint: string
+  source: 'slow_query' | 'plan'
+  query: string | null
+  query_id: number | null
+  count: number
+  total_ms: number
+  p50_ms: number
+  p95_ms: number
+  p99_ms: number
+  max_ms: number
+  last_at: string
+  plans: number
+}
+
+export interface LogAgent {
+  token_id: number
+  token_name: string
+  hostname: string
+  version: string
+  sources: string[]
+  first_seen_at: string
+  last_seen_at: string
+  last_event_at: string | null
+  received: number
+}
+
+export interface LogSettingCheck {
+  name: string
+  value: string
+  ok: boolean
+  advice: string
+}
+
+export interface LogSummary {
+  from: string
+  to: string
+  step_seconds: number
+  counts: { t: string; kind: LogKind; n: number }[]
+  statements: LogStatement[]
+  agents: LogAgent[]
+  settings: LogSettingCheck[]
+}

@@ -99,7 +99,7 @@ func (s *Server) fleetMetrics(w http.ResponseWriter, r *http.Request) {
 	// Buckets hold a sample of every target: the slowest collection decides.
 	minStep := 10 * time.Second
 	for _, t := range ts {
-		minStep = max(minStep, s.collectionStep(t, metrics))
+		minStep = max(minStep, s.collectionStep(r, t, metrics))
 	}
 	step := s.d.Store.SeriesStep(from, stepFor(from, to, minStep))
 	type acc struct {
@@ -303,7 +303,7 @@ func (s *Server) fleetLive(w http.ResponseWriter, r *http.Request) {
 	out := make([]fleetLiveTarget, 0, len(ts))
 	for _, t := range ts {
 		e := fleetLiveTarget{Target: t, Latest: map[string]latestValue{}, ConnectionGroups: []observe.ConnectionGroup{}}
-		if v, ok := s.view(t.ID); ok {
+		if v, ok := s.view(r, t.ID); ok {
 			e.Connected = v.Connected
 			e.Latest = latestValues(v)
 			e.Replication = v.Replication
@@ -382,7 +382,12 @@ func (s *Server) system(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	m := s.d.Metrics
+	cluster := map[string]any{"server_id": "", "servers": []repository.Server{}}
+	if s.d.Cluster != nil {
+		cluster["server_id"], cluster["servers"] = s.d.Cluster.ID(), s.d.Cluster.Servers()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"cluster":   cluster,
 		"version":   s.d.Tool.Version,
 		"demo_mode": s.d.DemoMode,
 		"time":      time.Now().UTC(),
@@ -415,7 +420,7 @@ func (s *Server) fleet(w http.ResponseWriter, r *http.Request) {
 	out := make([]fleetEntry, 0, len(ts))
 	for _, t := range ts {
 		e := fleetEntry{Target: t, Latest: map[string]latestValue{}, Counts: counts[t.ID]}
-		if v, ok := s.view(t.ID); ok {
+		if v, ok := s.view(r, t.ID); ok {
 			e.Latest = latestValues(v)
 		}
 		out = append(out, e)

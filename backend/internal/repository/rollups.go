@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/locklens/locklens/internal/domain/observe"
+	"github.com/locklens/locklens/internal/repository/queries"
 )
 
 // RollupBucket is the size of a statement rollup bucket.
@@ -24,27 +25,10 @@ func (s *Store) RollupStatements(ctx context.Context, targetID int64, from, to t
 	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck
 	// A sample at ts covers (ts - interval, ts]; it belongs to the bucket its
 	// end falls in, the same convention as charts.
-	if _, err := tx.Exec(ctx, `
-INSERT INTO query_rollups (target_id, identity_id, ts, calls, total_exec_ms, rows, shared_blks_read, shared_blks_hit, temp_blks_written)
-SELECT target_id, identity_id, date_bin('5 minutes', ts - interval '1 microsecond', 'epoch'::timestamptz),
-       sum(calls), sum(total_exec_ms), sum(rows), sum(shared_blks_read), sum(shared_blks_hit), sum(temp_blks_written)
-FROM query_samples
-WHERE target_id = $1 AND ts > $2 AND ts <= $3
-GROUP BY 1, 2, 3
-ON CONFLICT (target_id, identity_id, ts) DO UPDATE SET
-    calls = EXCLUDED.calls, total_exec_ms = EXCLUDED.total_exec_ms, rows = EXCLUDED.rows,
-    shared_blks_read = EXCLUDED.shared_blks_read, shared_blks_hit = EXCLUDED.shared_blks_hit,
-    temp_blks_written = EXCLUDED.temp_blks_written`, targetID, from.UTC(), to.UTC()); err != nil {
+	if _, err := tx.Exec(ctx, queries.RollupQuerySamples, targetID, from.UTC(), to.UTC()); err != nil {
 		return s.red.Error(err)
 	}
-	if _, err := tx.Exec(ctx, `
-INSERT INTO statement_coverage (target_id, ts, covered_seconds, reset_detected)
-SELECT target_id, date_bin('5 minutes', ts - interval '1 microsecond', 'epoch'::timestamptz),
-       least(sum(interval_seconds), 300), bool_or(reset_detected)
-FROM statement_collections
-WHERE target_id = $1 AND ts > $2 AND ts <= $3 AND interval_seconds IS NOT NULL
-GROUP BY 1, 2
-ON CONFLICT (target_id, ts) DO UPDATE SET covered_seconds = EXCLUDED.covered_seconds, reset_detected = EXCLUDED.reset_detected`,
+	if _, err := tx.Exec(ctx, queries.RollupStatementCoverage,
 		targetID, from.UTC(), to.UTC()); err != nil {
 		return s.red.Error(err)
 	}
@@ -55,7 +39,7 @@ ON CONFLICT (target_id, ts) DO UPDATE SET covered_seconds = EXCLUDED.covered_sec
 // or ok = false when nothing was rolled yet.
 func (s *Store) RollupWatermark(ctx context.Context, targetID int64) (time.Time, bool, error) {
 	var t *time.Time
-	if err := s.pool.QueryRow(ctx, `SELECT max(ts) FROM statement_coverage WHERE target_id = $1`, targetID).Scan(&t); err != nil {
+	if err := s.pool.QueryRow(ctx, queries.RollupWatermark, targetID).Scan(&t); err != nil {
 		return time.Time{}, false, s.red.Error(err)
 	}
 	if t == nil {
@@ -74,13 +58,7 @@ type ActiveStatement struct {
 // ActiveStatements returns the statements with the most execution time since
 // a time, at most limit.
 func (s *Store) ActiveStatements(ctx context.Context, targetID int64, since time.Time, limit int) ([]ActiveStatement, error) {
-	rows, err := s.pool.Query(ctx, `
-SELECT r.identity_id, q.server_major, q.dbid::bigint, q.userid::bigint, q.toplevel, q.queryid, sum(r.total_exec_ms)
-FROM query_rollups r JOIN query_identities q ON q.id = r.identity_id
-WHERE r.target_id = $1 AND r.ts >= $2
-GROUP BY 1, 2, 3, 4, 5, 6
-ORDER BY 7 DESC
-LIMIT $3`, targetID, since.UTC(), limit)
+	rows, err := s.pool.Query(ctx, queries.ActiveStatements, targetID, since.UTC(), limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -119,12 +97,7 @@ func (s *Store) BaselinePoints(ctx context.Context, targetID int64, ids []int64,
 	if point < RollupBucket {
 		return nil, nil, errors.New("baseline points cannot be smaller than rollup buckets")
 	}
-	rows, err := s.pool.Query(ctx, `
-SELECT identity_id, date_bin($4::interval, ts, 'epoch'::timestamptz), sum(calls)::bigint, sum(total_exec_ms), sum(rows)::bigint,
-       sum(shared_blks_read)::bigint, sum(shared_blks_hit)::bigint, sum(temp_blks_written)::bigint
-FROM query_rollups
-WHERE target_id = $1 AND ts >= $2 AND ts < $3 AND identity_id = ANY ($5::bigint[])
-GROUP BY 1, 2 ORDER BY 1, 2`, targetID, from.UTC(), to.UTC(), point, ids)
+	rows, err := s.pool.Query(ctx, queries.BaselineRollupPoints, targetID, from.UTC(), to.UTC(), point, ids)
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}
@@ -137,11 +110,7 @@ GROUP BY 1, 2 ORDER BY 1, 2`, targetID, from.UTC(), to.UTC(), point, ids)
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}
-	crow, err := s.pool.Query(ctx, `
-SELECT date_bin($4::interval, ts, 'epoch'::timestamptz), sum(covered_seconds), bool_or(reset_detected)
-FROM statement_coverage
-WHERE target_id = $1 AND ts >= $2 AND ts < $3
-GROUP BY 1 ORDER BY 1`, targetID, from.UTC(), to.UTC(), point)
+	crow, err := s.pool.Query(ctx, queries.BaselineCoveragePoints, targetID, from.UTC(), to.UTC(), point)
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}

@@ -39,15 +39,18 @@ func statusFilter(r *http.Request) ([]string, bool) {
 }
 
 type optimizerTarget struct {
-	TargetID      int64      `json:"target_id"`
-	TargetName    string     `json:"target_name"`
-	CatalogAt     *time.Time `json:"catalog_at"`
-	Database      string     `json:"database"`
-	QueryText     bool       `json:"query_text_enabled"`
-	HypoPGEnabled bool       `json:"hypopg_enabled"`
-	HypoPGVersion string     `json:"hypopg_installed,omitempty"`
-	SQLEnabled    bool       `json:"sql_enabled"`
-	Warnings      []string   `json:"warnings"`
+	TargetID   int64      `json:"target_id"`
+	TargetName string     `json:"target_name"`
+	CatalogAt  *time.Time `json:"catalog_at"`
+	Database   string     `json:"database"`
+	// Databases are the databases with a catalog; CatalogAt, Database and
+	// HypoPGVersion are of the connected one, where what-if checks run.
+	Databases     []string `json:"databases"`
+	QueryText     bool     `json:"query_text_enabled"`
+	HypoPGEnabled bool     `json:"hypopg_enabled"`
+	HypoPGVersion string   `json:"hypopg_installed,omitempty"`
+	SQLEnabled    bool     `json:"sql_enabled"`
+	Warnings      []string `json:"warnings"`
 }
 
 type recItem struct {
@@ -82,12 +85,23 @@ func (s *Server) optimizerOverview(w http.ResponseWriter, r *http.Request) {
 			items = append(items, recItem{Recommendation: rec, TargetName: t.Name})
 			counts[rec.Status]++
 		}
-		ot := optimizerTarget{TargetID: t.ID, TargetName: t.Name, QueryText: t.QueryTextEnabled, Warnings: []string{}}
-		if cat, err := s.d.Store.LatestCatalog(r.Context(), t.ID); err == nil {
-			ot.CatalogAt, ot.Database, ot.Warnings, ot.HypoPGVersion = &cat.At, cat.DatName, cat.Warnings, cat.Extensions["hypopg"]
-		} else if !errors.Is(err, repository.ErrNotFound) {
+		ot := optimizerTarget{TargetID: t.ID, TargetName: t.Name, QueryText: t.QueryTextEnabled, Warnings: []string{}, Databases: []string{}}
+		cats, err := s.d.Store.Catalogs(r.Context(), t.ID)
+		if err != nil {
 			s.internal(w, r, err)
 			return
+		}
+		for i, cat := range cats {
+			ot.Databases = append(ot.Databases, cat.DatName)
+			if cat.DatName == t.Database || ot.CatalogAt == nil && i == len(cats)-1 {
+				ot.CatalogAt, ot.Database, ot.HypoPGVersion = &cat.At, cat.DatName, cat.Extensions["hypopg"]
+			}
+			for _, warn := range cat.Warnings {
+				if len(cats) > 1 {
+					warn = cat.DatName + ": " + warn
+				}
+				ot.Warnings = append(ot.Warnings, warn)
+			}
 		}
 		if p, err := s.d.Store.WorkspacePolicy(r.Context(), t.ID); err == nil {
 			ot.HypoPGEnabled, ot.SQLEnabled = p.HypoPG, p.SQL

@@ -58,13 +58,15 @@ function StatsOverview({ id }: { id: number }) {
 
 function TableStatsList({ stats }: { stats: TableStat[] }) {
   const [term, setTerm] = useState('')
-  const rows = stats.filter((s) => !term || `${s.schema}.${s.name}`.toLowerCase().includes(term.toLowerCase()))
+  const several = new Set(stats.map((s) => s.datname)).size > 1
+  const rows = stats.filter((s) => !term || `${s.datname}.${s.schema}.${s.name}`.toLowerCase().includes(term.toLowerCase()))
   return (
     <Card pad={false} title="Largest tables" subtitle="From PostgreSQL statistics (estimates), refreshed every 5 minutes" actions={<input aria-label="Filter tables" placeholder="Filter…" className={`${inputCls} w-48`} value={term} onChange={(e) => setTerm(e.target.value)} />}>
       <div className="overflow-x-auto">
         <table className={tableCls}>
           <thead>
             <tr>
+              {several && <Th>Database</Th>}
               <Th>Table</Th>
               <Th align="right">Live rows</Th>
               <Th align="right">Dead rows</Th>
@@ -76,7 +78,8 @@ function TableStatsList({ stats }: { stats: TableStat[] }) {
           </thead>
           <tbody>
             {rows.slice(0, 100).map((s) => (
-              <tr key={s.relid} className={trCls}>
+              <tr key={`${s.datname}.${s.relid}`} className={trCls}>
+                {several && <td className={`${tdCls} text-xs`}>{s.datname}</td>}
                 <td className={tdCls}>
                   <span className="font-mono">
                     {s.schema}.{s.name}

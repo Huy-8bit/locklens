@@ -52,12 +52,8 @@ func latestValues(v collector.View) map[string]latestValue {
 	return out
 }
 
-func (s *Server) view(id int64) (collector.View, bool) {
-	st, ok := s.d.Manager.State(id)
-	if !ok {
-		return collector.View{}, false
-	}
-	return st.Snapshot(), true
+func (s *Server) view(r *http.Request, id int64) (collector.View, bool) {
+	return s.d.Manager.View(r.Context(), id)
 }
 
 // targetOr404 loads a target view or writes an error.
@@ -81,7 +77,7 @@ func (s *Server) targetOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{"target": t, "latest": map[string]latestValue{}, "connected": false}
-	if v, ok := s.view(t.ID); ok {
+	if v, ok := s.view(r, t.ID); ok {
 		resp["latest"] = latestValues(v)
 		resp["connected"] = v.Connected
 		resp["connect_error"] = v.ConnectError
@@ -140,10 +136,10 @@ func (s *Server) targetMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	collectors := t.Status.Collectors
-	if v, ok := s.view(t.ID); ok {
+	if v, ok := s.view(r, t.ID); ok {
 		collectors = v.Collectors
 	}
-	step, err := metricStep(r, from, to, s.collectionStep(t, metrics))
+	step, err := metricStep(r, from, to, s.collectionStep(r, t, metrics))
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -182,7 +178,7 @@ func (s *Server) targetActivity(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if v, ok := s.view(t.ID); ok && v.Activity != nil && v.Report != nil {
+	if v, ok := s.view(r, t.ID); ok && v.Activity != nil && v.Report != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"source": "live", "observed_at": v.Activity.At, "report": v.Report,
 			"counts": v.Activity.Counts, "vacuum_progress": v.Activity.Vacuum, "connected": v.Connected,
 			"query_text_enabled": t.QueryTextEnabled})
@@ -213,7 +209,7 @@ func (s *Server) targetTables(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := map[string]any{"source": "none", "tables": nil}
 	var h *observe.TableHealth
-	if v, ok := s.view(t.ID); ok {
+	if v, ok := s.view(r, t.ID); ok {
 		h = v.Tables
 		resp["activity"] = v.TableActivity
 		if v.Activity != nil {
@@ -248,7 +244,7 @@ func (s *Server) targetReplication(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{"source": "none", "replication": nil}
-	if v, ok := s.view(t.ID); ok && v.Replication != nil {
+	if v, ok := s.view(r, t.ID); ok && v.Replication != nil {
 		resp["source"], resp["replication"] = "live", v.Replication
 	} else {
 		ts, raw, err := s.d.Store.LatestState(r.Context(), t.ID, "replication")
@@ -269,7 +265,7 @@ func (s *Server) targetHost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{"configured": t.NodeExporterURL != nil, "available": false, "host": nil}
-	if v, ok := s.view(t.ID); ok {
+	if v, ok := s.view(r, t.ID); ok {
 		if v.Host != nil {
 			resp["available"], resp["host"] = true, v.Host
 		}
@@ -320,13 +316,13 @@ func (s *Server) targetGaps(w http.ResponseWriter, r *http.Request) {
 // value and a gap.
 // statementsStep is the finest step of statement charts: the statements
 // collection interval.
-func (s *Server) statementsStep(t targets.View) time.Duration {
-	return s.collectionStep(t, []string{"statements.calls.per_s"})
+func (s *Server) statementsStep(r *http.Request, t targets.View) time.Duration {
+	return s.collectionStep(r, t, []string{"statements.calls.per_s"})
 }
 
-func (s *Server) collectionStep(t targets.View, metrics []string) time.Duration {
+func (s *Server) collectionStep(r *http.Request, t targets.View, metrics []string) time.Duration {
 	collectors := t.Status.Collectors
-	if v, ok := s.view(t.ID); ok {
+	if v, ok := s.view(r, t.ID); ok {
 		collectors = v.Collectors
 	}
 	step := time.Duration(t.IntervalSeconds) * time.Second

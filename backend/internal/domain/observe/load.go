@@ -57,3 +57,13 @@ type LoadBucket struct {
 
 // LoadBucketSize is the period samples are aggregated over before storage.
 const LoadBucketSize = 15 * time.Second
+
+// LoadSession is one session that was load when it was sampled, as read
+// from pg_stat_activity.
+type LoadSession struct {
+	State, WaitEventType           *string
+	WaitEvent, BackendType         string
+	DBID, UserID                   uint32
+	DatName, UserName, Application string
+	QueryID                        int64
+}
