@@ -37,3 +37,6 @@ var OpenIncidents string
 
 //go:embed incidents/latest_resolved_incident.sql
 var LatestResolvedIncident string
+
+//go:embed incidents/open_unacknowledged_incidents.sql
+var OpenUnacknowledgedIncidents string

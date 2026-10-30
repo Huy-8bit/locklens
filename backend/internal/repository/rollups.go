@@ -11,6 +11,25 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// RollupRepository is the store of five-minute statement rollups, the source of query baselines.
+type RollupRepository interface {
+	// RollupStatements recomputes the rollup buckets that start in [from, to)
+	// from raw statement samples and collections. from must be a bucket start;
+	// buckets are replaced, so running it again over the same range is harmless.
+	RollupStatements(ctx context.Context, targetID int64, from, to time.Time) error
+	// RollupWatermark returns the start of the newest rolled bucket of a target,
+	// or ok = false when nothing was rolled yet.
+	RollupWatermark(ctx context.Context, targetID int64) (time.Time, bool, error)
+	// ActiveStatements returns the statements with the most execution time since
+	// a time, at most limit.
+	ActiveStatements(ctx context.Context, targetID int64, since time.Time, limit int) ([]ActiveStatement, error)
+	// BaselinePoints aggregates the rollups of some statements into points of
+	// the given size within [from, to), with the target's coverage per point.
+	BaselinePoints(ctx context.Context, targetID int64, ids []int64, from, to time.Time, point time.Duration) ([]RollupPoint, []CoveragePoint, error)
+}
+
+var _ RollupRepository = (*Store)(nil)
+
 // RollupBucket is the size of a statement rollup bucket.
 const RollupBucket = 5 * time.Minute
 

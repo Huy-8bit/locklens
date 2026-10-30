@@ -13,43 +13,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/locklens/locklens/internal/domain/cluster"
+	"github.com/locklens/locklens/internal/domain/events"
+	"github.com/locklens/locklens/internal/domain/incidents"
+	"github.com/locklens/locklens/internal/domain/live"
+	"github.com/locklens/locklens/internal/domain/settings"
 	"github.com/locklens/locklens/internal/lib/obs"
 	"github.com/locklens/locklens/internal/lib/secret"
 	"github.com/locklens/locklens/internal/repository"
 )
-
-// Analyzer evaluates rules and records incidents after each activity
-// collection. It must return quickly; ctx carries a timeout.
-type Analyzer interface {
-	Analyze(ctx context.Context, t repository.Target, v View)
-}
-
-// EventSink receives events for server-sent events.
-type EventSink interface {
-	Publish(kind string, payload any)
-}
-
-// Adopter is an Analyzer that keeps per-target state (open incidents): it
-// adopts a target when this server starts collecting it and forgets it when
-// another server takes it over.
-type Adopter interface {
-	Adopt(ctx context.Context, targetID int64) error
-	Forget(targetID int64)
-}
-
-// Cluster decides which targets this server collects when several servers
-// share the store (implemented by *cluster.Node).
-type Cluster interface {
-	Assign(ctx context.Context, wanted []int64) (map[int64]bool, error)
-	Alone() bool
-	ID() string
-}
-
-// Messenger sends requests to the other servers (implemented by
-// *cluster.Bus).
-type Messenger interface {
-	Send(kind string, payload any)
-}
 
 // MessageRunSoon asks the server that collects a target to run a collector
 // now ({"target_id", "collector"}).
@@ -58,11 +30,6 @@ const MessageRunSoon = "collector.run_soon"
 // liveEvery is how often a server publishes the live view of the targets
 // it collects for the other servers.
 const liveEvery = 5 * time.Second
-
-// Settings provides thresholds that collectors need.
-type Settings interface {
-	LongTransactionThreshold() time.Duration
-}
 
 // Config configures the manager.
 type Config struct {
@@ -82,14 +49,58 @@ type Config struct {
 	BudgetPercent int
 }
 
-// Manager owns all target workers.
-type Manager struct {
-	store     Store
+// Deps are the manager's collaborators.
+type Deps struct {
+	Store  Repositories
+	Box    *secret.Box
+	Writer *Writer
+	// Recorder analyses each activity collection; nil: no analysis.
+	Recorder incidents.Recorder
+	Events   events.Publisher
+	Settings settings.Service
+	// Cluster and Bus are set when several servers may share the store:
+	// the manager collects only the targets assigned to this server,
+	// publishes their live views, and forwards requests about other
+	// targets. Nil: this server collects every target.
+	Cluster cluster.Node
+	Bus     cluster.Bus
+	Metrics *obs.Metrics
+	Log     *slog.Logger
+}
+
+// Manager runs the collectors of the targets this server collects and holds their live views.
+type Manager interface {
+	// Burst collects a target faster for the configured burst duration (from
+	// now), for example while it has an open incident. Calling it again extends
+	// the burst. It does nothing when adaptive sampling is off.
+	Burst(targetID int64, reason string)
+	// RunSoon asks a target's worker to run a collector now instead of at its
+	// next turn; with a cluster, the server that collects it is asked. False
+	// when no worker could be asked.
+	RunSoon(targetID int64, collector string) bool
+	// RunSoonHere is RunSoon for a target this server collects.
+	RunSoonHere(targetID int64, collector string) bool
+	// Reload asks the manager to re-read targets now (after a change via the API).
+	Reload()
+	// live.View returns the live view of a target: this server's when it collects
+	// the target, otherwise the one its collecting server published (when it is
+	// recent), otherwise the last one this server had.
+	View(ctx context.Context, id int64) (live.View, bool)
+	// Run synchronises workers with the stored targets until ctx is cancelled,
+	// then stops every worker.
+	Run(ctx context.Context)
+}
+
+var _ Manager = (*manager)(nil)
+
+// manager owns all target workers.
+type manager struct {
+	store     Repositories
 	box       *secret.Box
 	writer    *Writer
-	analyzer  Analyzer
-	events    EventSink
-	settings  Settings
+	recorder  incidents.Recorder
+	events    events.Publisher
+	settings  settings.Service
 	metrics   *obs.Metrics
 	log       *slog.Logger
 	version   string
@@ -103,9 +114,9 @@ type Manager struct {
 	slotsBusy atomic.Int64
 	reload    chan struct{}
 
-	cluster   Cluster
-	messenger Messenger
-	remote    remoteViews
+	cluster cluster.Node
+	bus     cluster.Bus
+	remote  remoteViews
 
 	mu      sync.Mutex
 	workers map[int64]*running
@@ -118,9 +129,8 @@ type running struct {
 	updatedAt time.Time
 }
 
-// NewManager builds a manager. analyzer may be nil.
-func NewManager(store Store, box *secret.Box, writer *Writer, analyzer Analyzer, events EventSink,
-	settings Settings, metrics *obs.Metrics, log *slog.Logger, cfg Config) *Manager {
+// NewManager builds a manager.
+func NewManager(d Deps, cfg Config) Manager {
 	if cfg.MaxConcurrent < 1 {
 		cfg.MaxConcurrent = 4
 	}
@@ -133,29 +143,21 @@ func NewManager(store Store, box *secret.Box, writer *Writer, analyzer Analyzer,
 	if cfg.BudgetPercent <= 0 {
 		cfg.BudgetPercent = 10
 	}
-	return &Manager{store: store, box: box, writer: writer, analyzer: analyzer, events: events, settings: settings,
-		metrics: metrics, log: log, version: cfg.Version, syncEvery: cfg.SyncInterval, stmtEvery: cfg.StatementsInterval, loadEvery: cfg.LoadInterval,
+	return &manager{store: d.Store, box: d.Box, writer: d.Writer, recorder: d.Recorder, events: d.Events, settings: d.Settings,
+		cluster: d.Cluster, bus: d.Bus, metrics: d.Metrics, log: d.Log, version: cfg.Version, syncEvery: cfg.SyncInterval, stmtEvery: cfg.StatementsInterval, loadEvery: cfg.LoadInterval,
 		burstDur: cfg.BurstDuration, budget: float64(cfg.BudgetPercent) / 100,
 		sem: make(chan struct{}, cfg.MaxConcurrent), reload: make(chan struct{}, 1),
 		workers: map[int64]*running{}, states: map[int64]*State{}}
 }
 
-// SetAnalyzer sets the analyzer before Run.
-func (m *Manager) SetAnalyzer(a Analyzer) { m.analyzer = a }
-
-// SetCluster makes the manager collect only the targets the cluster assigns
-// to this server, publish their live views, and forward requests about
-// other targets. Call it before Run.
-func (m *Manager) SetCluster(c Cluster, msg Messenger) { m.cluster, m.messenger = c, msg }
-
 // Burst collects a target faster for the configured burst duration (from
 // now), for example while it has an open incident. Calling it again extends
 // the burst. It does nothing when adaptive sampling is off.
-func (m *Manager) Burst(targetID int64, reason string) {
+func (m *manager) Burst(targetID int64, reason string) {
 	if m.burstDur <= 0 {
 		return
 	}
-	if s, ok := m.State(targetID); ok {
+	if s, ok := m.stateOf(targetID); ok {
 		s.setBurst(time.Now().Add(m.burstDur), reason)
 	}
 }
@@ -163,19 +165,19 @@ func (m *Manager) Burst(targetID int64, reason string) {
 // RunSoon asks a target's worker to run a collector now instead of at its
 // next turn; with a cluster, the server that collects it is asked. False
 // when no worker could be asked.
-func (m *Manager) RunSoon(targetID int64, collector string) bool {
+func (m *manager) RunSoon(targetID int64, collector string) bool {
 	if m.RunSoonHere(targetID, collector) {
 		return true
 	}
-	if m.messenger != nil && m.cluster != nil && !m.cluster.Alone() {
-		m.messenger.Send(MessageRunSoon, map[string]any{"target_id": targetID, "collector": collector})
+	if m.bus != nil && m.cluster != nil && !m.cluster.Alone() {
+		m.bus.Send(MessageRunSoon, map[string]any{"target_id": targetID, "collector": collector})
 		return true
 	}
 	return false
 }
 
 // RunSoonHere is RunSoon for a target this server collects.
-func (m *Manager) RunSoonHere(targetID int64, collector string) bool {
+func (m *manager) RunSoonHere(targetID int64, collector string) bool {
 	m.mu.Lock()
 	_, running := m.workers[targetID]
 	s := m.states[targetID]
@@ -188,25 +190,25 @@ func (m *Manager) RunSoonHere(targetID int64, collector string) bool {
 }
 
 // Reload asks the manager to re-read targets now (after a change via the API).
-func (m *Manager) Reload() {
+func (m *manager) Reload() {
 	select {
 	case m.reload <- struct{}{}:
 	default:
 	}
 }
 
-// State returns the in-memory state of a target, if any.
-func (m *Manager) State(id int64) (*State, bool) {
+// stateOf returns the in-memory state of a target, if any.
+func (m *manager) stateOf(id int64) (*State, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.states[id]
 	return s, ok
 }
 
-// View returns the live view of a target: this server's when it collects
+// live.View returns the live view of a target: this server's when it collects
 // the target, otherwise the one its collecting server published (when it is
 // recent), otherwise the last one this server had.
-func (m *Manager) View(ctx context.Context, id int64) (View, bool) {
+func (m *manager) View(ctx context.Context, id int64) (live.View, bool) {
 	m.mu.Lock()
 	_, running := m.workers[id]
 	s := m.states[id]
@@ -222,12 +224,12 @@ func (m *Manager) View(ctx context.Context, id int64) (View, bool) {
 	if s != nil {
 		return s.Snapshot(), true
 	}
-	return View{}, false
+	return live.View{}, false
 }
 
 // Run synchronises workers with the stored targets until ctx is cancelled,
 // then stops every worker.
-func (m *Manager) Run(ctx context.Context) {
+func (m *manager) Run(ctx context.Context) {
 	t := time.NewTicker(m.syncEvery)
 	defer t.Stop()
 	if m.cluster != nil {
@@ -246,7 +248,7 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
-func (m *Manager) sync(ctx context.Context) {
+func (m *manager) sync(ctx context.Context) {
 	lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	targets, err := m.store.ListTargets(lctx)
 	cancel()
@@ -278,7 +280,6 @@ func (m *Manager) sync(ctx context.Context) {
 			}
 		}
 	}
-	adopter, _ := m.analyzer.(Adopter)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	updated := map[int64]bool{}
@@ -292,8 +293,8 @@ func (m *Manager) sync(ctx context.Context) {
 				updated[id] = true
 			} else {
 				m.metrics.CollectFreshness.Delete(strconv.FormatInt(id, 10))
-				if adopter != nil {
-					adopter.Forget(id)
+				if m.recorder != nil {
+					m.recorder.Forget(id)
 				}
 			}
 		}
@@ -304,9 +305,9 @@ func (m *Manager) sync(ctx context.Context) {
 		}
 		// A target this server starts collecting (at start-up or taken
 		// over from another server): attach its open incidents.
-		if adopter != nil && !updated[id] {
+		if m.recorder != nil && !updated[id] {
 			actx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			if err := adopter.Adopt(actx, id); err != nil {
+			if err := m.recorder.Adopt(actx, id); err != nil {
 				m.log.Warn("adopting open incidents failed", "target_id", id, "error", err.Error())
 			}
 			cancel()
@@ -338,7 +339,7 @@ func (m *Manager) sync(ctx context.Context) {
 	m.metrics.ActiveTargets.Set(float64(len(m.workers)))
 }
 
-func (m *Manager) stopAll() {
+func (m *manager) stopAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for id, r := range m.workers {
@@ -351,7 +352,7 @@ func (m *Manager) stopAll() {
 
 // publishLive publishes the live views of the targets this server collects
 // while other servers share the store, so they can answer API requests.
-func (m *Manager) publishLive(ctx context.Context) {
+func (m *manager) publishLive(ctx context.Context) {
 	t := time.NewTicker(liveEvery)
 	defer t.Stop()
 	for {
@@ -364,7 +365,7 @@ func (m *Manager) publishLive(ctx context.Context) {
 			continue
 		}
 		m.mu.Lock()
-		views := map[int64]View{}
+		views := map[int64]live.View{}
 		for id := range m.workers {
 			if s := m.states[id]; s != nil {
 				views[id] = s.Snapshot()
@@ -396,12 +397,12 @@ type remoteViews struct {
 
 type remoteView struct {
 	fetched time.Time
-	view    View
+	view    live.View
 	ok      bool
 }
 
 // get returns a published view younger than a minute (cached two seconds).
-func (r *remoteViews) get(ctx context.Context, store Store, id int64) (View, bool) {
+func (r *remoteViews) get(ctx context.Context, store Repositories, id int64) (live.View, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if c, ok := r.cache[id]; ok && time.Since(c.fetched) < 2*time.Second {

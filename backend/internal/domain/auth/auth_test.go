@@ -13,7 +13,9 @@ import (
 	"github.com/locklens/locklens/internal/repository"
 )
 
+// memStore implements the methods of the auth repository the service uses.
 type memStore struct {
+	repository.AuthRepository
 	mu       sync.Mutex
 	user     repository.User
 	sessions map[string]repository.AuthSession
@@ -48,14 +50,14 @@ func (m *memStore) DeleteSession(_ context.Context, h []byte) error {
 	return nil
 }
 
-func newTestService(t *testing.T) (*Service, *memStore) {
+func newTestService(t *testing.T) (*service, *memStore) {
 	t.Helper()
 	hash, err := HashPassword("correct horse battery")
 	if err != nil {
 		t.Fatal(err)
 	}
 	st := &memStore{user: repository.User{ID: 1, Username: "admin", PasswordHash: hash, Role: "admin"}, sessions: map[string]repository.AuthSession{}}
-	return NewService(st, time.Hour, true), st
+	return New(Repositories{AuthRepository: st}, time.Hour, true).(*service), st
 }
 
 func TestLoginSessionLogout(t *testing.T) {

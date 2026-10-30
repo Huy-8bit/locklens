@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/targets"
 	"github.com/locklens/locklens/internal/repository"
@@ -32,7 +32,7 @@ type latestValue struct {
 	Value      *float64   `json:"value"`
 }
 
-func latestValues(v collector.View) map[string]latestValue {
+func latestValues(v live.View) map[string]latestValue {
 	out := map[string]latestValue{}
 	for _, m := range overviewMetrics {
 		if tv, ok := v.Latest(m); ok {
@@ -52,7 +52,7 @@ func latestValues(v collector.View) map[string]latestValue {
 	return out
 }
 
-func (s *Server) view(r *http.Request, id int64) (collector.View, bool) {
+func (s *Server) view(r *http.Request, id int64) (live.View, bool) {
 	return s.d.Manager.View(r.Context(), id)
 }
 

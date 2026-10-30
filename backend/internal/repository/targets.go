@@ -12,6 +12,38 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// TargetRepository is the store of monitored targets, their status, and per-target counts.
+type TargetRepository interface {
+	// CreateTarget inserts a target and its initial status.
+	CreateTarget(ctx context.Context, t Target) (Target, error)
+	// UpdateTarget replaces the editable fields of an active target.
+	UpdateTarget(ctx context.Context, t Target) (Target, error)
+	// GetTarget returns an active (not deleted) target.
+	GetTarget(ctx context.Context, id int64) (Target, error)
+	// GetTargetByName returns an active target by case-insensitive name.
+	GetTargetByName(ctx context.Context, name string) (Target, error)
+	// ListTargets returns active targets ordered by name.
+	ListTargets(ctx context.Context) ([]Target, error)
+	// SoftDeleteTarget stops collection and hides the target. History and
+	// incidents remain until retention or an explicit purge.
+	SoftDeleteTarget(ctx context.Context, id int64) error
+	// PurgeTarget permanently removes a target (active or soft-deleted) and its
+	// history, deleting in batches so the store is never locked for long. With
+	// keepIncidents, incidents survive with their target name and evidence;
+	// otherwise they are removed too.
+	PurgeTarget(ctx context.Context, id int64, keepIncidents bool) error
+	// SaveTargetStatus overwrites the status row.
+	SaveTargetStatus(ctx context.Context, st TargetStatus) error
+	// GetTargetStatus returns the status of one target.
+	GetTargetStatus(ctx context.Context, id int64) (TargetStatus, error)
+	// ListTargetStatuses returns statuses keyed by target ID.
+	ListTargetStatuses(ctx context.Context) (map[int64]TargetStatus, error)
+	// CountsByTarget returns open incidents and active findings per target.
+	CountsByTarget(ctx context.Context) (map[int64]TargetCounts, error)
+}
+
+var _ TargetRepository = (*Store)(nil)
+
 // Target is a monitored PostgreSQL instance as stored. DSNCiphertext is only
 // ever decrypted by the collector and the connection test; it is never sent to
 // clients.

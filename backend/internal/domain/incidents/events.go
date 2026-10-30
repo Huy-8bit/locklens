@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/rules"
 	"github.com/locklens/locklens/internal/repository"
 )
 
-func latestMetrics(v collector.View) map[string]*float64 {
+func latestMetrics(v live.View) map[string]*float64 {
 	keys := []string{"connections.used", "connections.usage_ratio", "sessions.active", "sessions.idle_in_transaction",
 		"sessions.waiting_lock", "blocking.blocked_sessions", "blocking.max_lock_wait_seconds", "transactions.oldest_age_seconds",
 		"xact.commit.per_s", "xact.rollback.per_s", "temp.bytes.per_s", "deadlocks.delta", "wal.bytes.per_s",
@@ -50,7 +50,7 @@ func wrapSnapshot(raw json.RawMessage) json.RawMessage {
 	return out
 }
 
-func workloadEvent(v collector.View, th rules.Thresholds, now time.Time) *repository.IncidentEvent {
+func workloadEvent(v live.View, th rules.Thresholds, now time.Time) *repository.IncidentEvent {
 	if len(v.Statements) == 0 {
 		return nil
 	}
@@ -83,7 +83,7 @@ func isLifecycle(kind string) bool {
 
 // capEvents drops non-lifecycle events beyond the limits and adds a single
 // truncation marker the first time a limit is hit.
-func (r *Recorder) capEvents(evs []repository.IncidentEvent, count int, bytes int64) ([]repository.IncidentEvent, bool) {
+func (r *recorder) capEvents(evs []repository.IncidentEvent, count int, bytes int64) ([]repository.IncidentEvent, bool) {
 	var out []repository.IncidentEvent
 	truncated := false
 	for _, e := range evs {
@@ -112,7 +112,7 @@ func eventsSize(evs []repository.IncidentEvent) int64 {
 	return n
 }
 
-func (r *Recorder) appendEvents(ctx context.Context, oi *openIncident, now time.Time, evs []repository.IncidentEvent, seen bool) error {
+func (r *recorder) appendEvents(ctx context.Context, oi *openIncident, now time.Time, evs []repository.IncidentEvent, seen bool) error {
 	if oi.truncated {
 		kept := evs[:0]
 		for _, e := range evs {

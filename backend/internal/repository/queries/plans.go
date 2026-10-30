@@ -16,3 +16,6 @@ var DeletePlan string
 
 //go:embed plans/count_plans.sql
 var CountPlans string
+
+//go:embed plans/latest_plans.sql
+var LatestPlans string

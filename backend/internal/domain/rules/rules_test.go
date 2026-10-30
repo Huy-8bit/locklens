@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/report"
@@ -42,7 +42,7 @@ func inputWithHistory(samples int, every time.Duration, rootState string, used i
 		hist = append(hist, Summarize(act, rep))
 	}
 	return Input{Now: now, Interval: every, History: hist,
-		View: collector.View{Activity: act, Report: rep, Capabilities: &observe.Capabilities{ReadAllStats: true, TrackActivities: true}}}
+		View: live.View{Activity: act, Report: rep, Capabilities: &observe.Capabilities{ReadAllStats: true, TrackActivities: true}}}
 }
 
 func find(fs []Finding, rule string) []Finding {
@@ -177,7 +177,7 @@ func statements(perWindow func(window int) (calls int64, ms float64), window tim
 }
 
 func workloadInput(colls []observe.StatementsCollection) Input {
-	return Input{Now: now, Interval: 10 * time.Second, View: collector.View{
+	return Input{Now: now, Interval: 10 * time.Second, View: live.View{
 		Capabilities: &observe.Capabilities{StatStatements: true}, Statements: colls}}
 }
 
@@ -235,12 +235,12 @@ func TestWorkloadTooFewCallsAndCoverage(t *testing.T) {
 	}
 }
 
-func series(values []float64, step time.Duration) []collector.TimedValue {
-	var out []collector.TimedValue
+func series(values []float64, step time.Duration) []live.TimedValue {
+	var out []live.TimedValue
 	for i, v := range values {
 		at := now.Add(-time.Duration(len(values)-1-i) * step)
 		vv := v
-		out = append(out, collector.TimedValue{At: at, Value: &vv})
+		out = append(out, live.TimedValue{At: at, Value: &vv})
 	}
 	return out
 }
@@ -255,7 +255,7 @@ func TestTempDeadlocksArchiver(t *testing.T) {
 			vals[i] = 1 << 10
 		}
 	}
-	in := Input{Now: now, View: collector.View{Points: map[string][]collector.TimedValue{
+	in := Input{Now: now, View: live.View{Points: map[string][]live.TimedValue{
 		"temp.bytes.per_s":      series(vals, 30*time.Second),
 		"deadlocks.delta":       series(append(make([]float64, 59), 0, 2), 30*time.Second),
 		"archiver.failed.delta": series(make([]float64, 61), 30*time.Second),
@@ -284,7 +284,7 @@ func TestVacuumRules(t *testing.T) {
 	th := Defaults()
 	old := now.Add(-48 * time.Hour)
 	recent := now.Add(-time.Hour)
-	in := Input{Now: now, View: collector.View{Tables: &observe.TableHealth{At: now,
+	in := Input{Now: now, View: live.View{Tables: &observe.TableHealth{At: now,
 		Settings: map[string]string{"autovacuum_freeze_max_age": "200000000"},
 		Tables: []observe.TableStat{
 			{RelID: 1, Schema: "public", Name: "bloated", DeadTuples: ptr(int64(50000)), LiveTuples: ptr(int64(50000)), LastAutovacuum: &old},
@@ -308,11 +308,11 @@ func TestReplicationRules(t *testing.T) {
 	th := Defaults()
 	lag := float64(200 << 20)
 	retained := float64(2 << 30)
-	in := Input{Now: now, View: collector.View{
+	in := Input{Now: now, View: live.View{
 		Replication: &observe.Replication{At: now, Role: "primary",
 			Replicas: []observe.Replica{{PID: 9, ApplicationName: "standby1", ReplayLagBytes: &lag}},
 			Slots:    []observe.Slot{{Name: "stale", Type: "physical", Active: false, RetainedBytes: &retained}, {Name: "fine", RetainedBytes: ptr(float64(1024))}}},
-		Points: map[string][]collector.TimedValue{"replication.replay_lag_bytes{standby1}": series([]float64{lag, lag, lag}, 30*time.Second)},
+		Points: map[string][]live.TimedValue{"replication.replay_lag_bytes{standby1}": series([]float64{lag, lag, lag}, 30*time.Second)},
 	}}
 	fs := replicationRules(in, th)
 	if r := find(fs, RuleReplicaLag); len(r) != 1 {

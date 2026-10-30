@@ -14,7 +14,7 @@ import (
 // blocks: an incident already queued is not queued twice, and when the queue
 // is full the event is dropped (the next update or the reminder sweep
 // catches up, because decisions use the incident's state).
-func (s *Service) Publish(kind string, payload any) {
+func (s *service) Publish(kind string, payload any) {
 	switch kind {
 	case "incident.opened", "incident.updated", "incident.resolved":
 	default:
@@ -32,7 +32,7 @@ func (s *Service) Publish(kind string, payload any) {
 }
 
 // enqueue queues an incident for processing once.
-func (s *Service) enqueue(id int64) {
+func (s *service) enqueue(id int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.pending[id] {
@@ -48,7 +48,7 @@ func (s *Service) enqueue(id int64) {
 
 // Run processes queued incidents until ctx ends. Incidents are queued by
 // the server that records them, so each change is sent once.
-func (s *Service) Run(ctx context.Context) {
+func (s *service) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -64,7 +64,7 @@ func (s *Service) Run(ctx context.Context) {
 
 // RunReminders queues the open unacknowledged incidents every minute, so
 // due reminders are sent, until ctx ends. With several servers, one runs it.
-func (s *Service) RunReminders(ctx context.Context) {
+func (s *service) RunReminders(ctx context.Context) {
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	for {
@@ -85,7 +85,7 @@ func (s *Service) RunReminders(ctx context.Context) {
 }
 
 // process sends what each channel should receive for one incident now.
-func (s *Service) process(ctx context.Context, id int64) {
+func (s *service) process(ctx context.Context, id int64) {
 	in, err := s.store.GetIncident(ctx, id)
 	if err != nil {
 		if !errors.Is(err, repository.ErrNotFound) {
@@ -151,7 +151,7 @@ func (s *Service) process(ctx context.Context, id int64) {
 
 // observed returns the observations of the incident's findings (facts, not
 // causes; rules never put SQL text in them).
-func (s *Service) observed(ctx context.Context, incidentID int64) []string {
+func (s *service) observed(ctx context.Context, incidentID int64) []string {
 	fs, err := s.store.ListFindings(ctx, repository.FindingFilter{IncidentID: incidentID, Limit: 5})
 	if err != nil {
 		return []string{}
@@ -163,7 +163,7 @@ func (s *Service) observed(ctx context.Context, incidentID int64) []string {
 	return out
 }
 
-func (s *Service) deliver(ctx context.Context, ch repository.NotificationChannel, incidentID *int64, event string, m Message) repository.Delivery {
+func (s *service) deliver(ctx context.Context, ch repository.NotificationChannel, incidentID *int64, event string, m Message) repository.Delivery {
 	d, err := s.destination(ch)
 	if err != nil {
 		msg := err.Error()
@@ -181,7 +181,7 @@ func (s *Service) deliver(ctx context.Context, ch repository.NotificationChannel
 	return s.record(ctx, ch.ID, incidentID, event, m.Severity, "sent", attempts, nil)
 }
 
-func (s *Service) record(ctx context.Context, channelID int64, incidentID *int64, event, severity, status string, attempts int, errMsg *string) repository.Delivery {
+func (s *service) record(ctx context.Context, channelID int64, incidentID *int64, event, severity, status string, attempts int, errMsg *string) repository.Delivery {
 	sev := severity
 	d := repository.Delivery{ChannelID: channelID, IncidentID: incidentID, Event: event, Severity: &sev, Status: status, Attempts: attempts, Error: errMsg, At: s.now().UTC()}
 	if err := s.store.InsertDelivery(context.WithoutCancel(ctx), d); err != nil {
@@ -191,7 +191,7 @@ func (s *Service) record(ctx context.Context, channelID int64, incidentID *int64
 }
 
 // Test sends a test message through a channel now, enabled or not.
-func (s *Service) Test(ctx context.Context, id int64) (repository.Delivery, error) {
+func (s *service) Test(ctx context.Context, id int64) (repository.Delivery, error) {
 	ch, err := s.store.GetNotificationChannel(ctx, id)
 	if err != nil {
 		return repository.Delivery{}, err
@@ -207,7 +207,7 @@ func (s *Service) Test(ctx context.Context, id int64) (repository.Delivery, erro
 }
 
 // Deliveries returns recent deliveries, of one incident when incidentID is set.
-func (s *Service) Deliveries(ctx context.Context, incidentID *int64, limit int) ([]repository.Delivery, error) {
+func (s *service) Deliveries(ctx context.Context, incidentID *int64, limit int) ([]repository.Delivery, error) {
 	return s.store.ListDeliveries(ctx, incidentID, limit)
 }
 
@@ -222,7 +222,7 @@ type SilenceInput struct {
 }
 
 // CreateSilence validates and stores a silence starting now.
-func (s *Service) CreateSilence(ctx context.Context, in SilenceInput, by string) (repository.Silence, error) {
+func (s *service) CreateSilence(ctx context.Context, in SilenceInput, by string) (repository.Silence, error) {
 	now := s.now().UTC()
 	fields := map[string]string{}
 	end := now.Add(time.Duration(in.Minutes) * time.Minute)
@@ -251,11 +251,11 @@ func (s *Service) CreateSilence(ctx context.Context, in SilenceInput, by string)
 }
 
 // Silences returns current silences (or all recent ones).
-func (s *Service) Silences(ctx context.Context, includeEnded bool) ([]repository.Silence, error) {
+func (s *service) Silences(ctx context.Context, includeEnded bool) ([]repository.Silence, error) {
 	return s.store.ListSilences(ctx, includeEnded, 200)
 }
 
 // EndSilence ends a silence now.
-func (s *Service) EndSilence(ctx context.Context, id int64) error {
+func (s *service) EndSilence(ctx context.Context, id int64) error {
 	return s.store.EndSilence(ctx, id)
 }

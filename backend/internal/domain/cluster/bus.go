@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/locklens/locklens/internal/domain/events"
 )
 
 // channel is the NOTIFY channel of the bus.
@@ -21,35 +23,56 @@ type envelope struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
-// Bus carries messages between the servers: browser events (published on
+// Bus carries messages between the servers sharing the store; publishing on it reaches the browsers of every server.
+type Bus interface {
+	// Publish delivers an event to this server's browsers and sends it to the
+	// other servers, whose browsers receive it too.
+	Publish(kind string, payload any)
+	// Handle sets the handler of a message kind sent by other servers (instead
+	// of delivering it to the browsers).
+	Handle(kind string, fn func(json.RawMessage))
+	// Send sends a message to the other servers (not to this one). It does not
+	// block: messages are dropped when the queue is full or no other server
+	// runs.
+	Send(kind string, payload any)
+	// Run sends queued messages and receives the others' until ctx ends.
+	Run(ctx context.Context)
+}
+
+var _ Bus = (*bus)(nil)
+
+// bus carries messages between the servers: browser events (published on
 // the server that observed them, delivered to every server's browsers) and
 // requests (for example "collect this target now", handled by its owner).
-type Bus struct {
-	node  *Node
-	store Store
+type bus struct {
+	node  Node
+	store Repositories
 	log   *slog.Logger
 	queue chan envelope
+	// local receives the events published here and the events other
+	// servers published (the browsers' event hub of this server).
+	local events.Publisher
 
 	mu       sync.RWMutex
-	local    func(kind string, payload any)
 	handlers map[string]func(json.RawMessage)
 }
 
-// NewBus returns the bus of a node.
-func NewBus(node *Node, store Store, log *slog.Logger) *Bus {
-	return &Bus{node: node, store: store, log: log, queue: make(chan envelope, 256), handlers: map[string]func(json.RawMessage){}}
+// NewBus returns the bus of a node; local receives the events for this
+// server's browsers.
+func NewBus(node Node, store Repositories, local events.Publisher, log *slog.Logger) Bus {
+	return &bus{node: node, store: store, local: local, log: log, queue: make(chan envelope, 256), handlers: map[string]func(json.RawMessage){}}
 }
 
-// DeliverTo sets where messages without a handler go on this server (the
-// browsers' event hub).
-func (b *Bus) DeliverTo(local func(kind string, payload any)) {
-	b.mu.Lock()
-	b.local = local
-	b.mu.Unlock()
+// Publish delivers an event to this server's browsers and sends it to the
+// other servers, whose browsers receive it too.
+func (b *bus) Publish(kind string, payload any) {
+	b.local.Publish(kind, payload)
+	b.Send(kind, payload)
 }
 
-// Handle sets the handler of a message kind sent by other servers.
-func (b *Bus) Handle(kind string, fn func(json.RawMessage)) {
+// Handle sets the handler of a message kind sent by other servers (instead
+// of delivering it to the browsers).
+func (b *bus) Handle(kind string, fn func(json.RawMessage)) {
 	b.mu.Lock()
 	b.handlers[kind] = fn
 	b.mu.Unlock()
@@ -58,7 +81,7 @@ func (b *Bus) Handle(kind string, fn func(json.RawMessage)) {
 // Send sends a message to the other servers (not to this one). It does not
 // block: messages are dropped when the queue is full or no other server
 // runs.
-func (b *Bus) Send(kind string, payload any) {
+func (b *bus) Send(kind string, payload any) {
 	if b.node.Alone() {
 		return
 	}
@@ -74,7 +97,7 @@ func (b *Bus) Send(kind string, payload any) {
 }
 
 // Run sends queued messages and receives the others' until ctx ends.
-func (b *Bus) Run(ctx context.Context) {
+func (b *bus) Run(ctx context.Context) {
 	go b.receive(ctx)
 	for {
 		select {
@@ -94,7 +117,7 @@ func (b *Bus) Run(ctx context.Context) {
 	}
 }
 
-func (b *Bus) receive(ctx context.Context) {
+func (b *bus) receive(ctx context.Context) {
 	for ctx.Err() == nil {
 		err := b.store.Listen(ctx, channel, b.dispatch)
 		if ctx.Err() != nil {
@@ -111,18 +134,17 @@ func (b *Bus) receive(ctx context.Context) {
 	}
 }
 
-func (b *Bus) dispatch(payload string) {
+func (b *bus) dispatch(payload string) {
 	var e envelope
 	if json.Unmarshal([]byte(payload), &e) != nil || e.From == b.node.ID() {
 		return
 	}
 	b.mu.RLock()
-	h, local := b.handlers[e.Kind], b.local
+	h := b.handlers[e.Kind]
 	b.mu.RUnlock()
-	switch {
-	case h != nil:
+	if h != nil {
 		h(e.Payload)
-	case local != nil:
-		local(e.Kind, e.Payload)
+		return
 	}
+	b.local.Publish(e.Kind, e.Payload)
 }

@@ -41,15 +41,14 @@ type Incident struct {
 	Events            []repository.IncidentEvent `json:"events"`
 }
 
-// Source is the subset of the store used for exports.
-type Source interface {
-	GetIncident(ctx context.Context, id int64) (repository.Incident, error)
-	ListIncidentEvents(ctx context.Context, id int64, afterID int64, limit int) ([]repository.IncidentEvent, error)
-	ListFindings(ctx context.Context, f repository.FindingFilter) ([]repository.FindingRow, error)
+// Repositories are the stores an export reads.
+type Repositories struct {
+	repository.IncidentRepository
+	repository.FindingRepository
 }
 
 // Build assembles an export from the store.
-func Build(ctx context.Context, src Source, id int64, includeQuery bool, tool model.Tool) (Incident, error) {
+func Build(ctx context.Context, src Repositories, id int64, includeQuery bool, tool model.Tool) (Incident, error) {
 	in, err := src.GetIncident(ctx, id)
 	if err != nil {
 		return Incident{}, err

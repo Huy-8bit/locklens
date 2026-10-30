@@ -42,7 +42,7 @@ func (w *worker) collectTables(ctx context.Context) error {
 		}
 		id, hc := w.target.ID, h
 		w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorTables, At: h.At,
-			Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+			Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 				return s.InsertTableHealth(ctx, id, hc)
 			}})
 	}
@@ -81,7 +81,7 @@ func (w *worker) collectTables(ctx context.Context) error {
 	w.state.addPoints(h.At, pts)
 	id, at := w.target.ID, h.At
 	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorTables, At: at,
-		Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+		Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 			return s.InsertPoints(ctx, id, at, pts)
 		}})
 	return nil

@@ -19,16 +19,16 @@ const (
 // ObserveServer compares a server reading with the previous one, records
 // the changes, and keeps the reading. The first reading only sets the
 // baseline.
-func ObserveServer(ctx context.Context, s Recorder, targetID int64, cur observe.ServerState) error {
+func ObserveServer(ctx context.Context, s repository.ChangeRepository, targetID int64, cur observe.ServerState) error {
 	return observe1(ctx, s, targetID, stateServer, cur, DiffServer)
 }
 
 // ObserveSchema does the same for the schema of one database.
-func ObserveSchema(ctx context.Context, s Recorder, targetID int64, c observe.Catalog) error {
+func ObserveSchema(ctx context.Context, s repository.ChangeRepository, targetID int64, c observe.Catalog) error {
 	return observe1(ctx, s, targetID, statePrefix+c.DatName, SchemaOf(c), DiffSchema)
 }
 
-func observe1[T any](ctx context.Context, s Recorder, targetID int64, kind string, cur T, diff func(prev, cur T) []Event) error {
+func observe1[T any](ctx context.Context, s repository.ChangeRepository, targetID int64, kind string, cur T, diff func(prev, cur T) []Event) error {
 	raw, err := s.ChangeState(ctx, targetID, kind)
 	switch {
 	case errors.Is(err, repository.ErrNotFound):

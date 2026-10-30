@@ -38,9 +38,6 @@ var StatementWorkload string
 //go:embed optimizer/statement_mean_m_s.sql
 var StatementMeanMS string
 
-//go:embed optimizer/latest_plans.sql
-var LatestPlans string
-
 //go:embed optimizer/list_recommendations.sql
 var ListRecommendations string
 

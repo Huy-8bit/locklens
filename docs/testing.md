@@ -15,14 +15,14 @@ How LockLens is tested. The QA checklist is in
 | Configuration | `backend/internal/config` | no | DSN precedence, observer settings, redaction, unparsable DSNs never echoed |
 | Snapshot files | `backend/internal/lib/snapshot` | no | Round trip, no-clobber, atomic writes, versions, corrupt files, docs example |
 | CLI behaviour | `backend/internal/transport/cli` | no | Exit codes, offline `snapshot show`, `watch` retries and clean cancel |
-| Error hints | `backend/internal/lib/postgres` | no | SQLSTATE classification for hints and fatal errors |
+| Error hints | `backend/internal/targetdb` | no | SQLSTATE classification for hints and fatal errors |
 | Counters and writer | `backend/internal/domain/collector` | no | Deltas and rates, unknown on first sample/restart/reset/decrease/gap, created and dropped scopes, bounded queue drops the oldest, retries |
 | Rules | `backend/internal/domain/rules` | no | Persistence, streaks broken by gaps and PID reuse, insufficient data never passes, every rule's thresholds |
 | Auth and secrets | `backend/internal/domain/auth`, `backend/internal/lib/secret` | no | Sessions, rate limiting, CSRF and Origin, password policy; AES-GCM round trip, tampering, wrong key and context |
 | API helpers and middleware | `backend/internal/transport/httpapi` | no | Time ranges, paging, downsampling bounds, body limits and unknown fields, path IDs, security headers, request IDs, 401/404/405 |
 | Targets, host metrics | `backend/internal/domain/targets`, `backend/internal/lib/hostmetrics` | no | Validation without echoing DSNs; exporter parsing, rates, resets, size limit, URL rules |
 | Exports, metrics | `backend/internal/domain/export`, `backend/internal/lib/obs` | no | Query text scrubbed by default, standalone escaped HTML, import validation; exposition format, label cardinality guard |
-| Collector edge case | `backend/internal/lib/postgres` (tag `integration`) | yes | A session terminated in the middle of a collection |
+| Collector edge case | `backend/internal/targetdb` (tag `integration`) | yes | A session terminated in the middle of a collection |
 | Monitoring store | `backend/internal/repository` (tag `integration`) | yes | Concurrent idempotent migrations, sessions, soft delete and purge, query aggregation and coverage, batched retention, findings sync |
 | Incident recorder | `backend/internal/domain/incidents` (tag `integration`) | yes | Persistence, deduplication, resolution, cooldown regrouping, root changes, restart recovery, size and duration limits |
 | CLI end to end | `tests/e2e/cli` (tag `integration`) | yes | Real contention observed through the built binary |
@@ -56,7 +56,7 @@ database-backed tests. For each PostgreSQL version it:
    network the HypoPG success path is skipped and the run says so);
 5. creates a temporary Go workspace containing `backend/` and `tests/e2e/`,
    then runs `go test -tags integration -race -p 1` from the repository root for `./tests/e2e/cli/...`,
-   `./backend/internal/lib/postgres/...`, `./backend/internal/repository/...`,
+   `./backend/internal/targetdb/...`, `./backend/internal/repository/...`,
    `./backend/internal/domain/incidents/...`, `./backend/internal/domain/optimizer/...`, and `./tests/e2e/server/...` with explicit DSNs in
    the environment. Packages run one at a time because they share the
    database server;

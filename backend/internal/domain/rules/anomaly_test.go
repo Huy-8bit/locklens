@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/baseline"
-	"github.com/locklens/locklens/internal/domain/collector"
 	"github.com/locklens/locklens/internal/domain/finding"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/report"
@@ -209,7 +209,7 @@ func runningInput(age time.Duration, queryID *int64, mutate func(*model.Session)
 	rep := report.Build(snap, 5*time.Minute)
 	act := &observe.Activity{At: now, Snapshot: snap, Counts: observe.ActivityCounts{UsedConnections: 1, MaxConnections: 100}}
 	return Input{Now: now, Interval: 10 * time.Second, History: []ActivitySample{Summarize(act, rep)},
-		View: collector.View{Activity: act, Report: rep, Capabilities: &observe.Capabilities{ReadAllStats: true, TrackActivities: true}}}
+		View: live.View{Activity: act, Report: rep, Capabilities: &observe.Capabilities{ReadAllStats: true, TrackActivities: true}}}
 }
 
 func TestLongRunningQuery(t *testing.T) {

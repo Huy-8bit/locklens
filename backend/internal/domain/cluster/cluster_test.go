@@ -15,6 +15,7 @@ import (
 
 // memStore holds leases and heartbeats in memory, on a fake clock.
 type memStore struct {
+	repository.ClusterRepository
 	mu      sync.Mutex
 	now     time.Time
 	beats   map[string]time.Time
@@ -100,7 +101,7 @@ func TestTargetsAreSplitAndTakenOver(t *testing.T) {
 	ctx := context.Background()
 	st := newMem()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a, b := New(st, "a", "h", "v", log), New(st, "b", "h", "v", log)
+	a, b := New(Repositories{ClusterRepository: st}, "a", "h", "v", log).(*node), New(Repositories{ClusterRepository: st}, "b", "h", "v", log).(*node)
 	targets := []int64{1, 2, 3, 4, 5}
 
 	// Alone, a server collects everything.
@@ -145,7 +146,7 @@ func TestSingletonRunsOnOneServer(t *testing.T) {
 	var mu sync.Mutex
 	running := map[string]bool{}
 	for _, id := range []string{"a", "b"} {
-		n := New(st, id, "h", "v", log)
+		n := New(Repositories{ClusterRepository: st}, id, "h", "v", log)
 		go n.Singleton(ctx, "retention", func(ctx context.Context) {
 			mu.Lock()
 			running[id] = true
@@ -174,10 +175,9 @@ func TestSingletonRunsOnOneServer(t *testing.T) {
 func TestBusSkipsItsOwnMessagesAndRoutesByKind(t *testing.T) {
 	st := newMem()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := New(st, "a", "h", "v", log)
-	bus := NewBus(a, st, log)
+	a := New(Repositories{ClusterRepository: st}, "a", "h", "v", log)
 	var got []string
-	bus.DeliverTo(func(kind string, _ any) { got = append(got, "local:"+kind) })
+	bus := NewBus(a, Repositories{ClusterRepository: st}, publishFunc(func(kind string, _ any) { got = append(got, "local:"+kind) }), log).(*bus)
 	bus.Handle("collector.run_soon", func(json.RawMessage) { got = append(got, "handled") })
 	bus.dispatch(`{"from":"a","kind":"incident.opened","payload":{}}`)
 	bus.dispatch(`{"from":"b","kind":"incident.opened","payload":{}}`)
@@ -191,3 +191,8 @@ func TestBusSkipsItsOwnMessagesAndRoutesByKind(t *testing.T) {
 		t.Fatal("a server alone sends nothing")
 	}
 }
+
+// publishFunc is a publisher that calls a function.
+type publishFunc func(kind string, payload any)
+
+func (f publishFunc) Publish(kind string, payload any) { f(kind, payload) }

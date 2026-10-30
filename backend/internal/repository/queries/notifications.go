@@ -29,9 +29,6 @@ var InsertNotificationChannel string
 //go:embed notifications/update_notification_channel.sql
 var UpdateNotificationChannel string
 
-//go:embed notifications/open_unacknowledged_incidents.sql
-var OpenUnacknowledgedIncidents string
-
 //go:embed notifications/list_silences.sql
 var ListSilences string
 

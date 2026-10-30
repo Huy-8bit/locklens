@@ -6,7 +6,7 @@ import (
 
 func TestCancelRequiresSessionAndTarget(t *testing.T) {
 	called := false
-	s := New(nil, nil)
+	s := New(Repositories{}, nil).(*service)
 	s.active["request"] = running{"owner", 3, func() { called = true }}
 	if s.Cancel("other", 3, "request") || s.Cancel("owner", 4, "request") || called {
 		t.Fatal("cancel escaped ownership")

@@ -12,6 +12,38 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// QueryRepository is the store of statement identities, workload aggregates, and per-statement history.
+type QueryRepository interface {
+	// ListQueries aggregates query samples. Text is returned only when
+	// IncludeText is set (the caller checks the target's policy).
+	ListQueries(ctx context.Context, p QueryListParams) ([]QueryRow, int, error)
+	// CommandBreakdown aggregates statement deltas by command class: totals for
+	// (from, to], per-bucket sums, and per-bucket coverage. Statements of
+	// excludeUser are left out.
+	CommandBreakdown(ctx context.Context, targetID int64, from, to time.Time, step time.Duration, excludeUser string) ([]CommandTotals, []CommandBucket, []CoverageBucket, error)
+	// StatementCoverage returns coverage for (from, to].
+	StatementCoverage(ctx context.Context, targetID int64, from, to time.Time) (Coverage, error)
+	// QueryIdentity returns one identity.
+	QueryIdentity(ctx context.Context, targetID, id int64, includeText bool) (QueryRow, time.Time, time.Time, error)
+	// QueryRefs resolves pg_stat_statements keys to stored identities of one
+	// target. Keys that were never stored are left out.
+	QueryRefs(ctx context.Context, targetID int64, keys []observe.QueryKey, includeText bool) ([]QueryRef, error)
+	// QueryBuckets returns downsampled activity of one identity. Steps of five
+	// minutes or more, and ranges older than the raw history, are read from the
+	// five-minute rollups (completed with raw samples after the newest rolled-up
+	// bucket); there a bucket's covered seconds are the target's collection
+	// coverage.
+	QueryBuckets(ctx context.Context, targetID, id int64, from, to time.Time, step time.Duration) ([]QueryBucket, error)
+	// QueryStep is the step QueryBuckets returns for a request.
+	QueryStep(from time.Time, step time.Duration) time.Duration
+	// WindowTotals aggregates one identity in a window.
+	WindowTotals(ctx context.Context, targetID, id int64, from, to time.Time) (calls int64, totalMS float64, rows int64, err error)
+	// IdentityKey returns the pg_stat_statements key of a stored identity.
+	IdentityKey(ctx context.Context, targetID, id int64) (observe.QueryKey, error)
+}
+
+var _ QueryRepository = (*Store)(nil)
+
 // QueryRow is one identity aggregated over a window, with the previous
 // equal-length window when compared.
 type QueryRow struct {

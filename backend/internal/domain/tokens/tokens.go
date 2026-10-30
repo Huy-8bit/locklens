@@ -25,11 +25,27 @@ var (
 	ErrScope   = errors.New("the API token does not allow this")
 )
 
-// Service issues and checks tokens.
-type Service struct{ store Store }
+// Service issues API tokens and checks them.
+type Service interface {
+	// Create issues a token; the secret is returned only here.
+	Create(ctx context.Context, in Input, by string) (repository.APIToken, string, error)
+	// Authenticate returns the live token of a secret if it has the scope and,
+	// when it is limited to an instance, targetID is that instance (0 accepts
+	// any instance the token allows; the caller checks it then).
+	Authenticate(ctx context.Context, secret, scope string, targetID int64) (repository.APIToken, error)
+	// List returns every token.
+	List(ctx context.Context) ([]repository.APIToken, error)
+	// Revoke revokes a token.
+	Revoke(ctx context.Context, id int64) error
+}
+
+var _ Service = (*service)(nil)
+
+// service issues and checks tokens.
+type service struct{ store Repositories }
 
 // New returns the service.
-func New(store Store) *Service { return &Service{store: store} }
+func New(store Repositories) Service { return &service{store: store} }
 
 // Input is a token to create.
 type Input struct {
@@ -54,7 +70,7 @@ func (in Input) Validate() map[string]string {
 }
 
 // Create issues a token; the secret is returned only here.
-func (s *Service) Create(ctx context.Context, in Input, by string) (repository.APIToken, string, error) {
+func (s *service) Create(ctx context.Context, in Input, by string) (repository.APIToken, string, error) {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
 		return repository.APIToken{}, "", err
@@ -67,7 +83,7 @@ func (s *Service) Create(ctx context.Context, in Input, by string) (repository.A
 // Authenticate returns the live token of a secret if it has the scope and,
 // when it is limited to an instance, targetID is that instance (0 accepts
 // any instance the token allows; the caller checks it then).
-func (s *Service) Authenticate(ctx context.Context, secret, scope string, targetID int64) (repository.APIToken, error) {
+func (s *service) Authenticate(ctx context.Context, secret, scope string, targetID int64) (repository.APIToken, error) {
 	if !strings.HasPrefix(secret, prefix) {
 		return repository.APIToken{}, ErrInvalid
 	}
@@ -85,12 +101,12 @@ func (s *Service) Authenticate(ctx context.Context, secret, scope string, target
 }
 
 // List returns every token.
-func (s *Service) List(ctx context.Context) ([]repository.APIToken, error) {
+func (s *service) List(ctx context.Context) ([]repository.APIToken, error) {
 	return s.store.ListTokens(ctx)
 }
 
 // Revoke revokes a token.
-func (s *Service) Revoke(ctx context.Context, id int64) error { return s.store.RevokeToken(ctx, id) }
+func (s *service) Revoke(ctx context.Context, id int64) error { return s.store.RevokeToken(ctx, id) }
 
 func hash(secret string) []byte {
 	sum := sha256.Sum256([]byte(secret))

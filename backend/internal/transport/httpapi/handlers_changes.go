@@ -88,8 +88,8 @@ func (s *Server) reportChange(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	if s.d.Hub != nil {
-		s.d.Hub.Publish("change.created", map[string]any{"id": e.ID, "target_id": e.TargetID})
+	if s.d.Events != nil {
+		s.d.Events.Publish("change.created", map[string]any{"id": e.ID, "target_id": e.TargetID})
 	}
 	writeJSON(w, http.StatusCreated, e)
 }

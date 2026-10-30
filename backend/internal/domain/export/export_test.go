@@ -15,7 +15,10 @@ import (
 
 var at = time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 
+// fakeSource serves one incident with its events and findings.
 type fakeSource struct {
+	repository.IncidentRepository
+	repository.FindingRepository
 	in     repository.Incident
 	events []repository.IncidentEvent
 	fs     []repository.FindingRow
@@ -33,7 +36,7 @@ func (f fakeSource) ListFindings(context.Context, repository.FindingFilter) ([]r
 
 func ptr[T any](v T) *T { return &v }
 
-func source(t *testing.T) fakeSource {
+func source(t *testing.T) Repositories {
 	t.Helper()
 	snap := model.Snapshot{SchemaVersion: 1, ServerTime: at, CollectedAt: at,
 		Sessions: []model.Session{
@@ -47,7 +50,7 @@ func source(t *testing.T) fakeSource {
 		Evidence: []finding.Evidence{{Label: "root pid", Value: 1, Source: "pg_blocking_pids"}}, Explanation: "e", Limitations: "l"}
 	trig, _ := json.Marshal(map[string]any{"finding": f})
 	work, _ := json.Marshal(map[string]any{"current": []map[string]any{{"key": map[string]any{"queryid": "7"}, "datname": "app", "username": "u", "text": "SELECT cnry-workload", "calls": 5, "total_exec_ms": 10.0}}})
-	return fakeSource{
+	f2 := fakeSource{
 		in: repository.Incident{ID: 3, TargetName: "prod", RuleID: "blocking.long_chain", RuleVersion: 1, Severity: "warning",
 			Title: "Blocking <b>chain</b>", State: "resolved", OpenedAt: at, LastSeenAt: at.Add(time.Minute), Source: "recorder",
 			TriggerConfig: json.RawMessage("{}")},
@@ -58,6 +61,7 @@ func source(t *testing.T) fakeSource {
 		},
 		fs: []repository.FindingRow{{ID: 1, Finding: f}},
 	}
+	return Repositories{IncidentRepository: f2, FindingRepository: f2}
 }
 
 func TestBuildScrubsQueryTextByDefault(t *testing.T) {

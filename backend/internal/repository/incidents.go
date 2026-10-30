@@ -11,6 +11,38 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// IncidentRepository is the store of incidents and their evidence events.
+type IncidentRepository interface {
+	// CreateIncident inserts an incident and its first events atomically.
+	CreateIncident(ctx context.Context, in Incident, events []IncidentEvent) (int64, error)
+	// AppendIncidentEvents adds timeline entries and optionally updates the
+	// incident's last-seen time.
+	AppendIncidentEvents(ctx context.Context, id int64, lastSeen *time.Time, events []IncidentEvent) error
+	// UpdateIncidentState changes lifecycle fields: resolve (resolvedAt set) or
+	// reopen (resolvedAt nil). Severity and title may escalate while open.
+	UpdateIncidentState(ctx context.Context, id int64, state string, resolvedAt *time.Time, resolution *string, severity, title string, truncated bool) error
+	// AcknowledgeIncident stores user metadata; it never touches evidence.
+	AcknowledgeIncident(ctx context.Context, id int64, by, note string) (Incident, error)
+	// GetIncident returns one incident.
+	GetIncident(ctx context.Context, id int64) (Incident, error)
+	// ListIncidents returns a page of incidents (newest first) and the total.
+	ListIncidents(ctx context.Context, f IncidentFilter) ([]Incident, int, error)
+	// ListIncidentEvents returns events in time order, after an event ID.
+	ListIncidentEvents(ctx context.Context, id int64, afterID int64, limit int) ([]IncidentEvent, error)
+	// OpenIncidents returns every open incident (restart recovery).
+	OpenIncidents(ctx context.Context) ([]Incident, error)
+	// LatestResolvedIncident returns the most recent resolved incident of a rule
+	// on a target resolved after since, for regrouping flapping conditions.
+	LatestResolvedIncident(ctx context.Context, targetID int64, ruleID string, since time.Time) (Incident, error)
+	// CountOpenIncidents returns the number of open incidents.
+	CountOpenIncidents(ctx context.Context) (int, error)
+	// OpenUnacknowledgedIncidents returns open incidents nobody acknowledged
+	// (candidates for reminders).
+	OpenUnacknowledgedIncidents(ctx context.Context) ([]Incident, error)
+}
+
+var _ IncidentRepository = (*Store)(nil)
+
 // Incident is a stored incident.
 type Incident struct {
 	ID             int64           `json:"id"`
@@ -213,4 +245,23 @@ func (s *Store) CountOpenIncidents(ctx context.Context) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, queries.CountOpenIncidents).Scan(&n)
 	return n, s.red.Error(err)
+}
+
+// OpenUnacknowledgedIncidents returns open incidents nobody acknowledged
+// (candidates for reminders).
+func (s *Store) OpenUnacknowledgedIncidents(ctx context.Context) ([]Incident, error) {
+	rows, err := s.pool.Query(ctx, queries.OpenUnacknowledgedIncidents)
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	var out []Incident
+	for rows.Next() {
+		in, err := scanIncident(rows)
+		if err != nil {
+			rows.Close()
+			return nil, s.red.Error(err)
+		}
+		out = append(out, in)
+	}
+	return out, s.red.Error(rows.Err())
 }

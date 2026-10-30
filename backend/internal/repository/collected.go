@@ -11,6 +11,30 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// CollectionRepository is the store of writes of collected data: metric points, statements, snapshots, table health, gaps.
+type CollectionRepository interface {
+	// InsertPoints writes time-series points sharing one timestamp. Duplicate
+	// (target, metric, label, ts) rows are ignored so retried batches are safe.
+	InsertPoints(ctx context.Context, targetID int64, ts time.Time, points []observe.Point) error
+	// InsertStatements stores one pg_stat_statements collection: identities are
+	// upserted (text only when includeText), deltas inserted as samples, and a
+	// statement_collections row records coverage and resets.
+	InsertStatements(ctx context.Context, targetID int64, c observe.StatementsCollection, includeText bool, cache IdentityCache) error
+	// ClearQueryTexts removes stored statement texts of a target, used when the
+	// target's query-text collection is switched off.
+	ClearQueryTexts(ctx context.Context, targetID int64) error
+	// InsertActivitySnapshot stores a blocking snapshot.
+	InsertActivitySnapshot(ctx context.Context, targetID int64, ts time.Time, blocked, roots, longTx int, snapshot []byte) error
+	// InsertTableHealth stores table and index statistics.
+	InsertTableHealth(ctx context.Context, targetID int64, h observe.TableHealth) error
+	// InsertStateSnapshot stores a JSON document of the given kind.
+	InsertStateSnapshot(ctx context.Context, targetID int64, kind string, ts time.Time, payload []byte) error
+	// InsertGap records a period without data for a collector.
+	InsertGap(ctx context.Context, targetID int64, collector string, from, to time.Time, reason string) error
+}
+
+var _ CollectionRepository = (*Store)(nil)
+
 // InsertPoints writes time-series points sharing one timestamp. Duplicate
 // (target, metric, label, ts) rows are ignored so retried batches are safe.
 func (s *Store) InsertPoints(ctx context.Context, targetID int64, ts time.Time, points []observe.Point) error {

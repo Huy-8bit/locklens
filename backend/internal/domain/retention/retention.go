@@ -12,7 +12,7 @@ import (
 
 // Run applies the policy every interval until ctx is cancelled. The first
 // run happens one minute after start so startup is not slowed down.
-func Run(ctx context.Context, store Store, p repository.RetentionPolicy, every time.Duration, log *slog.Logger) {
+func Run(ctx context.Context, store Repositories, p repository.RetentionPolicy, every time.Duration, log *slog.Logger) {
 	timer := time.NewTimer(time.Minute)
 	defer timer.Stop()
 	for {

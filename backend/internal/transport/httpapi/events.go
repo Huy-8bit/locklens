@@ -1,96 +1,25 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 )
 
-// Hub fans out server events to SSE clients. Each client has a small buffer;
-// a slow client misses events (the UI then refetches) instead of blocking
-// collectors.
-type Hub struct {
-	mu      sync.Mutex
-	clients map[chan []byte]struct{}
-	max     int
-	onCount func(int)
-	// forward also sends published events to the other servers' hubs.
-	forward func(kind string, payload any)
-}
-
-// Forward sets where published events also go (the cluster bus), so the
-// browsers connected to other servers receive them.
-func (h *Hub) Forward(fn func(kind string, payload any)) { h.forward = fn }
-
-// NewHub returns a hub accepting at most max clients.
-func NewHub(max int, onCount func(int)) *Hub {
-	return &Hub{clients: map[chan []byte]struct{}{}, max: max, onCount: onCount}
-}
-
-// Publish implements collector.EventSink: it sends an event to this
-// server's browsers and, in a cluster, to the other servers'.
-func (h *Hub) Publish(kind string, payload any) {
-	h.PublishLocal(kind, payload)
-	if h.forward != nil {
-		h.forward(kind, payload)
-	}
-}
-
-// PublishLocal sends an event to this server's browsers only.
-func (h *Hub) PublishLocal(kind string, payload any) {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	msg := []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", kind, data))
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for c := range h.clients {
-		select {
-		case c <- msg:
-		default:
-		}
-	}
-}
-
-func (h *Hub) subscribe() (chan []byte, bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if len(h.clients) >= h.max {
-		return nil, false
-	}
-	c := make(chan []byte, 32)
-	h.clients[c] = struct{}{}
-	if h.onCount != nil {
-		h.onCount(len(h.clients))
-	}
-	return c, true
-}
-
-func (h *Hub) unsubscribe(c chan []byte) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	delete(h.clients, c)
-	if h.onCount != nil {
-		h.onCount(len(h.clients))
-	}
-}
-
-// ServeHTTP streams events until the client disconnects.
-func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+// serveEvents streams the events published on this server to a browser as
+// server-sent events until it disconnects.
+func (s *Server) serveEvents(w http.ResponseWriter, r *http.Request) {
 	fl, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
-	c, ok := h.subscribe()
+	c, done, ok := s.d.Stream.Subscribe()
 	if !ok {
 		writeError(w, r, http.StatusServiceUnavailable, "too_many_clients", "too many event stream clients")
 		return
 	}
-	defer h.unsubscribe(c)
+	defer done()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -103,8 +32,8 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case msg := <-c:
-			if _, err := w.Write(msg); err != nil {
+		case e := <-c:
+			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Kind, e.Data); err != nil {
 				return
 			}
 			fl.Flush()

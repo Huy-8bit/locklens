@@ -95,17 +95,29 @@ type Request struct {
 	Confirm bool `json:"confirm"`
 }
 
-// Service adds instances.
-type Service struct {
-	store     Store
+// Service adds instances from one connection string, creating LockLens's own least-privilege roles when asked.
+type Service interface {
+	// Inspect connects with the connection string and returns the plan. A
+	// connection failure is reported in the plan (OK false), not as an error.
+	Inspect(ctx context.Context, dsn string) (Plan, error)
+	// Add inspects the connection string again and adds the instance with the
+	// resulting plan. It returns the new target and the plan that was applied.
+	Add(ctx context.Context, req Request) (targets.View, Plan, error)
+}
+
+var _ Service = (*service)(nil)
+
+// service adds instances.
+type service struct {
+	store     Repositories
 	box       *secret.Box
-	targets   Targets
-	workspace Workspace
+	targets   targets.Service
+	workspace workspace.Service
 }
 
 // New returns a service.
-func New(store Store, box *secret.Box, t Targets, ws Workspace) *Service {
-	return &Service{store: store, box: box, targets: t, workspace: ws}
+func New(store Repositories, box *secret.Box, t targets.Service, ws workspace.Service) Service {
+	return &service{store: store, box: box, targets: t, workspace: ws}
 }
 
 func aad(systemIdentifier, purpose string) []byte {
@@ -141,7 +153,7 @@ func suggestName(cfg *pgx.ConnConfig, standby bool) string {
 
 // Inspect connects with the connection string and returns the plan. A
 // connection failure is reported in the plan (OK false), not as an error.
-func (s *Service) Inspect(ctx context.Context, dsn string) (Plan, error) {
+func (s *service) Inspect(ctx context.Context, dsn string) (Plan, error) {
 	cfg, red, err := connectConfig(dsn)
 	if err != nil {
 		return Plan{}, err
@@ -221,7 +233,7 @@ func (s *Service) Inspect(ctx context.Context, dsn string) (Plan, error) {
 }
 
 // rolesWork reports whether both stored roles can log in to this node.
-func (s *Service) rolesWork(ctx context.Context, dsn string, managed map[string]repository.ManagedRole) bool {
+func (s *service) rolesWork(ctx context.Context, dsn string, managed map[string]repository.ManagedRole) bool {
 	for _, purpose := range []string{"monitor", "reader"} {
 		d, err := s.dsnFor(dsn, managed[purpose])
 		if err != nil {
@@ -241,7 +253,7 @@ func (s *Service) rolesWork(ctx context.Context, dsn string, managed map[string]
 	return true
 }
 
-func (s *Service) dsnFor(dsn string, m repository.ManagedRole) (string, error) {
+func (s *service) dsnFor(dsn string, m repository.ManagedRole) (string, error) {
 	pw, err := s.box.Open(m.PasswordCiphertext, aad(m.SystemIdentifier, m.Purpose))
 	if err != nil {
 		return "", err
@@ -272,7 +284,7 @@ func (e *SetupError) Error() string { return e.Message }
 
 // Add inspects the connection string again and adds the instance with the
 // resulting plan. It returns the new target and the plan that was applied.
-func (s *Service) Add(ctx context.Context, req Request) (targets.View, Plan, error) {
+func (s *service) Add(ctx context.Context, req Request) (targets.View, Plan, error) {
 	p, err := s.Inspect(ctx, req.DSN)
 	if err != nil {
 		return targets.View{}, p, err
@@ -328,7 +340,7 @@ func (s *Service) Add(ctx context.Context, req Request) (targets.View, Plan, err
 // createRoles runs the role statements with the administrative connection,
 // stores the generated passwords, and checks that the monitoring role can
 // log in. The administrative connection is closed afterwards and never kept.
-func (s *Service) createRoles(ctx context.Context, dsn string, p Plan) (string, string, error) {
+func (s *service) createRoles(ctx context.Context, dsn string, p Plan) (string, string, error) {
 	cfg, red, err := connectConfig(dsn)
 	if err != nil {
 		return "", "", err

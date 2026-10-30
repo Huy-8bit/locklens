@@ -67,7 +67,7 @@ func (w *worker) collectReplication(ctx context.Context) error {
 	}
 	id, at := w.target.ID, r.At
 	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorReplication, At: at,
-		Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+		Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 			if err := s.InsertStateSnapshot(ctx, id, "replication", at, raw); err != nil {
 				return err
 			}

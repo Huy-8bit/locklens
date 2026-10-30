@@ -112,7 +112,7 @@ func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// No store: only routes that do not reach it are exercised here.
-	return New(Deps{Auth: auth.NewService(nil, time.Hour, false), Metrics: obs.NewMetrics(), Log: log, MetricsEnabled: true})
+	return New(Deps{Auth: auth.New(auth.Repositories{}, time.Hour, false), Metrics: obs.NewMetrics(), Log: log, MetricsEnabled: true})
 }
 
 func TestMiddlewareHeadersAndErrors(t *testing.T) {
@@ -233,7 +233,10 @@ func TestFleetRoutesRequireAuth(t *testing.T) {
 
 // roleStore is an auth store where every session cookie belongs to a user
 // with a fixed role.
-type roleStore struct{ role string }
+type roleStore struct {
+	repository.AuthRepository
+	role string
+}
 
 func (roleStore) UserByUsername(context.Context, string) (repository.User, error) {
 	return repository.User{}, repository.ErrNotFound
@@ -280,7 +283,7 @@ func TestRoutePermissions(t *testing.T) {
 		{"POST", "/api/v1/targets/1/workspace/run", `{"action":"explain","request_id":"r-123456"}`, auth.PermRunSQL},
 	}
 	for _, role := range auth.Roles {
-		s := New(Deps{Auth: auth.NewService(roleStore{string(role)}, time.Hour, false), Metrics: obs.NewMetrics(), Log: log})
+		s := New(Deps{Auth: auth.New(auth.Repositories{AuthRepository: roleStore{role: string(role)}}, time.Hour, false), Metrics: obs.NewMetrics(), Log: log})
 		for _, rt := range routes {
 			r := httptest.NewRequest(rt.method, rt.path, strings.NewReader(rt.body))
 			r.AddCookie(&http.Cookie{Name: auth.CookieName, Value: "token"})
@@ -297,8 +300,8 @@ func TestRoutePermissions(t *testing.T) {
 
 func TestClientKeyBehindTrustedProxy(t *testing.T) {
 	proxies := []netip.Prefix{netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("127.0.0.1/32")}
-	s := New(Deps{Auth: auth.NewService(nil, time.Hour, false), Metrics: obs.NewMetrics(), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), TrustedProxies: proxies})
-	direct := New(Deps{Auth: auth.NewService(nil, time.Hour, false), Metrics: obs.NewMetrics(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	s := New(Deps{Auth: auth.New(auth.Repositories{}, time.Hour, false), Metrics: obs.NewMetrics(), Log: slog.New(slog.NewTextHandler(io.Discard, nil)), TrustedProxies: proxies})
+	direct := New(Deps{Auth: auth.New(auth.Repositories{}, time.Hour, false), Metrics: obs.NewMetrics(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	cases := []struct {
 		srv        *Server
 		remote, xf string
@@ -318,7 +321,7 @@ func TestClientKeyBehindTrustedProxy(t *testing.T) {
 		{s, "172.18.0.5:4000", "not-an-ip", "172.18.0.5"},
 	}
 	// A trusted host name: only the addresses it resolves to are proxies.
-	byName := New(Deps{Auth: auth.NewService(nil, time.Hour, false), Metrics: obs.NewMetrics(), Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	byName := New(Deps{Auth: auth.New(auth.Repositories{}, time.Hour, false), Metrics: obs.NewMetrics(), Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		TrustedProxyHosts: []string{"frontend"},
 		LookupHost: func(_ context.Context, h string) ([]string, error) {
 			if h == "frontend" {
@@ -342,7 +345,7 @@ func TestClientKeyBehindTrustedProxy(t *testing.T) {
 
 // fakeTokens accepts one secret with a fixed token.
 type fakeTokens struct {
-	TokenService
+	tokens.Service
 	secret string
 	token  repository.APIToken
 }
@@ -359,7 +362,7 @@ func (f fakeTokens) Authenticate(_ context.Context, secret, scope string, _ int6
 
 // fakeChanges records reported changes.
 type fakeChanges struct {
-	ChangeService
+	changes.Service
 	got *[]observe.ChangeEvent
 }
 
@@ -373,7 +376,7 @@ func TestReportChangeWithToken(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var got []observe.ChangeEvent
 	seven := int64(7)
-	s := New(Deps{Auth: auth.NewService(roleStore{"viewer"}, time.Hour, false), Metrics: obs.NewMetrics(), Log: log,
+	s := New(Deps{Auth: auth.New(auth.Repositories{AuthRepository: roleStore{role: "viewer"}}, time.Hour, false), Metrics: obs.NewMetrics(), Log: log,
 		Tokens:  fakeTokens{secret: "llk_good", token: repository.APIToken{Name: "ci", Scope: repository.TokenEvents, TargetID: &seven}},
 		Changes: fakeChanges{got: &got}, Targets: fakeTargets{}})
 	post := func(auth, body string) *httptest.ResponseRecorder {
@@ -407,7 +410,7 @@ func TestReportChangeWithToken(t *testing.T) {
 	}
 }
 
-type fakeTargets struct{ TargetService }
+type fakeTargets struct{ targets.Service }
 
 func (fakeTargets) Get(_ context.Context, id int64) (targets.View, error) {
 	return targets.View{ID: id}, nil

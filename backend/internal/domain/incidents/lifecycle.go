@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/rules"
 	"github.com/locklens/locklens/internal/repository"
 )
 
-func (r *Recorder) startIncident(ctx context.Context, t repository.Target, v collector.View, ts *targetState, ruleID string,
+func (r *recorder) startIncident(ctx context.Context, t repository.Target, v live.View, ts *targetState, ruleID string,
 	firing []rules.Finding, ids map[[2]string]int64, now time.Time, th rules.Thresholds, gap *repository.IncidentEvent) error {
 	// Regroup with a recently resolved incident of the same rule, unless it
 	// ended because of the duration limit (then wait for the cooldown).
@@ -128,7 +128,7 @@ func severityRank(s rules.Severity) int {
 	return 0
 }
 
-func (r *Recorder) continueIncident(ctx context.Context, t repository.Target, v collector.View, ts *targetState, oi *openIncident,
+func (r *recorder) continueIncident(ctx context.Context, t repository.Target, v live.View, ts *targetState, oi *openIncident,
 	firing, findings []rules.Finding, ids map[[2]string]int64, now time.Time, sample rules.ActivitySample, metrics map[string]*float64,
 	refs []findingRef, snapRaw json.RawMessage, sig string, gap *repository.IncidentEvent) error {
 	var evs []repository.IncidentEvent
@@ -234,7 +234,7 @@ func conditionHolds(ruleID string, s rules.ActivitySample, findings []rules.Find
 	return false
 }
 
-func (r *Recorder) resolve(ctx context.Context, t repository.Target, ts *targetState, oi *openIncident, now time.Time, why string, evs []repository.IncidentEvent) error {
+func (r *recorder) resolve(ctx context.Context, t repository.Target, ts *targetState, oi *openIncident, now time.Time, why string, evs []repository.IncidentEvent) error {
 	summary := "Resolved: the triggering condition was not observed for the last samples."
 	if why == ResolutionDuration {
 		summary = fmt.Sprintf("Recording stopped: the incident reached the %s duration limit. A new incident opens if the condition persists after the cooldown.", r.cfg.MaxDuration)

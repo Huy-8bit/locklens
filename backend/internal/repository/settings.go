@@ -10,6 +10,17 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// SettingRepository is the store of persisted settings.
+type SettingRepository interface {
+	// GetSetting decodes a JSON setting into dst. It returns ErrNotFound when the
+	// key has never been set.
+	GetSetting(ctx context.Context, key string, dst any) error
+	// PutSetting stores value as JSON.
+	PutSetting(ctx context.Context, key string, value any) error
+}
+
+var _ SettingRepository = (*Store)(nil)
+
 // GetSetting decodes a JSON setting into dst. It returns ErrNotFound when the
 // key has never been set.
 func (s *Store) GetSetting(ctx context.Context, key string, dst any) error {

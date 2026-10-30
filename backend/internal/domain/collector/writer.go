@@ -15,7 +15,7 @@ type WriteOp struct {
 	TargetID  int64
 	Collector string
 	At        time.Time
-	Write     func(ctx context.Context, s Store, cache repository.IdentityCache) error
+	Write     func(ctx context.Context, s Repositories, cache repository.IdentityCache) error
 }
 
 // Writer decouples collection from the monitoring store with a bounded
@@ -24,7 +24,7 @@ type WriteOp struct {
 // that is written when the store accepts writes again. Memory use is
 // therefore bounded by the queue capacity, and lost data is never hidden.
 type Writer struct {
-	store   Store
+	store   Repositories
 	metrics *obs.Metrics
 	log     *slog.Logger
 
@@ -39,7 +39,7 @@ type Writer struct {
 }
 
 // NewWriter returns a writer with the given queue capacity.
-func NewWriter(store Store, capacity int, metrics *obs.Metrics, log *slog.Logger) *Writer {
+func NewWriter(store Repositories, capacity int, metrics *obs.Metrics, log *slog.Logger) *Writer {
 	if capacity < 1 {
 		capacity = 1
 	}

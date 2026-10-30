@@ -39,9 +39,34 @@ const (
 
 const targetPrefix = "target:"
 
-// Node is this server's membership.
-type Node struct {
-	store    Store
+// Node is this server's membership in the cluster: heartbeats, the targets it collects, and the jobs it runs.
+type Node interface {
+	// ID is the server's ID.
+	ID() string
+	// Alone reports whether no other live server shares the store.
+	Alone() bool
+	// Servers returns the servers seen at the last heartbeat.
+	Servers() []repository.Server
+	// Owns reports whether this server collects a target.
+	Owns(targetID int64) bool
+	// Run renews the heartbeat until ctx ends, then releases this server's
+	// target leases so the others take them over at once.
+	Run(ctx context.Context)
+	// Assign decides which of the wanted targets this server collects: it
+	// renews its leases up to an even share of them (ceil(targets / live
+	// servers)), releases the rest, and takes free or expired ones while it has
+	// fewer. The collector manager calls it on every sync.
+	Assign(ctx context.Context, wanted []int64) (map[int64]bool, error)
+	// Singleton runs job while this server holds its lease and stops it when
+	// the lease is lost, until ctx ends. Only one server runs a job at a time.
+	Singleton(ctx context.Context, job string, run func(context.Context))
+}
+
+var _ Node = (*node)(nil)
+
+// node is this server's membership.
+type node struct {
+	store    Repositories
 	log      *slog.Logger
 	self     repository.Server
 	mu       sync.RWMutex
@@ -51,30 +76,30 @@ type Node struct {
 }
 
 // New returns the node of server id (unique per running server).
-func New(store Store, id, hostname, version string, log *slog.Logger) *Node {
-	return &Node{store: store, log: log, alive: 1, assigned: map[int64]bool{},
+func New(store Repositories, id, hostname, version string, log *slog.Logger) Node {
+	return &node{store: store, log: log, alive: 1, assigned: map[int64]bool{},
 		self: repository.Server{ID: id, Hostname: hostname, Version: version, StartedAt: time.Now().UTC()}}
 }
 
 // ID is the server's ID.
-func (n *Node) ID() string { return n.self.ID }
+func (n *node) ID() string { return n.self.ID }
 
 // Alone reports whether no other live server shares the store.
-func (n *Node) Alone() bool {
+func (n *node) Alone() bool {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.alive <= 1
 }
 
 // Servers returns the servers seen at the last heartbeat.
-func (n *Node) Servers() []repository.Server {
+func (n *node) Servers() []repository.Server {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return slices.Clone(n.servers)
 }
 
 // Owns reports whether this server collects a target.
-func (n *Node) Owns(targetID int64) bool {
+func (n *node) Owns(targetID int64) bool {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.assigned[targetID]
@@ -82,7 +107,7 @@ func (n *Node) Owns(targetID int64) bool {
 
 // Run renews the heartbeat until ctx ends, then releases this server's
 // target leases so the others take them over at once.
-func (n *Node) Run(ctx context.Context) {
+func (n *node) Run(ctx context.Context) {
 	n.beat(ctx)
 	t := time.NewTicker(heartbeatEvery)
 	defer t.Stop()
@@ -97,7 +122,7 @@ func (n *Node) Run(ctx context.Context) {
 	}
 }
 
-func (n *Node) beat(ctx context.Context) {
+func (n *node) beat(ctx context.Context) {
 	bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := n.store.Heartbeat(bctx, n.self); err != nil {
@@ -120,7 +145,7 @@ func (n *Node) beat(ctx context.Context) {
 	n.mu.Unlock()
 }
 
-func (n *Node) releaseAll() {
+func (n *node) releaseAll() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	n.mu.Lock()
@@ -136,7 +161,7 @@ func (n *Node) releaseAll() {
 // renews its leases up to an even share of them (ceil(targets / live
 // servers)), releases the rest, and takes free or expired ones while it has
 // fewer. The collector manager calls it on every sync.
-func (n *Node) Assign(ctx context.Context, wanted []int64) (map[int64]bool, error) {
+func (n *node) Assign(ctx context.Context, wanted []int64) (map[int64]bool, error) {
 	leases, err := n.store.Leases(ctx, targetPrefix)
 	if err != nil {
 		return nil, err
@@ -207,7 +232,7 @@ func (n *Node) Assign(ctx context.Context, wanted []int64) (map[int64]bool, erro
 }
 
 // spread orders targets differently per server.
-func (n *Node) spread(id int64) uint32 {
+func (n *node) spread(id int64) uint32 {
 	h := fnv.New32a()
 	h.Write([]byte(n.self.ID + "/" + strconv.FormatInt(id, 10)))
 	return h.Sum32()
@@ -215,7 +240,7 @@ func (n *Node) spread(id int64) uint32 {
 
 // Singleton runs job while this server holds its lease and stops it when
 // the lease is lost, until ctx ends. Only one server runs a job at a time.
-func (n *Node) Singleton(ctx context.Context, job string, run func(context.Context)) {
+func (n *node) Singleton(ctx context.Context, job string, run func(context.Context)) {
 	name := "job:" + job
 	var cur *runningJob
 	t := time.NewTicker(jobRenewEvery)

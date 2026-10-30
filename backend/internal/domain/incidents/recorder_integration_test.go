@@ -14,12 +14,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/locklens/locklens/internal/domain/collector"
 	"github.com/locklens/locklens/internal/domain/incidents"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/report"
 	"github.com/locklens/locklens/internal/domain/rules"
+	"github.com/locklens/locklens/internal/domain/settings"
 	"github.com/locklens/locklens/internal/lib/obs"
 	"github.com/locklens/locklens/internal/repository"
 )
@@ -32,7 +33,11 @@ const step = 5 * time.Second
 
 var t0 = time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 
-type thresholds struct{ t rules.Thresholds }
+// thresholds serves fixed rule thresholds.
+type thresholds struct {
+	settings.Service
+	t rules.Thresholds
+}
 
 func (f thresholds) Thresholds() rules.Thresholds { return f.t }
 
@@ -80,7 +85,7 @@ type harness struct {
 	t      *testing.T
 	store  *repository.Store
 	target repository.Target
-	rec    *incidents.Recorder
+	rec    incidents.Recorder
 	cfg    incidents.Config
 }
 
@@ -96,9 +101,10 @@ func newHarness(t *testing.T, cfg incidents.Config) *harness {
 	return h
 }
 
-func (h *harness) newRecorder() *incidents.Recorder {
+func (h *harness) newRecorder() incidents.Recorder {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return incidents.NewRecorder(h.store, h.cfg, thresholds{rules.Defaults()}, obs.NewMetrics(), nopSink{}, log)
+	return incidents.NewRecorder(incidents.Repositories{IncidentRepository: h.store, FindingRepository: h.store}, h.cfg,
+		thresholds{t: rules.Defaults()}, nil, obs.NewMetrics(), nopSink{}, log)
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -106,7 +112,7 @@ func ptr[T any](v T) *T { return &v }
 // view builds an activity collection at `at`. With blocking, pid 1 blocks 2,
 // which blocks 3; root is the PID of the root blocker (a new PID models a
 // different root session).
-func view(at time.Time, blocking bool, root int) collector.View {
+func view(at time.Time, blocking bool, root int) live.View {
 	start := t0.Add(-time.Hour)
 	sess := func(pid int) model.Session {
 		return model.Session{PID: pid, State: ptr("active"), BackendType: ptr("client backend"), DetailsVisible: true,
@@ -118,7 +124,7 @@ func view(at time.Time, blocking bool, root int) collector.View {
 		snap.Edges = []model.Edge{{Blocker: root, Waiter: root + 1}, {Blocker: root + 1, Waiter: root + 2}}
 	}
 	rep := report.Build(snap, 5*time.Minute)
-	return collector.View{
+	return live.View{
 		Activity:     &observe.Activity{At: at, Snapshot: snap, Counts: observe.ActivityCounts{UsedConnections: 5, MaxConnections: 100, ReservedConnections: 3}},
 		Report:       rep,
 		Capabilities: &observe.Capabilities{ReadAllStats: true, TrackActivities: true},
@@ -127,7 +133,7 @@ func view(at time.Time, blocking bool, root int) collector.View {
 
 // feed analyzes n samples starting at `from` and returns the time after the
 // last one.
-func (h *harness) feed(rec *incidents.Recorder, from time.Time, n int, blocking bool, root int) time.Time {
+func (h *harness) feed(rec incidents.Recorder, from time.Time, n int, blocking bool, root int) time.Time {
 	at := from
 	for range n {
 		rec.Analyze(context.Background(), h.target, view(at, blocking, root))

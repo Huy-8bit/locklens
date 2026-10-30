@@ -17,11 +17,24 @@ const (
 	maxReportedIn = 30 * 24 * time.Hour // how far back a change may be reported
 )
 
-// Service records reported changes and lists all of them.
-type Service struct{ store Store }
+// Service records reported changes and lists every change.
+type Service interface {
+	// Record stores a reported change (already validated) from a source
+	// (SourceAPI or SourceUser) by a person or token name.
+	Record(ctx context.Context, r Report, source, by string, now time.Time) (Event, error)
+	// List returns changes, the newest first.
+	List(ctx context.Context, f repository.ChangeFilter) ([]Event, error)
+	// Delete deletes a reported change; detected changes cannot be deleted.
+	Delete(ctx context.Context, id int64) (Event, error)
+}
+
+var _ Service = (*service)(nil)
+
+// service records reported changes and lists all of them.
+type service struct{ store Repositories }
 
 // New returns the service.
-func New(store Store) *Service { return &Service{store: store} }
+func New(store Repositories) Service { return &service{store: store} }
 
 // Report is a change a person or a pipeline reports. At defaults to now;
 // TargetID nil means every instance.
@@ -53,7 +66,7 @@ func (r Report) Validate(now time.Time) map[string]string {
 
 // Record stores a reported change (already validated) from a source
 // (SourceAPI or SourceUser) by a person or token name.
-func (s *Service) Record(ctx context.Context, r Report, source, by string, now time.Time) (Event, error) {
+func (s *service) Record(ctx context.Context, r Report, source, by string, now time.Time) (Event, error) {
 	at := now
 	if r.At != nil {
 		at = *r.At
@@ -71,11 +84,11 @@ func (s *Service) Record(ctx context.Context, r Report, source, by string, now t
 }
 
 // List returns changes, the newest first.
-func (s *Service) List(ctx context.Context, f repository.ChangeFilter) ([]Event, error) {
+func (s *service) List(ctx context.Context, f repository.ChangeFilter) ([]Event, error) {
 	return s.store.ListChanges(ctx, f)
 }
 
 // Delete deletes a reported change; detected changes cannot be deleted.
-func (s *Service) Delete(ctx context.Context, id int64) (Event, error) {
+func (s *service) Delete(ctx context.Context, id int64) (Event, error) {
 	return s.store.DeleteChange(ctx, id)
 }

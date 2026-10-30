@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/load"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/repository"
@@ -95,7 +96,7 @@ func (s *Server) targetLoad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Whether sampling runs, and why not, from the collector's status.
-	var status *collector.CollectorStatus
+	var status *live.CollectorStatus
 	if v, ok := s.view(r, t.ID); ok {
 		if c, ok := v.Collectors[collector.CollectorLoad]; ok {
 			status = &c

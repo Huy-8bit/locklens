@@ -10,6 +10,25 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// PlanRepository is the store of saved execution plans.
+type PlanRepository interface {
+	// SavePlan stores a plan of an identity of the target.
+	SavePlan(ctx context.Context, targetID int64, p PlanRow) (PlanRow, error)
+	// ListPlans returns the saved plans of an identity, newest first, without
+	// their bodies.
+	ListPlans(ctx context.Context, targetID, identityID int64) ([]PlanRow, error)
+	// GetPlan returns one saved plan of the target with its body.
+	GetPlan(ctx context.Context, targetID, id int64) (PlanRow, error)
+	// DeletePlan removes a saved plan of the target.
+	DeletePlan(ctx context.Context, targetID, id int64) error
+	// CountPlans counts the saved plans of the target's identities with a queryid.
+	CountPlans(ctx context.Context, targetID, queryID int64) (int, error)
+	// LatestPlans returns the newest saved plan of each identity, with its body.
+	LatestPlans(ctx context.Context, targetID int64, identityIDs []int64) (map[int64]PlanRow, error)
+}
+
+var _ PlanRepository = (*Store)(nil)
+
 // PlanRow is a saved execution plan. Plan holds the EXPLAIN output and is
 // left empty in listings.
 type PlanRow struct {
@@ -87,4 +106,21 @@ func scanPlan(r pgx.CollectableRow) (PlanRow, error) {
 	err := r.Scan(&p.ID, &p.IdentityID, &p.CapturedAt, &p.CapturedBy, &p.Source, &p.Format, &p.Plan, &p.Fingerprint, &p.TotalCost, &p.Note)
 	p.CapturedAt = p.CapturedAt.UTC()
 	return p, err
+}
+
+// LatestPlans returns the newest saved plan of each identity, with its body.
+func (s *Store) LatestPlans(ctx context.Context, targetID int64, identityIDs []int64) (map[int64]PlanRow, error) {
+	rows, err := s.pool.Query(ctx, queries.LatestPlans, targetID, identityIDs)
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	list, err := pgx.CollectRows(rows, scanPlan)
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	out := make(map[int64]PlanRow, len(list))
+	for _, p := range list {
+		out[p.IdentityID] = p
+	}
+	return out, nil
 }

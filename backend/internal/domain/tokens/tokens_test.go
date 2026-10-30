@@ -12,6 +12,7 @@ import (
 
 // memStore keeps tokens in memory.
 type memStore struct {
+	repository.TokenRepository
 	hashes [][]byte
 	tokens []repository.APIToken
 }
@@ -35,7 +36,7 @@ func (m *memStore) RevokeToken(context.Context, int64) error { return nil }
 func TestTokens(t *testing.T) {
 	ctx := context.Background()
 	st := &memStore{}
-	s := New(st)
+	s := New(Repositories{TokenRepository: st})
 	seven := int64(7)
 	tok, secret, err := s.Create(ctx, Input{Name: "agent", Scope: repository.TokenIngest, TargetID: &seven}, "admin")
 	if err != nil || !strings.HasPrefix(secret, "llk_") || len(secret) < 30 || !strings.HasPrefix(secret, tok.Prefix) {

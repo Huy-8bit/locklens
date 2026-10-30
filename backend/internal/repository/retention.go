@@ -7,6 +7,19 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// RetentionRepository is the store of expiry of old data and the size of the store.
+type RetentionRepository interface {
+	// ApplyRetention deletes expired rows in batches of 5,000 with a short pause
+	// between batches, so it never holds long locks or starves collectors.
+	// Incidents keep their own evidence, so pruning raw history never changes an
+	// incident.
+	ApplyRetention(ctx context.Context, p RetentionPolicy, now time.Time) (RetentionResult, error)
+	// TableSizes returns sizes of LockLens' tables (estimated row counts).
+	TableSizes(ctx context.Context) ([]StorageStats, error)
+}
+
+var _ RetentionRepository = (*Store)(nil)
+
 // RetentionPolicy says how long data is kept.
 type RetentionPolicy struct {
 	// Raw history: points, samples, snapshots, table statistics.

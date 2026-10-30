@@ -12,6 +12,20 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// FindingRepository is the store of rule findings and their lifecycle.
+type FindingRepository interface {
+	// SyncFindings upserts the current findings of a target and resolves stored
+	// findings that are no longer reported. Returns the IDs of current findings
+	// keyed by rule and key.
+	SyncFindings(ctx context.Context, targetID int64, now time.Time, fs []rules.Finding) (map[[2]string]int64, error)
+	// LinkFindingsToIncident records which incident a finding belongs to.
+	LinkFindingsToIncident(ctx context.Context, incidentID int64, findingIDs []int64) error
+	// ListFindings returns findings, newest first.
+	ListFindings(ctx context.Context, f FindingFilter) ([]FindingRow, error)
+}
+
+var _ FindingRepository = (*Store)(nil)
+
 // FindingRow is a stored finding.
 type FindingRow struct {
 	ID         int64         `json:"id"`

@@ -144,7 +144,7 @@ func TestWorkspacePolicyIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	box, _ := secret.New(make([]byte, 32))
-	svc := New(store, box)
+	svc := New(Repositories{WorkspaceRepository: store, TargetRepository: store}, box).(*service)
 	cfg, err := pgx.ParseConfig(os.Getenv("LOCKLENS_IT_LIMITED_DSN"))
 	if err != nil {
 		t.Fatal(err)

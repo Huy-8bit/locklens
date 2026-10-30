@@ -158,7 +158,7 @@ exists where the target collected it).`,
 				return err
 			}
 			defer store.Close()
-			e, err := export.Build(octx, store, id, includeQuery, tool())
+			e, err := export.Build(octx, export.Repositories{IncidentRepository: store, FindingRepository: store}, id, includeQuery, tool())
 			if err != nil {
 				return fmt.Errorf("export incident %d: %w", id, err)
 			}

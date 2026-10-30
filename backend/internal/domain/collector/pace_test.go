@@ -11,7 +11,7 @@ import (
 )
 
 func pacedWorker() (*worker, *job) {
-	m := &Manager{budget: 0.1, burstDur: time.Minute, log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	m := &manager{budget: 0.1, burstDur: time.Minute, log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		workers: map[int64]*running{}, states: map[int64]*State{}}
 	st := newState()
 	w := &worker{m: m, state: st, target: repository.Target{ID: 1}}

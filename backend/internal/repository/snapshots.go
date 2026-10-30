@@ -14,6 +14,24 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// SnapshotRepository is the store of stored activity snapshots and state snapshots.
+type SnapshotRepository interface {
+	// ListActivitySnapshots returns snapshot metadata in (from, to], newest first.
+	ListActivitySnapshots(ctx context.Context, targetID int64, from, to time.Time, onlyBlocking bool, limit int) ([]SnapshotMeta, error)
+	// GetActivitySnapshot returns a stored snapshot document.
+	GetActivitySnapshot(ctx context.Context, targetID, id int64) (SnapshotMeta, json.RawMessage, error)
+	// LatestActivitySnapshot returns the newest stored snapshot.
+	LatestActivitySnapshot(ctx context.Context, targetID int64) (SnapshotMeta, json.RawMessage, error)
+	// LatestState returns the newest state snapshot of a kind.
+	LatestState(ctx context.Context, targetID int64, kind string) (time.Time, json.RawMessage, error)
+	// LatestTableHealth rebuilds the newest table health collection of every
+	// database from rows: the tables and indexes of all of them, with the
+	// cluster-wide data (database ages, settings) of the main database.
+	LatestTableHealth(ctx context.Context, targetID int64) (*observe.TableHealth, error)
+}
+
+var _ SnapshotRepository = (*Store)(nil)
+
 // SnapshotMeta describes a stored activity snapshot.
 type SnapshotMeta struct {
 	ID               int64     `json:"id"`

@@ -13,6 +13,20 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// TimescaleRepository is the store of TimescaleDB setup and status of the store.
+type TimescaleRepository interface {
+	// SetupTimescale turns the history tables into TimescaleDB hypertables and,
+	// with the Community license, compresses chunks older than compressAfter. It
+	// is idempotent and runs after migrations on every start, so a store that
+	// gains the extension later is converted then. Existing rows are moved into
+	// chunks, which takes a while on a large store (once).
+	SetupTimescale(ctx context.Context, mode TimescaleMode, compressAfter time.Duration) (TimescaleStatus, error)
+	// Timescale returns the status found by SetupTimescale.
+	Timescale() TimescaleStatus
+}
+
+var _ TimescaleRepository = (*Store)(nil)
+
 // TimescaleMode chooses whether the store uses TimescaleDB.
 type TimescaleMode string
 

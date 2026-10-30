@@ -5,13 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/observe"
 )
 
 func TestLoadEventSummarisesRecentBuckets(t *testing.T) {
 	now := time.Date(2026, 10, 25, 13, 0, 0, 0, time.UTC)
-	v := collector.View{Load: []observe.LoadBucket{
+	v := live.View{Load: []observe.LoadBucket{
 		// Older than the window: ignored.
 		{At: now.Add(-10 * time.Minute), Ticks: 100, Groups: []observe.LoadGroup{{WaitClass: "CPU", QueryID: 1, Samples: 1000}}},
 		{At: now.Add(-time.Minute), Ticks: 10, Groups: []observe.LoadGroup{
@@ -45,7 +45,7 @@ func TestLoadEventSummarisesRecentBuckets(t *testing.T) {
 	if len(p.Statements) != 2 || p.Statements[0].QueryID != 42 || p.Statements[0].AAS != 4 || p.Statements[0].Classes["Lock"] != 3 {
 		t.Fatalf("statements = %+v", p.Statements)
 	}
-	if loadEvent(collector.View{}, now) != nil {
+	if loadEvent(live.View{}, now) != nil {
 		t.Fatal("no samples must give no event")
 	}
 }

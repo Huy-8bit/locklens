@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/repository"
 )
@@ -36,7 +36,7 @@ type loadWait struct {
 // a trigger: average active sessions by wait class, the top wait events, and
 // the statements (by query_id) that were active most. It is evidence that
 // stays with the incident when the sampled history expires.
-func loadEvent(v collector.View, now time.Time) *repository.IncidentEvent {
+func loadEvent(v live.View, now time.Time) *repository.IncidentEvent {
 	var ticks int
 	classes := map[string]int{}
 	events := map[[2]string]int{}

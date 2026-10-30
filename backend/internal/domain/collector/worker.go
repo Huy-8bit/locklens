@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/lib/hostmetrics"
 	"github.com/locklens/locklens/internal/repository"
@@ -59,11 +60,11 @@ type job struct {
 	run     func(ctx context.Context) error
 	// enabled reports whether the job can run; the reason is shown in the UI.
 	enabled func() (bool, string)
-	status  CollectorStatus
+	status  live.CollectorStatus
 }
 
 type worker struct {
-	m      *Manager
+	m      *manager
 	target repository.Target
 	state  *State
 
@@ -94,7 +95,7 @@ type worker struct {
 	httpClient      *http.Client
 }
 
-func newWorker(m *Manager, t repository.Target, st *State) *worker {
+func newWorker(m *manager, t repository.Target, st *State) *worker {
 	w := &worker{m: m, target: t, state: st, httpClient: &http.Client{Timeout: 5 * time.Second}}
 	iv := time.Duration(t.IntervalSeconds) * time.Second
 	now := time.Now()
@@ -141,7 +142,7 @@ func newWorker(m *Manager, t repository.Target, st *State) *worker {
 		// collector at once.
 		j.next = now.Add(time.Duration(i) * 300 * time.Millisecond)
 		j.base, j.slow = j.every, 1
-		j.status = CollectorStatus{Name: j.name, IntervalSeconds: j.every.Seconds(), BaseIntervalSeconds: j.base.Seconds(), Enabled: true}
+		j.status = live.CollectorStatus{Name: j.name, IntervalSeconds: j.every.Seconds(), BaseIntervalSeconds: j.base.Seconds(), Enabled: true}
 	}
 	w.refreshEnabled()
 	return w
@@ -255,7 +256,7 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 			}
 			from := *j.status.LastSuccess
 			w.m.writer.Enqueue(WriteOp{TargetID: w.target.ID, Collector: j.name, At: now,
-				Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+				Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 					return s.InsertGap(ctx, w.target.ID, j.name, from, now, reason)
 				}})
 		}
@@ -298,10 +299,15 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 
 	if j.name == CollectorActivity && err == nil {
 		w.m.metrics.CollectFreshness.Set(float64(now.Unix()), strconv.FormatInt(w.target.ID, 10))
-		if w.m.analyzer != nil {
+		if w.m.recorder != nil {
 			actx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			w.m.analyzer.Analyze(actx, w.target, w.state.Snapshot())
+			a := w.m.recorder.Analyze(actx, w.target, w.state.Snapshot())
 			cancel()
+			// An open incident or an active problem: collect faster for
+			// denser evidence.
+			if a.Burst != "" {
+				w.m.Burst(w.target.ID, a.Burst)
+			}
 		}
 	}
 	w.saveStatus(ctx)

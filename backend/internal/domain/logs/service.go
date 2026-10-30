@@ -75,15 +75,28 @@ func (b Batch) Validate(now time.Time) error {
 	return nil
 }
 
-// Service stores agents' events and summarises them.
-type Service struct{ store Store }
+// Service stores the events log agents send and summarises them.
+type Service interface {
+	// Ingest stores a batch (validated) sent with a token of a target; it
+	// returns how many events were new.
+	Ingest(ctx context.Context, targetID, tokenID int64, b Batch) (int64, error)
+	// Summarize returns the summary of a period.
+	Summarize(ctx context.Context, targetID int64, from, to time.Time, step time.Duration) (Summary, error)
+	// Events returns stored events.
+	Events(ctx context.Context, f repository.LogEventFilter) ([]Event, error)
+}
+
+var _ Service = (*service)(nil)
+
+// service stores agents' events and summarises them.
+type service struct{ store Repositories }
 
 // New returns the service.
-func New(store Store) *Service { return &Service{store: store} }
+func New(store Repositories) Service { return &service{store: store} }
 
 // Ingest stores a batch (validated) sent with a token of a target; it
 // returns how many events were new.
-func (s *Service) Ingest(ctx context.Context, targetID, tokenID int64, b Batch) (int64, error) {
+func (s *service) Ingest(ctx context.Context, targetID, tokenID int64, b Batch) (int64, error) {
 	return s.store.InsertLogEvents(ctx, targetID, tokenID, b.Agent.Hostname, b.Agent.Version, b.Agent.Sources, b.Events)
 }
 
@@ -110,7 +123,7 @@ type SettingCheck struct {
 }
 
 // Summarize returns the summary of a period.
-func (s *Service) Summarize(ctx context.Context, targetID int64, from, to time.Time, step time.Duration) (Summary, error) {
+func (s *service) Summarize(ctx context.Context, targetID int64, from, to time.Time, step time.Duration) (Summary, error) {
 	sum := Summary{From: from, To: to, Step: step.Seconds()}
 	var err error
 	if sum.Counts, err = s.store.LogCounts(ctx, targetID, from, to, step); err != nil {
@@ -139,7 +152,7 @@ func (s *Service) Summarize(ctx context.Context, targetID int64, from, to time.T
 }
 
 // Events returns stored events.
-func (s *Service) Events(ctx context.Context, f repository.LogEventFilter) ([]Event, error) {
+func (s *service) Events(ctx context.Context, f repository.LogEventFilter) ([]Event, error) {
 	return s.store.LogEvents(ctx, f)
 }
 

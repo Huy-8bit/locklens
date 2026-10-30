@@ -112,7 +112,7 @@ func (w *worker) collectTableActivity(ctx context.Context) error {
 	w.state.mu.Unlock()
 	id := w.target.ID
 	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorTableActivity, At: at,
-		Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+		Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 			return s.InsertPoints(ctx, id, at, pts)
 		}})
 	return nil

@@ -10,6 +10,39 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// NotificationRepository is the store of notification channels, silences, and deliveries.
+type NotificationRepository interface {
+	// ListNotificationChannels returns every channel by name.
+	ListNotificationChannels(ctx context.Context) ([]NotificationChannel, error)
+	// GetNotificationChannel returns one channel.
+	GetNotificationChannel(ctx context.Context, id int64) (NotificationChannel, error)
+	// SaveNotificationChannel creates a channel (ID 0) or updates one. An update
+	// with nil ConfigCiphertext keeps the stored destination. ErrConflict means
+	// the name is taken.
+	SaveNotificationChannel(ctx context.Context, c NotificationChannel) (NotificationChannel, error)
+	// DeleteNotificationChannel removes a channel and its delivery history.
+	DeleteNotificationChannel(ctx context.Context, id int64) error
+	// ListSilences returns silences that have not ended (all of them when
+	// includeEnded), the latest ending first.
+	ListSilences(ctx context.Context, includeEnded bool, limit int) ([]Silence, error)
+	// CreateSilence adds a silence that starts now. Silences use the database
+	// clock throughout (start, end, and matching), so a clock difference between
+	// LockLens and its store never keeps an ended silence active.
+	CreateSilence(ctx context.Context, x Silence) (Silence, error)
+	// EndSilence ends a silence now (it stays in the history).
+	EndSilence(ctx context.Context, id int64) error
+	// ActiveSilence returns a silence that covers the target and rule now (by
+	// the database clock).
+	ActiveSilence(ctx context.Context, targetID *int64, ruleID string) (*Silence, error)
+	// InsertDelivery records a notification attempt.
+	InsertDelivery(ctx context.Context, d Delivery) error
+	// ListDeliveries returns the latest deliveries, of one incident when
+	// incidentID is set.
+	ListDeliveries(ctx context.Context, incidentID *int64, limit int) ([]Delivery, error)
+}
+
+var _ NotificationRepository = (*Store)(nil)
+
 // NotificationChannel is a destination for incident notifications. The
 // destination's address and credentials are in ConfigCiphertext, sealed
 // with the master key; Display is a non-secret description of it.
@@ -218,23 +251,4 @@ func (s *Store) ListDeliveries(ctx context.Context, incidentID *int64, limit int
 		out = []Delivery{}
 	}
 	return out, s.red.Error(err)
-}
-
-// OpenUnacknowledgedIncidents returns open incidents nobody acknowledged
-// (candidates for reminders).
-func (s *Store) OpenUnacknowledgedIncidents(ctx context.Context) ([]Incident, error) {
-	rows, err := s.pool.Query(ctx, queries.OpenUnacknowledgedIncidents)
-	if err != nil {
-		return nil, s.red.Error(err)
-	}
-	var out []Incident
-	for rows.Next() {
-		in, err := scanIncident(rows)
-		if err != nil {
-			rows.Close()
-			return nil, s.red.Error(err)
-		}
-		out = append(out, in)
-	}
-	return out, s.red.Error(rows.Err())
 }

@@ -96,11 +96,13 @@ backend/
     ├── app/                      composition root: builds and wires everything for `locklens server`
     ├── config/                   settings from the environment, DSN parsing and redaction
     ├── transport/                how requests come in
-    │   ├── httpapi/              REST + SSE: handlers_<area>.go, ports.go (interfaces it needs)
+    │   ├── httpapi/              REST + SSE: handlers_<area>.go; Deps (server.go) and repositories.go list what it uses
     │   └── cli/                  cobra commands: one file per command (agent.go, server.go, …)
     ├── domain/                   business logic, no SQL, one package per concern
-    │   ├── <area>/ports.go       the Store (and other) interfaces the package consumes
-    │   ├── observe/              shared data types (collected data, catalog, changes, log events)
+    │   ├── <area>/               a service: its interface (Service, Manager, …) next to its implementation,
+    │   │                         repositories.go names the repository interfaces it uses
+    │   ├── observe/ live/        shared data types (collected data, catalog, changes, log events); a target's live view
+    │   ├── events/               event publishing (Publisher) and this server's subscribers (Hub)
     │   ├── collector/            manager, per-target workers, one file per collector
     │   ├── rules/ finding/       deterministic rules and findings
     │   ├── incidents/            incident recorder
@@ -128,15 +130,37 @@ Where to make a change:
 | A query sent to monitored servers | `targetdb/queries/<area>/*.sql`, then `targetdb/<area>.go` |
 | What a collector reads or how often | `domain/collector/<collector>.go` and the job list in `worker.go` |
 | A rule or threshold | `domain/rules/` and `domain/settings/` |
-| An API endpoint | `transport/httpapi/handlers_<area>.go`, routes in `server.go`, dependencies in `ports.go` |
+| An API endpoint | `transport/httpapi/handlers_<area>.go`, routes in `server.go`, dependencies in `Deps` (`server.go`) |
+| What a service offers | its interface, declared above its implementation in the service's package (for example `targets.Service` in `domain/targets/targets.go`) |
 | The schema of the store | a new file in `migrations/` |
 | Wiring (which implementation is used) | `app/app.go` |
 
-Domain packages depend on interfaces, not on concrete types: each declares
-in `ports.go` the methods it uses (`Store`, `Workspace`, `Events`, …), with a
-compile-time check that `*repository.Store` implements them. Tests pass
-fakes; `httpapi.Deps` likewise holds interfaces (`TargetService`,
-`ChangeService`, `LogService`, …).
+#### Interfaces
+
+An interface is declared in the package that implements it, next to the
+implementation, and describes what that package offers:
+
+- **Repositories.** Each file of `repository` declares the interface of its
+  area (`TargetRepository` in `targets.go`, `IncidentRepository` in
+  `incidents.go`, …) with a compile-time check that `*Store` implements it. A
+  package that uses the store lists the areas it needs in a `Repositories`
+  struct (`repositories.go`) that embeds those interfaces, so what it may
+  touch is visible at a glance; `app` fills it with the store.
+- **Services.** Each domain service declares its interface (`targets.Service`,
+  `collector.Manager`, `incidents.Recorder`, `cluster.Node`, `cluster.Bus`,
+  `events.Publisher`, …); the implementation is unexported and the
+  constructor returns the interface. Other packages (and `httpapi.Deps`)
+  depend only on these interfaces; tests substitute fakes.
+- **No interface where there is a single concrete use**: the connection and
+  read code for monitored servers (`targetdb`), generic libraries (`lib/…`),
+  pure functions and data types (`rules`, `plans`, `report`, `graph`,
+  `observe`, `live`), the log agent runtime, and the collector's writer (used
+  only inside `collector`). `app` and the CLI, which build everything, hold
+  `*repository.Store` itself.
+
+Callbacks go in the direction of the data: the incident recorder returns
+what the collector should do (collect a target faster) instead of calling
+back into it, so no package depends on another in both directions.
 
 | Package | Responsibility |
 | --- | --- |
@@ -147,6 +171,8 @@ fakes; `httpapi.Deps` likewise holds interfaces (`TargetService`,
 | `internal/targetdb/investigate` | The investigation workspace's operations: catalog browsing, data, EXPLAIN, HypoPG what-if, managed roles |
 | `internal/domain/collector` | Manager, per-target workers, collectors, counters and deltas, writer, target state, per-database connections, live views for other servers |
 | `internal/domain/observe` | Shared types for collected data, catalogs, change events, log events |
+| `internal/domain/live` | A target's live view (latest data, recent metric history, collector status), built by the collector and read by rules, the recorder, and the API |
+| `internal/domain/events` | `Publisher` and `Subscriber` interfaces and the hub that delivers this server's events to its browsers |
 | `internal/domain/rules`, `internal/domain/finding` | Deterministic rules, thresholds, findings with evidence |
 | `internal/domain/baseline` | Statement baselines from five-minute rollups |
 | `internal/domain/insight` | Impact scores and ranked hypotheses from findings, waits, changes, and server log events |
@@ -166,7 +192,7 @@ fakes; `httpapi.Deps` likewise holds interfaces (`TargetService`,
 | `internal/lib/pglog` | Reading PostgreSQL logs: jsonlog, csvlog, stderr with log_line_prefix |
 | `internal/lib/sqlparse` | PostgreSQL's parser (pg_query_go, cgo): analysis, normalisation, fingerprints; a lexical normaliser without cgo |
 | `internal/lib/secret`, `internal/lib/obs`, `internal/lib/hostmetrics`, `internal/lib/logger` | AES-GCM sealing, metrics, node_exporter scraping, loggers |
-| `internal/transport/httpapi` | HTTP handlers, middleware, SSE hub (forwarded to other servers) |
+| `internal/transport/httpapi` | HTTP handlers, middleware, the SSE stream |
 | `internal/transport/cli` | The command-line interface, including `locklens agent` |
 | `web/` | React + TypeScript UI (Vite, React Router, TanStack Query, Apache ECharts, Tailwind CSS) and the nginx frontend image |
 
@@ -301,7 +327,7 @@ flowchart LR
 | --- | --- | --- |
 | `backend/internal/transport/cli` | Cobra commands, flag validation, exit codes, signal handling, `watch` loop and backoff; `server`, `migrate`, `admin`, `incident` commands | via `postgres` / `server` |
 | `backend/internal/config` | `--dsn` / `LOCKLENS_DSN` precedence, pgx pool configuration with observer session settings, credential redaction | no |
-| `backend/internal/lib/postgres` | Connection pool, exclusion of LockLens' own PIDs, the activity collection queries (`sql/*.sql`, embedded), read-only transactions, doctor checks, error hints | yes |
+| `backend/internal/targetdb` | Connection pool, exclusion of LockLens' own PIDs, the activity collection queries (`queries/snapshot/*.sql`, embedded), read-only transactions, doctor checks, error hints | yes |
 | `backend/internal/domain/model` | Snapshot types: raw observations only | no |
 | `backend/internal/lib/snapshot` | Crash-safe, no-clobber file writes; decoding with schema version checks | no |
 | `backend/internal/domain/graph` | Graph algorithms: deduplication, counts, roots, cycles, components | no |

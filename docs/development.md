@@ -38,19 +38,25 @@ backend/
   cmd/locklens-demo/     CLI demo runner
   cmd/locklens-lab/      lab scenario runner
   internal/             application packages and colocated unit/integration tests
-    app/                wiring and startup of `locklens server`
+    app/                wiring and startup of `locklens server` (the only place that
+                        picks implementations)
     config/             server settings from the environment, connection settings, redaction
-    domain/             business logic: rules, incidents, collector, targets, onboarding,
-                        workspace, auth, settings, retention, export, and the shared
-                        data types (model, observe, finding, graph, report)
-    repository/         monitoring store access: every SQL statement against the store,
-                        one file per area (targets, queries, series, snapshots, incidents, ...)
+    domain/             business logic, one package per concern (collector, incidents,
+                        targets, optimizer, changes, logs, cluster, ...); a service declares
+                        its interface next to its implementation and lists the repository
+                        interfaces it uses in repositories.go; shared data types
+                        (model, observe, live, finding, graph, report)
+    repository/         monitoring store access, one file per area, each with its interface
+                        (TargetRepository, IncidentRepository, ...)
+    repository/queries/ every SQL statement against the store: <area>/<name>.sql
+    targetdb/           connections to monitored servers and read-only collection
+    targetdb/queries/   every SQL statement sent to monitored servers
+    agent/              the log agent runtime
     transport/httpapi/  REST API, server-sent events, middleware, request parsing
     transport/cli/      the locklens command line
-    lib/                technical building blocks without business rules: postgres
-                        (target connections and embedded collection SQL), hostmetrics
-                        (node_exporter client), logger, obs (metrics), secret, render,
-                        snapshot files, textsafe, buildinfo
+    lib/                technical building blocks without business rules: pglog,
+                        sqlparse, hostmetrics (node_exporter client), logger, obs
+                        (metrics), secret, render, snapshot files, textsafe, buildinfo
   migrations/           embedded monitoring store SQL migrations
   demo/scenario/        contention helpers used only by demos and tests
   demo/lab/             lab scenario implementation
@@ -150,16 +156,22 @@ production UI into `web/dist`.
   the CLI and escaped by React or `html/template` elsewhere.
 - Collectors run only read-only SQL. Demo code that writes belongs in `backend/demo/`; fixtures stay in `demo/`.
 - Unknown values are `NULL`/`null`, never `0`.
-- New SQL goes into `backend/internal/lib/postgres/sql/` or next to its collector with a
-  comment explaining assumptions and version requirements.
+- New SQL goes into a `.sql` file: `repository/queries/<area>/` for the store,
+  `targetdb/queries/<area>/` for monitored servers, embedded by `<area>.go` of
+  that package, with a comment explaining assumptions and version
+  requirements. Go files of `domain` hold no SQL.
+- Interfaces are declared by the package that implements them: a new store
+  method goes into the interface at the top of its `repository/<area>.go`; a
+  new service method into the service's interface. Consumers depend on those
+  interfaces (see [architecture.md](architecture.md#interfaces)).
 - Frontend: no mock data in production code; every page has loading, empty,
   partial, and error states; time ranges and filters live in the URL.
 - Comments explain *why*; do not restate the code.
 - Backend layers depend downwards only: `transport` → `domain` → `repository`
   and `lib`. `lib` packages hold no business rules; they may use the shared
   data types in `domain/model` and `domain/report`, never a domain service.
-  SQL against the monitoring store lives in `repository`, SQL against monitored
-  servers in `lib/postgres`.
+  SQL against the monitoring store lives in `repository/queries`, SQL against
+  monitored servers in `targetdb/queries`.
 
 ## Adding a feature
 

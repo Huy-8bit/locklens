@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/locklens/locklens/internal/domain/events"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/plans"
 	"github.com/locklens/locklens/internal/domain/workspace"
@@ -38,21 +39,40 @@ const (
 	regressedRatio = 1.2
 )
 
-// Service runs the optimizer over the stored catalog and workload.
-type Service struct {
-	store     Store
-	workspace Workspace
-	events    Events
+// Service derives query optimisation recommendations from each database's catalog and workload, follows them through their life cycle, and checks index recommendations with hypothetical indexes.
+type Service interface {
+	// Run analyses every target every interval until ctx is cancelled.
+	Run(ctx context.Context, every time.Duration)
+	// Refresh runs one optimizer pass for a target, over the catalog of each of
+	// its databases: it records which recommendations were applied (from the
+	// catalog), measures applied ones, and stores the current recommendations.
+	// It returns how many it derived. ErrNotFound means no catalog was
+	// collected yet.
+	Refresh(ctx context.Context, t repository.Target, now time.Time) (int, error)
+	// WhatIf checks an index recommendation with a hypothetical index (HypoPG)
+	// through the investigation workspace, stores the result, and grades the
+	// recommendation's confidence by it. ctx carries the actor
+	// (workspace.WithActor); owner is the session that may cancel it.
+	WhatIf(ctx context.Context, t repository.Target, recID int64, owner, requestID string) (WhatIfResult, error)
+}
+
+var _ Service = (*service)(nil)
+
+// service runs the optimizer over the stored catalog and workload.
+type service struct {
+	store     Repositories
+	workspace workspace.Service
+	events    events.Publisher
 	log       *slog.Logger
 }
 
-// NewService returns an optimizer service.
-func NewService(store Store, ws Workspace, events Events, log *slog.Logger) *Service {
-	return &Service{store: store, workspace: ws, events: events, log: log}
+// New returns an optimizer service.
+func New(store Repositories, ws workspace.Service, events events.Publisher, log *slog.Logger) Service {
+	return &service{store: store, workspace: ws, events: events, log: log}
 }
 
 // Run analyses every target every interval until ctx is cancelled.
-func (s *Service) Run(ctx context.Context, every time.Duration) {
+func (s *service) Run(ctx context.Context, every time.Duration) {
 	timer := time.NewTimer(2 * time.Minute)
 	defer timer.Stop()
 	for {
@@ -82,7 +102,7 @@ func (s *Service) Run(ctx context.Context, every time.Duration) {
 // catalog), measures applied ones, and stores the current recommendations.
 // It returns how many it derived. ErrNotFound means no catalog was
 // collected yet.
-func (s *Service) Refresh(ctx context.Context, t repository.Target, now time.Time) (int, error) {
+func (s *service) Refresh(ctx context.Context, t repository.Target, now time.Time) (int, error) {
 	cats, err := s.store.Catalogs(ctx, t.ID)
 	if err != nil {
 		return 0, err
@@ -145,7 +165,7 @@ func databaseStatements(stmts []repository.WorkloadStatement, datname string, on
 
 // resolveDropped resolves the open recommendations of databases that no
 // longer have a catalog (they left the target's scope).
-func (s *Service) resolveDropped(ctx context.Context, targetID int64, cats []observe.Catalog, now time.Time) error {
+func (s *service) resolveDropped(ctx context.Context, targetID int64, cats []observe.Catalog, now time.Time) error {
 	open, err := s.store.ListRecommendations(ctx, repository.RecommendationFilter{TargetID: targetID, Statuses: []string{repository.RecOpen}})
 	if err != nil {
 		return err
@@ -167,7 +187,7 @@ func (s *Service) resolveDropped(ctx context.Context, targetID int64, cats []obs
 
 // lifecycle detects applied recommendations of a database in its catalog
 // and judges the effect of applied ones on their statements.
-func (s *Service) lifecycle(ctx context.Context, targetID int64, cat observe.Catalog, now time.Time) error {
+func (s *service) lifecycle(ctx context.Context, targetID int64, cat observe.Catalog, now time.Time) error {
 	recs, err := s.store.ListRecommendations(ctx, repository.RecommendationFilter{TargetID: targetID, Database: &cat.DatName,
 		Statuses: []string{repository.RecOpen, repository.RecAccepted, repository.RecDismissed, repository.RecApplied,
 			repository.RecVerified, repository.RecNoEffect, repository.RecRegressed}})
@@ -296,7 +316,7 @@ func StatementIDs(details json.RawMessage) []int64 {
 // verified (at least 20% faster), regressed (at least 20% slower), or no
 // effect. It keeps watching, so a later slowdown turns a verified change
 // into a regression.
-func (s *Service) verify(ctx context.Context, targetID int64, r repository.Recommendation, now time.Time) error {
+func (s *service) verify(ctx context.Context, targetID int64, r repository.Recommendation, now time.Time) error {
 	if r.AppliedAt == nil || r.BeforeMS == nil || *r.BeforeMS <= 0 {
 		return nil
 	}
@@ -333,7 +353,7 @@ func (s *Service) verify(ctx context.Context, targetID int64, r repository.Recom
 	return nil
 }
 
-func (s *Service) publish(targetID, id int64, status string) {
+func (s *service) publish(targetID, id int64, status string) {
 	if s.events != nil {
 		s.events.Publish("recommendation.updated", map[string]any{"target_id": targetID, "recommendation_id": id, "status": status})
 	}
@@ -366,7 +386,7 @@ var ErrNotIndex = errors.New("only index recommendations can be checked with a h
 // through the investigation workspace, stores the result, and grades the
 // recommendation's confidence by it. ctx carries the actor
 // (workspace.WithActor); owner is the session that may cancel it.
-func (s *Service) WhatIf(ctx context.Context, t repository.Target, recID int64, owner, requestID string) (WhatIfResult, error) {
+func (s *service) WhatIf(ctx context.Context, t repository.Target, recID int64, owner, requestID string) (WhatIfResult, error) {
 	r, err := s.store.GetRecommendation(ctx, t.ID, recID)
 	if err != nil {
 		return WhatIfResult{}, err

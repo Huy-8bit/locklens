@@ -95,9 +95,43 @@ var sealContext = []byte("locklens notification channel v1")
 
 var envPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
 
-// Service manages channels and silences and dispatches notifications.
-type Service struct {
-	store     Store
+// Service sends incident notifications to channels, with reminders and silences.
+type Service interface {
+	// Publish receives the recorder's incident events (incident.opened,
+	// incident.updated, incident.resolved) and queues the incident. It never
+	// blocks: an incident already queued is not queued twice, and when the queue
+	// is full the event is dropped (the next update or the reminder sweep
+	// catches up, because decisions use the incident's state).
+	Publish(kind string, payload any)
+	// Run processes queued incidents until ctx ends. Incidents are queued by
+	// the server that records them, so each change is sent once.
+	Run(ctx context.Context)
+	// RunReminders queues the open unacknowledged incidents every minute, so
+	// due reminders are sent, until ctx ends. With several servers, one runs it.
+	RunReminders(ctx context.Context)
+	// Test sends a test message through a channel now, enabled or not.
+	Test(ctx context.Context, id int64) (repository.Delivery, error)
+	// Deliveries returns recent deliveries, of one incident when incidentID is set.
+	Deliveries(ctx context.Context, incidentID *int64, limit int) ([]repository.Delivery, error)
+	// CreateSilence validates and stores a silence starting now.
+	CreateSilence(ctx context.Context, in SilenceInput, by string) (repository.Silence, error)
+	// Silences returns current silences (or all recent ones).
+	Silences(ctx context.Context, includeEnded bool) ([]repository.Silence, error)
+	// EndSilence ends a silence now.
+	EndSilence(ctx context.Context, id int64) error
+	// Channels returns every channel.
+	Channels(ctx context.Context) ([]repository.NotificationChannel, error)
+	// SaveChannel validates and stores a channel; id 0 creates one.
+	SaveChannel(ctx context.Context, id int64, in ChannelInput) (repository.NotificationChannel, error)
+	// DeleteChannel removes a channel and its delivery history.
+	DeleteChannel(ctx context.Context, id int64) error
+}
+
+var _ Service = (*service)(nil)
+
+// service manages channels and silences and dispatches notifications.
+type service struct {
+	store     Repositories
 	box       *secret.Box
 	log       *slog.Logger
 	publicURL string
@@ -112,18 +146,18 @@ type Service struct {
 
 // New returns a service. publicURL is LockLens' address as users reach it
 // (for links in messages); it may be empty.
-func New(store Store, box *secret.Box, log *slog.Logger, publicURL, version string) *Service {
-	return &Service{store: store, box: box, log: log, publicURL: strings.TrimRight(publicURL, "/"), version: version,
+func New(store Repositories, box *secret.Box, log *slog.Logger, publicURL, version string) Service {
+	return &service{store: store, box: box, log: log, publicURL: strings.TrimRight(publicURL, "/"), version: version,
 		send: newSender(version), now: time.Now, queue: make(chan int64, 256), pending: map[int64]bool{}}
 }
 
 // Channels returns every channel.
-func (s *Service) Channels(ctx context.Context) ([]repository.NotificationChannel, error) {
+func (s *service) Channels(ctx context.Context) ([]repository.NotificationChannel, error) {
 	return s.store.ListNotificationChannels(ctx)
 }
 
 // SaveChannel validates and stores a channel; id 0 creates one.
-func (s *Service) SaveChannel(ctx context.Context, id int64, in ChannelInput) (repository.NotificationChannel, error) {
+func (s *service) SaveChannel(ctx context.Context, id int64, in ChannelInput) (repository.NotificationChannel, error) {
 	in.Name = strings.TrimSpace(in.Name)
 	fields := map[string]string{}
 	if in.Name == "" || len([]rune(in.Name)) > 100 {
@@ -203,11 +237,11 @@ func (s *Service) SaveChannel(ctx context.Context, id int64, in ChannelInput) (r
 }
 
 // DeleteChannel removes a channel and its delivery history.
-func (s *Service) DeleteChannel(ctx context.Context, id int64) error {
+func (s *service) DeleteChannel(ctx context.Context, id int64) error {
 	return s.store.DeleteNotificationChannel(ctx, id)
 }
 
-func (s *Service) destination(c repository.NotificationChannel) (Destination, error) {
+func (s *service) destination(c repository.NotificationChannel) (Destination, error) {
 	var d Destination
 	raw, err := s.box.Open(c.ConfigCiphertext, sealContext)
 	if err != nil {

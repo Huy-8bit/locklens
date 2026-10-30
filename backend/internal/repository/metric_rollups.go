@@ -7,6 +7,23 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// MetricRollupRepository is the store of one-minute and hourly metric rollups.
+type MetricRollupRepository interface {
+	// RollupMetrics recomputes the one-minute rollups of buckets starting in
+	// [from, to) from raw points, then the hourly rollups of the hours those
+	// buckets fall in. from must be a minute boundary; recomputing a range is
+	// harmless.
+	RollupMetrics(ctx context.Context, targetID int64, from, to time.Time) error
+	// MetricRollupWatermark returns the newest one-minute rollup bucket of a
+	// target, or ok = false when nothing was rolled up yet.
+	MetricRollupWatermark(ctx context.Context, targetID int64) (time.Time, bool, error)
+	// SeriesStep is the step a series of [from, ...) is returned with: the
+	// requested step, or the rollup resolution when that is coarser.
+	SeriesStep(from time.Time, step time.Duration) time.Duration
+}
+
+var _ MetricRollupRepository = (*Store)(nil)
+
 // Metric rollup resolutions.
 const (
 	MinuteRollup = time.Minute

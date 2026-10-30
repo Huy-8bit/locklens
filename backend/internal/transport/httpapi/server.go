@@ -16,7 +16,21 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/auth"
+	"github.com/locklens/locklens/internal/domain/baseline"
+	"github.com/locklens/locklens/internal/domain/changes"
+	"github.com/locklens/locklens/internal/domain/cluster"
+	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/events"
+	"github.com/locklens/locklens/internal/domain/insight"
+	"github.com/locklens/locklens/internal/domain/logs"
 	"github.com/locklens/locklens/internal/domain/model"
+	"github.com/locklens/locklens/internal/domain/notify"
+	"github.com/locklens/locklens/internal/domain/onboard"
+	"github.com/locklens/locklens/internal/domain/optimizer"
+	"github.com/locklens/locklens/internal/domain/settings"
+	"github.com/locklens/locklens/internal/domain/targets"
+	"github.com/locklens/locklens/internal/domain/tokens"
+	"github.com/locklens/locklens/internal/domain/workspace"
 	"github.com/locklens/locklens/internal/lib/obs"
 	"github.com/locklens/locklens/internal/repository"
 )
@@ -30,27 +44,31 @@ const (
 	maxPoints      = 400
 )
 
-// Deps are the server's collaborators.
+// Deps are the server's collaborators: the stores and the domain services,
+// each through the interface its package declares.
 type Deps struct {
-	Workspace WorkspaceService
-	Onboard   OnboardService
-	Store     Store
-	Auth      AuthService
-	Targets   TargetService
-	Manager   CollectorManager
-	Settings  SettingsService
-	Notify    NotifyService
-	Baselines BaselineService
-	Insight   InsightService
-	Optimizer OptimizerService
-	Changes   ChangeService
-	Tokens    TokenService
-	Cluster   ClusterInfo
-	Logs      LogService
-	Hub       *Hub
-	Metrics   *obs.Metrics
-	Log       *slog.Logger
-	Tool      model.Tool
+	Store     Repositories
+	Auth      auth.Service
+	Targets   targets.Service
+	Onboard   onboard.Service
+	Workspace workspace.Service
+	Manager   collector.Manager
+	Settings  settings.Service
+	Notify    notify.Service
+	Baselines baseline.Service
+	Insight   insight.Service
+	Optimizer optimizer.Service
+	Changes   changes.Service
+	Tokens    tokens.Service
+	Logs      logs.Service
+	Cluster   cluster.Node
+	// Events publishes to the browsers of every server; Stream delivers the
+	// events published on this server to its browsers.
+	Events  events.Publisher
+	Stream  events.Subscriber
+	Metrics *obs.Metrics
+	Log     *slog.Logger
+	Tool    model.Tool
 	// TrustedProxies are reverse proxies whose X-Forwarded-For is believed.
 	TrustedProxies []netip.Prefix
 	// TrustedProxyHosts are proxy host names, resolved every 30 seconds.
@@ -187,7 +205,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/v1/tokens", s.allow(auth.PermManageSettings, s.listTokens))
 	m.HandleFunc("POST /api/v1/tokens", s.allow(auth.PermManageSettings, s.createToken))
 	m.HandleFunc("DELETE /api/v1/tokens/{id}", s.allow(auth.PermManageSettings, s.revokeToken))
-	m.HandleFunc("GET /api/v1/events", s.authed(func(w http.ResponseWriter, r *http.Request) { s.d.Hub.ServeHTTP(w, r) }))
+	m.HandleFunc("GET /api/v1/events", s.authed(s.serveEvents))
 
 	m.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusNotFound, "not_found", "unknown API route")

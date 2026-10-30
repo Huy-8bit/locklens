@@ -6,6 +6,16 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// ManagedRoleRepository is the store of the roles LockLens created on monitored servers.
+type ManagedRoleRepository interface {
+	// ManagedRoles returns the roles stored for a cluster, keyed by purpose.
+	ManagedRoles(ctx context.Context, systemIdentifier string) (map[string]ManagedRole, error)
+	// PutManagedRole stores or replaces the credentials of one managed role.
+	PutManagedRole(ctx context.Context, m ManagedRole) error
+}
+
+var _ ManagedRoleRepository = (*Store)(nil)
+
 // ManagedRole is a login role LockLens created on a monitored cluster.
 // The password is encrypted with the master key.
 type ManagedRole struct {

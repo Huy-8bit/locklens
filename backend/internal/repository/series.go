@@ -11,6 +11,20 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// SeriesRepository is the store of metric time series, collection gaps, and the bounds of stored history.
+type SeriesRepository interface {
+	// QuerySeries bounds both the time window and total response cardinality. The
+	// request context cancels PostgreSQL work when a client changes its selection.
+	QuerySeries(ctx context.Context, targetID int64, metrics []string, from, to time.Time, step time.Duration) ([]Series, error)
+	// ListGaps returns gaps overlapping (from, to].
+	ListGaps(ctx context.Context, targetID int64, from, to time.Time, limit int) ([]Gap, error)
+	// HistoryBounds returns the oldest and newest stored metric time of a
+	// target.
+	HistoryBounds(ctx context.Context, id int64) (map[string]any, error)
+}
+
+var _ SeriesRepository = (*Store)(nil)
+
 // SeriesPoint represents a bucket in (from, to]. Unknown or interrupted buckets
 // remain null, even if other samples in that bucket are known.
 type SeriesPoint struct {
@@ -191,4 +205,12 @@ type CommandBucket struct {
 type CoverageBucket struct {
 	T       time.Time `json:"t"`
 	Covered float64   `json:"covered_seconds"`
+}
+
+// HistoryBounds returns the oldest and newest stored metric time of a
+// target.
+func (s *Store) HistoryBounds(ctx context.Context, id int64) (map[string]any, error) {
+	var a, b *time.Time
+	err := s.pool.QueryRow(ctx, queries.HistoryBounds, id).Scan(&a, &b)
+	return map[string]any{"from": a, "to": b}, err
 }

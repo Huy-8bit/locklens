@@ -17,16 +17,26 @@ import (
 	"github.com/locklens/locklens/internal/repository"
 )
 
-// Service gathers the signals of an anomaly from the monitoring store.
-type Service struct {
-	store    Store
+// Service investigates statement anomalies: it gathers the evidence and ranks hypotheses.
+type Service interface {
+	// Investigate correlates the evidence around the findings with key subject
+	// (a statement "q:..." or an execution "pid:...") of one target, as of at.
+	// queryID narrows the wait profile to the statement when known.
+	Investigate(ctx context.Context, targetID int64, subject string, queryID *int64, at time.Time) (Investigation, error)
+}
+
+var _ Service = (*service)(nil)
+
+// service gathers the signals of an anomaly from the monitoring store.
+type service struct {
+	store    Repositories
 	sampling bool
 }
 
-// NewService returns an insight service; sampling says whether active
+// New returns an insight service; sampling says whether active
 // session sampling is enabled.
-func NewService(store Store, sampling bool) *Service {
-	return &Service{store: store, sampling: sampling}
+func New(store Repositories, sampling bool) Service {
+	return &service{store: store, sampling: sampling}
 }
 
 // IsStatementRule reports whether a rule is about statement performance.
@@ -40,7 +50,7 @@ const minWindow = 5 * time.Minute
 // Investigate correlates the evidence around the findings with key subject
 // (a statement "q:..." or an execution "pid:...") of one target, as of at.
 // queryID narrows the wait profile to the statement when known.
-func (s *Service) Investigate(ctx context.Context, targetID int64, subject string, queryID *int64, at time.Time) (Investigation, error) {
+func (s *service) Investigate(ctx context.Context, targetID int64, subject string, queryID *int64, at time.Time) (Investigation, error) {
 	rows, err := s.store.ListFindings(ctx, repository.FindingFilter{TargetID: targetID, Limit: 500})
 	if err != nil {
 		return Investigation{}, err
@@ -129,7 +139,7 @@ func (s *Service) Investigate(ctx context.Context, targetID int64, subject strin
 
 // waits returns average active sessions per wait class over [from, to) and
 // the span before it; a period without sampling ticks is nil (unknown).
-func (s *Service) waits(ctx context.Context, targetID int64, queryID *int64, from, to time.Time, before time.Duration) (*WaitShift, error) {
+func (s *service) waits(ctx context.Context, targetID int64, queryID *int64, from, to time.Time, before time.Duration) (*WaitShift, error) {
 	avg := func(f, t time.Time) (map[string]float64, error) {
 		rows, ticks, err := s.store.LoadRows(ctx, targetID, f, t, t.Sub(f)+time.Second, repository.LoadByClass, repository.LoadFilter{QueryID: queryID})
 		if err != nil {

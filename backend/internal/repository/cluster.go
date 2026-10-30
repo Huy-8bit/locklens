@@ -10,6 +10,34 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// ClusterRepository is the store of the servers sharing the store, leases, published live views, and the message bus.
+type ClusterRepository interface {
+	// Heartbeat registers a server or renews its heartbeat.
+	Heartbeat(ctx context.Context, sv Server) error
+	// Servers returns the known servers; Alive is a heartbeat within ttl.
+	Servers(ctx context.Context, ttl time.Duration) ([]Server, error)
+	// HoldLease takes or renews a lease for ttl; false while another holder has
+	// it. acquired is when the holder took it (to tell a new lease from a
+	// renewal).
+	HoldLease(ctx context.Context, name, holder string, ttl time.Duration) (held bool, acquired time.Time, err error)
+	// ReleaseLease gives up a lease the holder has.
+	ReleaseLease(ctx context.Context, name, holder string) error
+	// Leases returns the leases whose names start with prefix.
+	Leases(ctx context.Context, prefix string) ([]Lease, error)
+	// SaveLiveState publishes a target's live view for the other servers.
+	SaveLiveState(ctx context.Context, targetID int64, serverID string, at time.Time, view []byte) error
+	// LiveState returns a target's published live view.
+	LiveState(ctx context.Context, targetID int64) (serverID string, at time.Time, view []byte, err error)
+	// Notify sends a message to every server listening on a channel.
+	Notify(ctx context.Context, channel, payload string) error
+	// Listen calls fn with every message on a channel until ctx ends. It holds
+	// one pooled connection; on a connection error it returns the error (the
+	// caller listens again).
+	Listen(ctx context.Context, channel string, fn func(payload string)) error
+}
+
+var _ ClusterRepository = (*Store)(nil)
+
 // Server is a LockLens server sharing this store.
 type Server struct {
 	ID          string    `json:"id"`

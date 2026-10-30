@@ -20,6 +20,7 @@ import (
 
 	"github.com/locklens/locklens/internal/config"
 	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/lib/hostmetrics"
@@ -96,32 +97,53 @@ type View struct {
 
 // StatusView is the monitoring status of a target.
 type StatusView struct {
-	State            string                               `json:"state"`
-	ServerVersion    *string                              `json:"server_version"`
-	IsStandby        *bool                                `json:"is_standby"`
-	Capabilities     *observe.Capabilities                `json:"capabilities"`
-	Collectors       map[string]collector.CollectorStatus `json:"collectors"`
-	LastAttemptAt    *time.Time                           `json:"last_attempt_at"`
-	LastSuccessAt    *time.Time                           `json:"last_success_at"`
-	LastError        *string                              `json:"last_error"`
-	LastErrorAt      *time.Time                           `json:"last_error_at"`
-	FreshnessSeconds *float64                             `json:"freshness_seconds"`
+	State            string                          `json:"state"`
+	ServerVersion    *string                         `json:"server_version"`
+	IsStandby        *bool                           `json:"is_standby"`
+	Capabilities     *observe.Capabilities           `json:"capabilities"`
+	Collectors       map[string]live.CollectorStatus `json:"collectors"`
+	LastAttemptAt    *time.Time                      `json:"last_attempt_at"`
+	LastSuccessAt    *time.Time                      `json:"last_success_at"`
+	LastError        *string                         `json:"last_error"`
+	LastErrorAt      *time.Time                      `json:"last_error_at"`
+	FreshnessSeconds *float64                        `json:"freshness_seconds"`
 }
 
-// Reloader is notified when targets change.
-type Reloader interface{ Reload() }
-
-// Service implements target management.
-type Service struct {
-	store   Store
-	box     *secret.Box
-	reload  Reloader
-	version string
+// Service manages monitored targets: validation, encryption of connection strings, connection tests.
+type Service interface {
+	// Create validates, encrypts, and stores a new target.
+	Create(ctx context.Context, in Input) (View, error)
+	// Update replaces a target's settings. An empty DSN keeps the stored one.
+	// Switching query-text collection off deletes stored statement texts.
+	Update(ctx context.Context, id int64, in Input) (View, error)
+	// Delete soft-deletes a target, or purges it and its history when purge is
+	// true (incidents are kept unless keepIncidents is false).
+	Delete(ctx context.Context, id int64, purge, keepIncidents bool) error
+	// Get returns one target's view.
+	Get(ctx context.Context, id int64) (View, error)
+	// List returns all targets.
+	List(ctx context.Context) ([]View, error)
+	// Test connects with dsn (or the stored DSN of target id when dsn is empty),
+	// detects capabilities, and runs the doctor checks. Nothing is stored.
+	Test(ctx context.Context, id int64, dsn string) (TestResult, error)
+	// Bootstrap creates targets that do not exist yet (matched by name). It is
+	// meant for demos and automated setups; existing targets are not changed.
+	Bootstrap(ctx context.Context, entries []BootstrapEntry, getenv func(string) string) (int, error)
 }
 
-// NewService returns a service.
-func NewService(store Store, box *secret.Box, reload Reloader, version string) *Service {
-	return &Service{store: store, box: box, reload: reload, version: version}
+var _ Service = (*service)(nil)
+
+// service implements target management.
+type service struct {
+	store      Repositories
+	box        *secret.Box
+	collectors collector.Manager
+	version    string
+}
+
+// New returns a service.
+func New(store Repositories, box *secret.Box, collectors collector.Manager, version string) Service {
+	return &service{store: store, box: box, collectors: collectors, version: version}
 }
 
 func validName(s string) bool {
@@ -136,7 +158,7 @@ func validName(s string) bool {
 	return true
 }
 
-func (s *Service) validate(in *Input, requireDSN bool) (config.Target, error) {
+func (s *service) validate(in *Input, requireDSN bool) (config.Target, error) {
 	fields := map[string]string{}
 	in.Name = strings.TrimSpace(in.Name)
 	if !validName(in.Name) {
@@ -205,7 +227,7 @@ func (s *Service) validate(in *Input, requireDSN bool) (config.Target, error) {
 }
 
 // Create validates, encrypts, and stores a new target.
-func (s *Service) Create(ctx context.Context, in Input) (View, error) {
+func (s *service) Create(ctx context.Context, in Input) (View, error) {
 	tgt, err := s.validate(&in, true)
 	if err != nil {
 		return View{}, err
@@ -223,13 +245,13 @@ func (s *Service) Create(ctx context.Context, in Input) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	s.reload.Reload()
+	s.collectors.Reload()
 	return s.Get(ctx, t.ID)
 }
 
 // Update replaces a target's settings. An empty DSN keeps the stored one.
 // Switching query-text collection off deletes stored statement texts.
-func (s *Service) Update(ctx context.Context, id int64, in Input) (View, error) {
+func (s *service) Update(ctx context.Context, id int64, in Input) (View, error) {
 	cur, err := s.store.GetTarget(ctx, id)
 	if err != nil {
 		return View{}, err
@@ -279,13 +301,13 @@ func (s *Service) Update(ctx context.Context, id int64, in Input) (View, error) 
 			_ = s.store.SaveTargetStatus(ctx, st)
 		}
 	}
-	s.reload.Reload()
+	s.collectors.Reload()
 	return s.Get(ctx, id)
 }
 
 // Delete soft-deletes a target, or purges it and its history when purge is
 // true (incidents are kept unless keepIncidents is false).
-func (s *Service) Delete(ctx context.Context, id int64, purge, keepIncidents bool) error {
+func (s *service) Delete(ctx context.Context, id int64, purge, keepIncidents bool) error {
 	var err error
 	if purge {
 		err = s.store.PurgeTarget(ctx, id, keepIncidents)
@@ -293,13 +315,13 @@ func (s *Service) Delete(ctx context.Context, id int64, purge, keepIncidents boo
 		err = s.store.SoftDeleteTarget(ctx, id)
 	}
 	if err == nil {
-		s.reload.Reload()
+		s.collectors.Reload()
 	}
 	return err
 }
 
 // Get returns one target's view.
-func (s *Service) Get(ctx context.Context, id int64) (View, error) {
+func (s *service) Get(ctx context.Context, id int64) (View, error) {
 	t, err := s.store.GetTarget(ctx, id)
 	if err != nil {
 		return View{}, err
@@ -312,7 +334,7 @@ func (s *Service) Get(ctx context.Context, id int64) (View, error) {
 }
 
 // List returns all targets.
-func (s *Service) List(ctx context.Context) ([]View, error) {
+func (s *service) List(ctx context.Context) ([]View, error) {
 	ts, err := s.store.ListTargets(ctx)
 	if err != nil {
 		return nil, err
@@ -352,7 +374,7 @@ func toView(t repository.Target, st repository.TargetStatus) View {
 			v.Status.Capabilities = &c
 		}
 	}
-	v.Status.Collectors = map[string]collector.CollectorStatus{}
+	v.Status.Collectors = map[string]live.CollectorStatus{}
 	if len(st.Collectors) > 2 {
 		_ = json.Unmarshal(st.Collectors, &v.Status.Collectors)
 	}
@@ -376,7 +398,7 @@ type TestResult struct {
 
 // Test connects with dsn (or the stored DSN of target id when dsn is empty),
 // detects capabilities, and runs the doctor checks. Nothing is stored.
-func (s *Service) Test(ctx context.Context, id int64, dsn string) (TestResult, error) {
+func (s *service) Test(ctx context.Context, id int64, dsn string) (TestResult, error) {
 	if dsn == "" {
 		t, err := s.store.GetTarget(ctx, id)
 		if err != nil {
@@ -454,7 +476,7 @@ type BootstrapWorkspace struct {
 
 // Bootstrap creates targets that do not exist yet (matched by name). It is
 // meant for demos and automated setups; existing targets are not changed.
-func (s *Service) Bootstrap(ctx context.Context, entries []BootstrapEntry, getenv func(string) string) (int, error) {
+func (s *service) Bootstrap(ctx context.Context, entries []BootstrapEntry, getenv func(string) string) (int, error) {
 	created := 0
 	for _, e := range entries {
 		if _, err := s.store.GetTargetByName(ctx, e.Name); err == nil {

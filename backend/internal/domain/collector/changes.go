@@ -25,7 +25,7 @@ func (w *worker) collectChanges(ctx context.Context) error {
 	}
 	id := w.target.ID
 	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorChanges, At: st.At,
-		Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+		Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 			return changes.ObserveServer(ctx, s, id, st)
 		}})
 	return nil

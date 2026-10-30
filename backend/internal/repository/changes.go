@@ -12,6 +12,22 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// ChangeRepository is the store of change events and the readings change detection compares against.
+type ChangeRepository interface {
+	// InsertChanges stores change events and sets their IDs.
+	InsertChanges(ctx context.Context, events []observe.ChangeEvent) error
+	// ListChanges returns change events, the newest first.
+	ListChanges(ctx context.Context, f ChangeFilter) ([]observe.ChangeEvent, error)
+	// DeleteChange deletes a reported change event (detected ones stay).
+	DeleteChange(ctx context.Context, id int64) (observe.ChangeEvent, error)
+	// ChangeState returns the last reading a change detection compares against.
+	ChangeState(ctx context.Context, targetID int64, kind string) ([]byte, error)
+	// SaveChangeState keeps a reading for the next comparison.
+	SaveChangeState(ctx context.Context, targetID int64, kind string, at time.Time, state []byte) error
+}
+
+var _ ChangeRepository = (*Store)(nil)
+
 // ChangeFilter selects change events.
 type ChangeFilter struct {
 	From, To time.Time

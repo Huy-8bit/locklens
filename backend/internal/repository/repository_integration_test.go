@@ -645,7 +645,7 @@ func TestRollupsBaselinesFindingsAndPlans(t *testing.T) {
 	if points[0].Calls != 3600 || points[0].TotalMS != 7200 || cov[0].Covered != 3600 || points[2].Calls != 3000 {
 		t.Errorf("point sums: %+v %+v", points, cov)
 	}
-	svc := baseline.NewService(s, nil, nil)
+	svc := baseline.New(baseline.Repositories{RollupRepository: s, TargetRepository: s}, nil, nil)
 	byID, err := svc.Load(ctx, tg.ID, []int64{active[0].IdentityID}, base, end, baseline.Params{Point: time.Hour, MinCalls: 10})
 	if err != nil {
 		t.Fatal(err)

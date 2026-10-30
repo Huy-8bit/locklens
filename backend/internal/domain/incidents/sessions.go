@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/repository"
 )
 
@@ -48,7 +48,7 @@ type sessionCounts struct {
 // ordered by how many sessions they block and then by how long they ran.
 // The activity snapshot holds only sessions in a transaction or involved in
 // blocking, so the counts come from pg_stat_activity's summary instead.
-func sessionsEvent(v collector.View, now time.Time) *repository.IncidentEvent {
+func sessionsEvent(v live.View, now time.Time) *repository.IncidentEvent {
 	if v.Activity == nil || v.Activity.Snapshot == nil || v.Report == nil {
 		return nil
 	}

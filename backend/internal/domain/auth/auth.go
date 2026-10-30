@@ -67,18 +67,21 @@ func IsBcryptHash(s string) bool {
 	return err == nil
 }
 
-// Store is the subset of the monitoring store used by the service.
-type Store interface {
-	UserByUsername(ctx context.Context, username string) (repository.User, error)
-	TouchLogin(ctx context.Context, id int64) error
-	CreateSession(ctx context.Context, tokenHash []byte, userID int64, csrf string, expires time.Time) error
-	SessionByHash(ctx context.Context, tokenHash []byte, idle time.Duration) (repository.AuthSession, error)
-	DeleteSession(ctx context.Context, tokenHash []byte) error
+// Service authenticates users and requests: logins, sessions, and CSRF.
+type Service interface {
+	// Login checks credentials and creates a session, setting the cookie.
+	Login(ctx context.Context, w http.ResponseWriter, clientKey, username, password string) (Session, error)
+	// Authenticate returns the session of a request, or an error.
+	Authenticate(r *http.Request) (Session, error)
+	// Logout deletes the session and clears the cookie.
+	Logout(ctx context.Context, w http.ResponseWriter, sess Session) error
 }
 
-// Service authenticates requests.
-type Service struct {
-	store        Store
+var _ Service = (*service)(nil)
+
+// service authenticates requests.
+type service struct {
+	store        Repositories
 	idle         time.Duration
 	secureCookie bool
 	limiter      *limiter
@@ -86,10 +89,10 @@ type Service struct {
 	dummyHash []byte
 }
 
-// NewService returns a service. idle is the session idle timeout.
-func NewService(store Store, idle time.Duration, secureCookie bool) *Service {
+// New returns a service. idle is the session idle timeout.
+func New(store Repositories, idle time.Duration, secureCookie bool) Service {
 	dummy, _ := bcrypt.GenerateFromPassword([]byte("locklens-timing-equaliser"), BcryptCost)
-	return &Service{store: store, idle: idle, secureCookie: secureCookie, limiter: newLimiter(5, time.Minute), dummyHash: dummy}
+	return &service{store: store, idle: idle, secureCookie: secureCookie, limiter: newLimiter(5, time.Minute), dummyHash: dummy}
 }
 
 // Session is an authenticated session.
@@ -121,7 +124,7 @@ func hashToken(token string) []byte {
 }
 
 // Login checks credentials and creates a session, setting the cookie.
-func (s *Service) Login(ctx context.Context, w http.ResponseWriter, clientKey, username, password string) (Session, error) {
+func (s *service) Login(ctx context.Context, w http.ResponseWriter, clientKey, username, password string) (Session, error) {
 	if !s.limiter.allow(clientKey) {
 		return Session{}, ErrRateLimited
 	}
@@ -160,7 +163,7 @@ func (s *Service) Login(ctx context.Context, w http.ResponseWriter, clientKey, u
 }
 
 // Authenticate returns the session of a request, or an error.
-func (s *Service) Authenticate(r *http.Request) (Session, error) {
+func (s *service) Authenticate(r *http.Request) (Session, error) {
 	c, err := r.Cookie(CookieName)
 	if err != nil || c.Value == "" || len(c.Value) > 200 {
 		return Session{}, repository.ErrNotFound
@@ -175,7 +178,7 @@ func (s *Service) Authenticate(r *http.Request) (Session, error) {
 }
 
 // Logout deletes the session and clears the cookie.
-func (s *Service) Logout(ctx context.Context, w http.ResponseWriter, sess Session) error {
+func (s *service) Logout(ctx context.Context, w http.ResponseWriter, sess Session) error {
 	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: "", Path: "/", HttpOnly: true, Secure: s.secureCookie,
 		SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	return s.store.DeleteSession(ctx, sess.tokenHash)

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/report"
@@ -326,7 +326,7 @@ func (s *Server) fleetLive(w http.ResponseWriter, r *http.Request) {
 
 // boundedReport returns the view's report with at most maxLiveSessions
 // sessions, keeping every session that takes part in blocking.
-func boundedReport(v collector.View) *report.Report {
+func boundedReport(v live.View) *report.Report {
 	if v.Report == nil || len(v.Report.Snapshot.Sessions) <= maxLiveSessions {
 		return v.Report
 	}

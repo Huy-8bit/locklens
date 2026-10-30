@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/baseline"
-	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/report"
@@ -116,7 +116,7 @@ type Input struct {
 	Now time.Time
 	// Interval is the activity collection interval of the target.
 	Interval time.Duration
-	View     collector.View
+	View     live.View
 	// History holds activity samples, oldest first; the last is the current one.
 	History []ActivitySample
 	// Baselines of the target's recently active statements (may be empty:

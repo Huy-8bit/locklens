@@ -121,14 +121,14 @@ func (w *worker) collectDatabase(ctx context.Context) error {
 	w.state.addPoints(cur.At, points)
 	id, at := w.target.ID, cur.At
 	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorDatabase, At: at,
-		Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+		Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 			return s.InsertPoints(ctx, id, at, points)
 		}})
 	if prev != nil && (slices.Contains(reasons, ReasonRestart) || slices.Contains(reasons, ReasonStatsReset) || slices.Contains(reasons, ReasonGap)) {
 		from := prev.At
 		reason := "counter rates unknown: " + strings.Join(reasons, ", ")
 		w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorDatabase, At: at,
-			Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+			Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 				return s.InsertGap(ctx, id, CollectorDatabase, from, at, reason)
 			}})
 	}

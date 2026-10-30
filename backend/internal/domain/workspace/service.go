@@ -35,8 +35,28 @@ type running struct {
 	target int64
 	cancel context.CancelFunc
 }
-type Service struct {
-	store  Store
+
+// Service runs operations on a target's investigation connection under its workspace policy.
+type Service interface {
+	// Configure stores a target's workspace policy and, when dsn is given, the
+	// connection string of its workspace role (the target's host, port, and
+	// database), after connecting with it; administrative roles are refused.
+	Configure(ctx context.Context, id int64, p repository.WorkspacePolicy, dsn string) error
+	// Cancel cancels a running operation of a target started by owner; false
+	// when there is none.
+	Cancel(owner string, target int64, id string) bool
+	// Run runs fn on a read-only transaction of the target's workspace
+	// connection when the policy allows the action, bounded in time and
+	// concurrency, and audits it. ctx carries the actor (WithActor); owner is the
+	// session that may cancel it by requestID.
+	Run(ctx context.Context, id int64, owner, action, requestID string, fn func(context.Context, pgx.Tx) (any, error)) (out any, err error)
+}
+
+var _ Service = (*service)(nil)
+
+// service implements Service.
+type service struct {
+	store  Repositories
 	box    *secret.Box
 	mu     sync.Mutex
 	active map[string]running
@@ -44,11 +64,17 @@ type Service struct {
 	total  int
 }
 
-func New(store Store, box *secret.Box) *Service {
-	return &Service{store: store, box: box, active: map[string]running{}, counts: map[int64]int{}}
+// New returns the workspace service.
+func New(store Repositories, box *secret.Box) Service {
+	return &service{store: store, box: box, active: map[string]running{}, counts: map[int64]int{}}
 }
+
 func aad(id int64) []byte { return []byte(fmt.Sprintf("workspace-dsn:%d", id)) }
-func (s *Service) Configure(ctx context.Context, id int64, p repository.WorkspacePolicy, dsn string) error {
+
+// Configure stores a target's workspace policy and, when dsn is given, the
+// connection string of its workspace role (the target's host, port, and
+// database), after connecting with it; administrative roles are refused.
+func (s *service) Configure(ctx context.Context, id int64, p repository.WorkspacePolicy, dsn string) error {
 	t, err := s.store.GetTarget(ctx, id)
 	if err != nil {
 		return err
@@ -99,7 +125,10 @@ func (s *Service) Configure(ctx context.Context, id int64, p repository.Workspac
 	s.mu.Unlock()
 	return nil
 }
-func (s *Service) Cancel(owner string, target int64, id string) bool {
+
+// Cancel cancels a running operation of a target started by owner; false
+// when there is none.
+func (s *service) Cancel(owner string, target int64, id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.active[id]
@@ -109,7 +138,12 @@ func (s *Service) Cancel(owner string, target int64, id string) bool {
 	}
 	return false
 }
-func (s *Service) Run(ctx context.Context, id int64, owner, action, requestID string, fn func(context.Context, pgx.Tx) (any, error)) (out any, err error) {
+
+// Run runs fn on a read-only transaction of the target's workspace
+// connection when the policy allows the action, bounded in time and
+// concurrency, and audits it. ctx carries the actor (WithActor); owner is the
+// session that may cancel it by requestID.
+func (s *service) Run(ctx context.Context, id int64, owner, action, requestID string, fn func(context.Context, pgx.Tx) (any, error)) (out any, err error) {
 	started := time.Now()
 	actor := actorOf(ctx)
 	p, err := s.store.WorkspacePolicy(ctx, id)

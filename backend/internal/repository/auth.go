@@ -12,6 +12,43 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// AuthRepository is the store of users, their sessions, and the environment administrator.
+type AuthRepository interface {
+	// UpsertManagedAdmin creates or updates the environment administrator: an
+	// enabled admin with the given password hash. Earlier environment
+	// administrators with another user name are removed, so the environment
+	// stays the single source of truth for that account. Other users are kept.
+	// It reports whether the stored password hash changed.
+	UpsertManagedAdmin(ctx context.Context, username, passwordHash string) (id int64, changed bool, err error)
+	// UserByUsername looks up a user (case-insensitive).
+	UserByUsername(ctx context.Context, username string) (User, error)
+	// UserByID looks up a user.
+	UserByID(ctx context.Context, id int64) (User, error)
+	// ListUsers returns every user, the environment administrator first.
+	ListUsers(ctx context.Context) ([]User, error)
+	// CreateUser adds a user. ErrConflict means the name is taken.
+	CreateUser(ctx context.Context, username, passwordHash, role string) (User, error)
+	// UpdateUser changes a user. Disabling a user or changing their password
+	// ends their sessions; a role change applies to their next request.
+	UpdateUser(ctx context.Context, id int64, c UserChanges) (User, error)
+	// DeleteUser removes a user and their sessions.
+	DeleteUser(ctx context.Context, id int64) error
+	// TouchLogin records a successful login.
+	TouchLogin(ctx context.Context, id int64) error
+	// CreateSession stores a session identified by the hash of its token.
+	CreateSession(ctx context.Context, tokenHash []byte, userID int64, csrf string, expires time.Time) error
+	// SessionByHash returns a non-expired session of an enabled user and slides
+	// its expiry. The role is read on every request, so a role change applies
+	// immediately.
+	SessionByHash(ctx context.Context, tokenHash []byte, idle time.Duration) (AuthSession, error)
+	// DeleteSession ends a session.
+	DeleteSession(ctx context.Context, tokenHash []byte) error
+	// DeleteUserSessions logs one user out everywhere.
+	DeleteUserSessions(ctx context.Context, userID int64) error
+}
+
+var _ AuthRepository = (*Store)(nil)
+
 // ErrConflict is returned when a unique value (a user name) is taken.
 var ErrConflict = errors.New("already exists")
 

@@ -22,6 +22,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/changes"
 	"github.com/locklens/locklens/internal/domain/cluster"
 	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/events"
 	"github.com/locklens/locklens/internal/domain/incidents"
 	"github.com/locklens/locklens/internal/domain/insight"
 	"github.com/locklens/locklens/internal/domain/logs"
@@ -64,39 +65,45 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 
 	store.SetRawRetention(cfg.HistoryRetention)
 	metrics := obs.NewMetrics()
-	hub := httpapi.NewHub(100, func(n int) { metrics.SSEClients.Set(float64(n)) })
-	st, err := settings.Load(ctx, store, cfg.DemoMode)
+	// Events reach this server's browsers through the hub and, over the
+	// cluster bus, the browsers of the other servers sharing the store.
+	hub := events.NewHub(100, func(n int) { metrics.SSEClients.Set(float64(n)) })
+	clusterRepos := cluster.Repositories{ClusterRepository: store}
+	node := cluster.New(clusterRepos, serverID(cfg), hostname(), version, log)
+	bus := cluster.NewBus(node, clusterRepos, hub, log)
+
+	st, err := settings.Load(ctx, settings.Repositories{SettingRepository: store}, cfg.DemoMode,
+		func() { bus.Send(messageSettingsChanged, nil) })
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)
 	}
-	writer := collector.NewWriter(store, cfg.WriteQueue, metrics, log)
-	manager := collector.NewManager(store, box, writer, nil, hub, st, metrics, log,
+	notifier := notify.New(notify.Repositories{NotificationRepository: store, IncidentRepository: store, TargetRepository: store, FindingRepository: store},
+		box, log, cfg.PublicURL, version)
+	baselines := baseline.New(baseline.Repositories{RollupRepository: store, TargetRepository: store},
+		func() baseline.Params { return insight.BaselineParams(st.Thresholds()) }, log)
+	// Incident events go to the browsers and to notifications (sent by the
+	// server that records the incident).
+	recorder := incidents.NewRecorder(incidents.Repositories{IncidentRepository: store, FindingRepository: store},
+		incidents.DefaultConfig(), st, baselines, metrics, events.Fanout{bus, notifier}, log)
+	collectorRepos := collector.Repositories{ChangeRepository: store, ClusterRepository: store, CollectionRepository: store,
+		LoadRepository: store, OptimizerRepository: store, TargetRepository: store}
+	writer := collector.NewWriter(collectorRepos, cfg.WriteQueue, metrics, log)
+	manager := collector.NewManager(collector.Deps{Store: collectorRepos, Box: box, Writer: writer, Recorder: recorder, Events: bus,
+		Settings: st, Cluster: node, Bus: bus, Metrics: metrics, Log: log},
 		collector.Config{MaxConcurrent: cfg.MaxConcurrent, Version: version, StatementsInterval: statementsInterval(cfg), LoadInterval: loadInterval(cfg),
 			BurstDuration: burstDuration(cfg), BudgetPercent: cfg.CollectorBudgetPercent})
-	notifier := notify.New(store, box, log, cfg.PublicURL, version)
-	// Incident events go to the browsers (SSE) and to notifications.
-	recorder := incidents.NewRecorder(store, incidents.DefaultConfig(), st, metrics, fanout{hub, notifier}, log)
-	baselines := baseline.NewService(store, func() baseline.Params { return insight.BaselineParams(st.Thresholds()) }, log)
-	recorder.SetBaselines(baselines)
-	recorder.SetBurster(manager)
-	manager.SetAnalyzer(recorder)
-	tsvc := targets.NewService(store, box, manager, version)
-	ws := workspace.New(store, box)
-	opt := optimizer.NewService(store, ws, hub, log)
+	tsvc := targets.New(targets.Repositories{CollectionRepository: store, TargetRepository: store}, box, manager, version)
+	ws := workspace.New(workspace.Repositories{WorkspaceRepository: store, TargetRepository: store}, box)
+	opt := optimizer.New(optimizer.Repositories{OptimizerRepository: store, PlanRepository: store, QueryRepository: store, TargetRepository: store},
+		ws, bus, log)
 
 	if cfg.BootstrapTargets != "" {
-		if err := bootstrapTargets(ctx, tsvc, ws, store, cfg.BootstrapTargets, log); err != nil {
+		if err := bootstrapTargets(ctx, tsvc, ws, bootstrapStore{TargetRepository: store, WorkspaceRepository: store}, cfg.BootstrapTargets, log); err != nil {
 			return err
 		}
 	}
 
-	// Servers sharing the store split the targets and the once-per-cluster
-	// jobs, and exchange browser events and requests over a bus.
-	node := cluster.New(store, serverID(cfg), hostname(), version, log)
-	bus := cluster.NewBus(node, store, log)
-	hub.Forward(bus.Send)
-	bus.DeliverTo(hub.PublishLocal)
-	manager.SetCluster(node, bus)
+	// Requests from the other servers.
 	bus.Handle(collector.MessageRunSoon, func(raw json.RawMessage) {
 		var m struct {
 			TargetID  int64  `json:"target_id"`
@@ -106,7 +113,6 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 			manager.RunSoonHere(m.TargetID, m.Collector)
 		}
 	})
-	st.OnChange(func() { bus.Send(messageSettingsChanged, nil) })
 	bus.Handle(messageSettingsChanged, func(json.RawMessage) {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
@@ -115,12 +121,32 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 		}
 	})
 
-	tool := model.Tool{Name: "locklens", Version: version}
-	handler := httpapi.New(httpapi.Deps{Workspace: ws, Store: store, Auth: auth.NewService(store, cfg.SessionIdle, cfg.CookieSecure), Targets: tsvc,
-		Onboard: onboard.New(store, box, tsvc, ws),
-		Manager: manager, Settings: st, Notify: notifier, Hub: hub, Metrics: metrics, Log: log, Tool: tool, TrustedProxies: cfg.TrustedProxies, TrustedProxyHosts: cfg.TrustedProxyHosts,
-		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode, Baselines: baselines, Insight: insight.NewService(store, cfg.LoadSampling), Optimizer: opt,
-		Changes: changes.New(store), Tokens: tokens.New(store), Cluster: node, Logs: logs.New(store)})
+	handler := httpapi.New(httpapi.Deps{
+		Store: httpapi.Repositories{AuthRepository: store, FindingRepository: store, HealthRepository: store, IncidentRepository: store,
+			LoadRepository: store, MetricRollupRepository: store, OptimizerRepository: store, PlanRepository: store, QueryRepository: store,
+			RetentionRepository: store, SeriesRepository: store, SnapshotRepository: store, TargetRepository: store, TimescaleRepository: store,
+			TopologyRepository: store, WorkspaceRepository: store},
+		Auth:      auth.New(auth.Repositories{AuthRepository: store}, cfg.SessionIdle, cfg.CookieSecure),
+		Targets:   tsvc,
+		Onboard:   onboard.New(onboard.Repositories{ManagedRoleRepository: store}, box, tsvc, ws),
+		Workspace: ws,
+		Manager:   manager,
+		Settings:  st,
+		Notify:    notifier,
+		Baselines: baselines,
+		Insight: insight.New(insight.Repositories{ChangeRepository: store, FindingRepository: store, LoadRepository: store,
+			LogRepository: store, PlanRepository: store, SeriesRepository: store}, cfg.LoadSampling),
+		Optimizer: opt,
+		Changes:   changes.New(changes.Repositories{ChangeRepository: store}),
+		Tokens:    tokens.New(tokens.Repositories{TokenRepository: store}),
+		Logs:      logs.New(logs.Repositories{ChangeRepository: store, LogRepository: store}),
+		Cluster:   node,
+		Events:    bus,
+		Stream:    hub,
+		Metrics:   metrics, Log: log, Tool: model.Tool{Name: "locklens", Version: version},
+		TrustedProxies: cfg.TrustedProxies, TrustedProxyHosts: cfg.TrustedProxyHosts,
+		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode,
+	})
 
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 64 << 10}
@@ -141,10 +167,12 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	// One server of a cluster runs each of these at a time.
 	singletons := map[string]func(context.Context){
 		"baselines": func(ctx context.Context) { baselines.Run(ctx, baselineRefresh(cfg)) },
-		"rollups":   func(ctx context.Context) { rollup.Run(ctx, store, time.Minute, cfg.HistoryRetention, log) },
+		"rollups": func(ctx context.Context) {
+			rollup.Run(ctx, rollup.Repositories{MetricRollupRepository: store, TargetRepository: store}, time.Minute, cfg.HistoryRetention, log)
+		},
 		"optimizer": func(ctx context.Context) { opt.Run(ctx, optimizerEvery(cfg)) },
 		"retention": func(ctx context.Context) {
-			retention.Run(ctx, store, repository.RetentionPolicy{History: cfg.HistoryRetention, Incidents: cfg.IncidentRetention,
+			retention.Run(ctx, retention.Repositories{RetentionRepository: store}, repository.RetentionPolicy{History: cfg.HistoryRetention, Incidents: cfg.IncidentRetention,
 				Findings: cfg.FindingRetention, Rollups: cfg.BaselineRetention,
 				MetricMinute: cfg.MinuteRollupRetention, MetricHour: cfg.HourRollupRetention}, time.Hour, log)
 		},
@@ -235,13 +263,8 @@ func loadInterval(cfg config.Config) time.Duration {
 	return cfg.LoadSampleInterval
 }
 
-// fanout publishes each event to several sinks.
 // messageSettingsChanged tells the other servers to reload the settings.
 const messageSettingsChanged = "settings.changed"
-
-// The recorder adopts the open incidents of the targets this server
-// starts collecting.
-var _ collector.Adopter = (*incidents.Recorder)(nil)
 
 // serverID is LOCKLENS_SERVER_ID, or the host name with a random suffix.
 func serverID(cfg config.Config) string {
@@ -259,12 +282,4 @@ func hostname() string {
 		return "locklens"
 	}
 	return h
-}
-
-type fanout []collector.EventSink
-
-func (f fanout) Publish(kind string, payload any) {
-	for _, s := range f {
-		s.Publish(kind, payload)
-	}
 }

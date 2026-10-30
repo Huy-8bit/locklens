@@ -10,6 +10,19 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// WorkspaceRepository is the store of investigation workspace policies and their audit log.
+type WorkspaceRepository interface {
+	// WorkspacePolicy returns a target's workspace policy (all off when none
+	// is stored).
+	WorkspacePolicy(ctx context.Context, id int64) (WorkspacePolicy, error)
+	// SetWorkspacePolicy stores a target's workspace policy.
+	SetWorkspacePolicy(ctx context.Context, p WorkspacePolicy) error
+	// AuditWorkspace records one workspace action and trims the audit log.
+	AuditWorkspace(ctx context.Context, id int64, actor, action, status string, duration time.Duration, rows int) error
+}
+
+var _ WorkspaceRepository = (*Store)(nil)
+
 type WorkspacePolicy struct {
 	TargetID int64 `json:"target_id"`
 	Metadata bool  `json:"metadata_enabled"`
@@ -24,6 +37,8 @@ type WorkspacePolicy struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+// WorkspacePolicy returns a target's workspace policy (all off when none
+// is stored).
 func (s *Store) WorkspacePolicy(ctx context.Context, id int64) (WorkspacePolicy, error) {
 	p := WorkspacePolicy{TargetID: id}
 	err := s.pool.QueryRow(ctx, queries.WorkspacePolicy, id).Scan(&p.Metadata, &p.Data, &p.SQL, &p.History, &p.HypoPG, &p.Ciphertext, &p.UpdatedAt)
@@ -33,51 +48,18 @@ func (s *Store) WorkspacePolicy(ctx context.Context, id int64) (WorkspacePolicy,
 	p.Configured = len(p.Ciphertext) > 0
 	return p, err
 }
+
+// SetWorkspacePolicy stores a target's workspace policy.
 func (s *Store) SetWorkspacePolicy(ctx context.Context, p WorkspacePolicy) error {
 	_, err := s.pool.Exec(ctx, queries.SetWorkspacePolicy, p.TargetID, p.Metadata, p.Data, p.SQL, p.History, p.HypoPG, p.Ciphertext)
 	return err
 }
+
+// AuditWorkspace records one workspace action and trims the audit log.
 func (s *Store) AuditWorkspace(ctx context.Context, id int64, actor, action, status string, duration time.Duration, rows int) error {
 	_, err := s.pool.Exec(ctx, queries.InsertWorkspaceAudit, id, actor, action, status, duration.Milliseconds(), rows)
 	if err == nil {
 		_, err = s.pool.Exec(ctx, queries.TrimWorkspaceAudit)
 	}
 	return err
-}
-
-type TopologyLink struct {
-	PrimaryID   int64  `json:"primary_id"`
-	StandbyID   int64  `json:"standby_id"`
-	Application string `json:"application_name"`
-	Provenance  string `json:"provenance"`
-}
-
-func (s *Store) TopologyLinks(ctx context.Context) ([]TopologyLink, error) {
-	rows, err := s.pool.Query(ctx, queries.TopologyLinks)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []TopologyLink{}
-	for rows.Next() {
-		var l TopologyLink
-		if err = rows.Scan(&l.PrimaryID, &l.StandbyID, &l.Application, &l.Provenance); err != nil {
-			return nil, err
-		}
-		out = append(out, l)
-	}
-	return out, rows.Err()
-}
-func (s *Store) SetTopologyLink(ctx context.Context, l TopologyLink) error {
-	_, err := s.pool.Exec(ctx, queries.SetTopologyLink, l.PrimaryID, l.StandbyID, l.Application, l.Provenance)
-	return err
-}
-func (s *Store) DeleteTopologyLink(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx, queries.DeleteTopologyLink, id)
-	return err
-}
-func (s *Store) HistoryBounds(ctx context.Context, id int64) (map[string]any, error) {
-	var a, b *time.Time
-	err := s.pool.QueryRow(ctx, queries.HistoryBounds, id).Scan(&a, &b)
-	return map[string]any{"from": a, "to": b}, err
 }

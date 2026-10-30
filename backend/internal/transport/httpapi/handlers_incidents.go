@@ -205,7 +205,7 @@ func (s *Server) acknowledgeIncident(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	s.d.Hub.Publish("incident.updated", map[string]any{"incident_id": in.ID})
+	s.d.Events.Publish("incident.updated", map[string]any{"incident_id": in.ID})
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -215,7 +215,7 @@ func (s *Server) exportIncident(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	includeQuery := r.URL.Query().Get("include_query") == "true"
-	e, err := export.Build(r.Context(), s.d.Store, in.ID, includeQuery, s.d.Tool)
+	e, err := export.Build(r.Context(), export.Repositories{IncidentRepository: s.d.Store, FindingRepository: s.d.Store}, in.ID, includeQuery, s.d.Tool)
 	if err != nil {
 		s.internal(w, r, err)
 		return

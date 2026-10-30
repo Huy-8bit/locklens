@@ -1,9 +1,14 @@
-// Package repository is the data access layer of the LockLens monitoring store: a dedicated PostgreSQL
-// database holding the admin account, sessions, targets, collected history,
-// findings, and incidents.
+// Package repository is the data access layer of the LockLens monitoring
+// store: a dedicated PostgreSQL database holding users, sessions, targets,
+// collected history, findings, incidents, and everything else LockLens keeps.
+//
+// Each file covers one area and declares that area's interface (for example
+// TargetRepository in targets.go); *Store implements them all. Other
+// packages depend on the interfaces of the areas they use, never on *Store,
+// so they can be tested with fakes. The SQL is in package queries.
 //
 // The store is never the database being monitored. It uses its own pool and
-// credentials; target connections are managed by package collector.
+// credentials; monitored servers are reached through package targetdb.
 package repository
 
 import (
@@ -24,6 +29,16 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 	"github.com/locklens/locklens/migrations"
 )
+
+// HealthRepository is the store of the reachability and schema version of the store.
+type HealthRepository interface {
+	// Ping checks that the store answers.
+	Ping(ctx context.Context) error
+	// SchemaVersion returns the highest applied migration, or 0.
+	SchemaVersion(ctx context.Context) (int, error)
+}
+
+var _ HealthRepository = (*Store)(nil)
 
 // MinStoreVersionNum is the oldest PostgreSQL release supported as the store
 // (date_bin, used for downsampling, exists since 14).

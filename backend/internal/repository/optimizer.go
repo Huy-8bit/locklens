@@ -12,6 +12,54 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// OptimizerRepository is the store of schema catalogs, optimizer recommendations, and the workload they are derived from.
+type OptimizerRepository interface {
+	// SaveCatalog replaces the stored catalog of a database of a target.
+	SaveCatalog(ctx context.Context, targetID int64, c observe.Catalog) error
+	// LatestCatalog returns the most recently collected catalog of a target (of
+	// any of its databases).
+	LatestCatalog(ctx context.Context, targetID int64) (observe.Catalog, error)
+	// Catalogs returns the stored catalogs of a target, one per database, by
+	// database name.
+	Catalogs(ctx context.Context, targetID int64) ([]observe.Catalog, error)
+	// PruneCatalogs deletes the catalogs of databases that are no longer
+	// monitored.
+	PruneCatalogs(ctx context.Context, targetID int64, keep []string) error
+	// SyncRecommendations upserts the recommendations of one optimizer pass over
+	// one database.
+	// Content is refreshed while a recommendation is open or accepted (its
+	// evidence changes); decisions and later states are kept. Open
+	// recommendations that were not derived again are resolved ("no longer
+	// applies"); a resolved one that comes back is open again.
+	SyncRecommendations(ctx context.Context, targetID int64, datname string, now time.Time, recs []RecommendationInput) error
+	// ListRecommendations returns recommendations, the largest benefit first.
+	ListRecommendations(ctx context.Context, f RecommendationFilter) ([]Recommendation, error)
+	// GetRecommendation returns one recommendation of a target.
+	GetRecommendation(ctx context.Context, targetID, id int64) (Recommendation, error)
+	// DecideRecommendation records a person's decision (accepted, dismissed, or
+	// open again) with a note.
+	DecideRecommendation(ctx context.Context, targetID, id int64, status, by, note string) (Recommendation, error)
+	// MarkApplied records that the change a recommendation proposes was made
+	// (detected in the catalog) and the statement time before it.
+	MarkApplied(ctx context.Context, id int64, at time.Time, how string, beforeMS *float64) error
+	// SetVerification records the statement time after the change and the
+	// resulting status (verified, no_effect, regressed).
+	SetVerification(ctx context.Context, id int64, status string, afterMS float64, at time.Time) error
+	// SetWhatIf stores the result of a what-if check and the confidence it
+	// gives.
+	SetWhatIf(ctx context.Context, targetID, id int64, whatif, confidence any) error
+	// StatementWorkload returns the statements with the most execution time
+	// since a time (at most limit), with their texts when the target collects
+	// them.
+	StatementWorkload(ctx context.Context, targetID int64, since time.Time, limit int, includeText bool) ([]WorkloadStatement, error)
+	// StatementMeanMS is the median, over five-minute buckets with at least
+	// minCalls calls, of a statement's time per call in [from, to), with the
+	// number of buckets; ok is false without such buckets.
+	StatementMeanMS(ctx context.Context, targetID, identityID int64, from, to time.Time, minCalls int64) (float64, int, bool, error)
+}
+
+var _ OptimizerRepository = (*Store)(nil)
+
 // SaveCatalog replaces the stored catalog of a database of a target.
 func (s *Store) SaveCatalog(ctx context.Context, targetID int64, c observe.Catalog) error {
 	raw, err := json.Marshal(c)
@@ -296,21 +344,4 @@ func (s *Store) StatementMeanMS(ctx context.Context, targetID, identityID int64,
 		return 0, 0, false, nil
 	}
 	return *median, n, true, nil
-}
-
-// LatestPlans returns the newest saved plan of each identity, with its body.
-func (s *Store) LatestPlans(ctx context.Context, targetID int64, identityIDs []int64) (map[int64]PlanRow, error) {
-	rows, err := s.pool.Query(ctx, queries.LatestPlans, targetID, identityIDs)
-	if err != nil {
-		return nil, s.red.Error(err)
-	}
-	list, err := pgx.CollectRows(rows, scanPlan)
-	if err != nil {
-		return nil, s.red.Error(err)
-	}
-	out := make(map[int64]PlanRow, len(list))
-	for _, p := range list {
-		out[p.IdentityID] = p
-	}
-	return out, nil
 }

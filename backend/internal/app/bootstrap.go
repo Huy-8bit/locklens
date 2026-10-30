@@ -16,7 +16,7 @@ import (
 	"github.com/locklens/locklens/internal/repository"
 )
 
-func bootstrapAdmin(ctx context.Context, store *repository.Store, cfg config.Config, log *slog.Logger) error {
+func bootstrapAdmin(ctx context.Context, store repository.AuthRepository, cfg config.Config, log *slog.Logger) error {
 	hash := cfg.AdminPasswordHash
 	if hash != "" && !auth.IsBcryptHash(hash) {
 		return errors.New("LOCKLENS_ADMIN_PASSWORD_HASH is not a bcrypt hash (create one with: locklens admin hash-password)")
@@ -52,7 +52,13 @@ func bootstrapAdmin(ctx context.Context, store *repository.Store, cfg config.Con
 	return nil
 }
 
-func bootstrapTargets(ctx context.Context, svc *targets.Service, ws *workspace.Service, store *repository.Store, path string, log *slog.Logger) error {
+// bootstrapStore holds what bootstrapping targets reads.
+type bootstrapStore struct {
+	repository.TargetRepository
+	repository.WorkspaceRepository
+}
+
+func bootstrapTargets(ctx context.Context, svc targets.Service, ws workspace.Service, store bootstrapStore, path string, log *slog.Logger) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("LOCKLENS_BOOTSTRAP_TARGETS_FILE: %w", err)
@@ -82,7 +88,7 @@ func bootstrapTargets(ctx context.Context, svc *targets.Service, ws *workspace.S
 // bootstrapWorkspace configures investigation access for a bootstrap target
 // that has none yet. Failures are logged, not fatal: monitoring works
 // without it, and the administrator can configure it in the UI.
-func bootstrapWorkspace(ctx context.Context, ws *workspace.Service, store *repository.Store, e targets.BootstrapEntry, log *slog.Logger) {
+func bootstrapWorkspace(ctx context.Context, ws workspace.Service, store bootstrapStore, e targets.BootstrapEntry, log *slog.Logger) {
 	t, err := store.GetTargetByName(ctx, e.Name)
 	if err != nil {
 		log.Warn("bootstrap workspace: target not found", "target", e.Name)

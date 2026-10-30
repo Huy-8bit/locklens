@@ -7,7 +7,7 @@ import (
 )
 
 func TestValidateDefaultsAndDisplayFields(t *testing.T) {
-	s := &Service{}
+	s := &service{}
 	in := Input{Name: "  orders  ", DSN: "postgres://observer:cnrypw@db.internal:6432/orders?sslmode=disable", Environment: " Production "}
 	tgt, err := s.validate(&in, true)
 	if err != nil {
@@ -22,7 +22,7 @@ func TestValidateDefaultsAndDisplayFields(t *testing.T) {
 }
 
 func TestValidateRejectsWithoutEchoingSecrets(t *testing.T) {
-	s := &Service{}
+	s := &service{}
 	empty, bad := "", "ftp://x/metrics"
 	cases := []struct {
 		in    Input

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/model"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/report"
@@ -26,7 +26,7 @@ func TestSessionsEventOrdersBlockersFirst(t *testing.T) {
 		},
 		Edges: []model.Edge{{Blocker: 20, Waiter: 30}},
 	}
-	v := collector.View{Activity: &observe.Activity{At: now, Snapshot: snap,
+	v := live.View{Activity: &observe.Activity{At: now, Snapshot: snap,
 		Counts: observe.ActivityCounts{ClientTotal: 12, Active: 2, Idle: 9, IdleInTx: 1, WaitingLock: 1}}, Report: report.Build(snap, time.Minute)}
 
 	ev := sessionsEvent(v, now)

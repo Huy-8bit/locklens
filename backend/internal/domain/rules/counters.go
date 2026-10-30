@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/locklens/locklens/internal/domain/collector"
+	"github.com/locklens/locklens/internal/domain/live"
 )
 
 // windowTotal integrates a metric over (from, to]. For rate metrics (perSecond)
 // each value is multiplied by the time since the previous point; delta
 // metrics are summed. coverage is the share of the window backed by known
 // values; unknown (NULL) values and missing points reduce it.
-func windowTotal(h []collector.TimedValue, from, to time.Time, perSecond bool) (total, coverage float64) {
+func windowTotal(h []live.TimedValue, from, to time.Time, perSecond bool) (total, coverage float64) {
 	var prev time.Time
 	var covered float64
 	for _, p := range h {

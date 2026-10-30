@@ -44,7 +44,7 @@ func (w *worker) collectHost(ctx context.Context) error {
 	w.state.addPoints(hm.At, pts)
 	id, at := w.target.ID, hm.At
 	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorHost, At: at,
-		Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+		Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 			return s.InsertPoints(ctx, id, at, pts)
 		}})
 	return nil

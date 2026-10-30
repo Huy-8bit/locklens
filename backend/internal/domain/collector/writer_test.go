@@ -15,7 +15,7 @@ import (
 )
 
 func testWriter(capacity int) *Writer {
-	w := NewWriter(nil, capacity, obs.NewMetrics(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w := NewWriter(Repositories{}, capacity, obs.NewMetrics(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return w
 }
 
@@ -30,7 +30,7 @@ func TestWriterDropsOldestWhenFull(t *testing.T) {
 		return nil
 	}
 	for _, name := range []string{"a", "b", "c", "d", "e"} {
-		w.Enqueue(WriteOp{Collector: name, Write: func(context.Context, Store, repository.IdentityCache) error { return nil }})
+		w.Enqueue(WriteOp{Collector: name, Write: func(context.Context, Repositories, repository.IdentityCache) error { return nil }})
 	}
 	if w.Len() != 3 {
 		t.Fatalf("queue length = %d, want 3 (bounded)", w.Len())
@@ -50,7 +50,7 @@ func TestWriterRetriesThenSucceeds(t *testing.T) {
 	w.writeGap = func(context.Context, WriteOp) error { return nil }
 	var calls atomic.Int32
 	done := make(chan struct{})
-	w.Enqueue(WriteOp{Collector: "x", Write: func(context.Context, Store, repository.IdentityCache) error {
+	w.Enqueue(WriteOp{Collector: "x", Write: func(context.Context, Repositories, repository.IdentityCache) error {
 		if calls.Add(1) < 3 {
 			return errors.New("store down")
 		}
@@ -74,10 +74,10 @@ func TestWriterGivesUpOnPoisonOpWhenNewerDataWaits(t *testing.T) {
 	w := testWriter(10)
 	w.writeGap = func(context.Context, WriteOp) error { return nil }
 	ok := make(chan struct{})
-	w.Enqueue(WriteOp{Collector: "poison", Write: func(context.Context, Store, repository.IdentityCache) error {
+	w.Enqueue(WriteOp{Collector: "poison", Write: func(context.Context, Repositories, repository.IdentityCache) error {
 		return errors.New("always fails")
 	}})
-	w.Enqueue(WriteOp{Collector: "good", Write: func(context.Context, Store, repository.IdentityCache) error { close(ok); return nil }})
+	w.Enqueue(WriteOp{Collector: "good", Write: func(context.Context, Repositories, repository.IdentityCache) error { close(ok); return nil }})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go w.Run(ctx)

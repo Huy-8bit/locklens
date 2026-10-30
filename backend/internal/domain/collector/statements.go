@@ -211,7 +211,7 @@ func (w *worker) collectStatements(ctx context.Context) error {
 
 	id, at, text := w.target.ID, coll.At, w.target.QueryTextEnabled
 	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorStatements, At: at,
-		Write: func(ctx context.Context, s Store, cache repository.IdentityCache) error {
+		Write: func(ctx context.Context, s Repositories, cache repository.IdentityCache) error {
 			if err := s.InsertStatements(ctx, id, coll, text, cache); err != nil {
 				return err
 			}

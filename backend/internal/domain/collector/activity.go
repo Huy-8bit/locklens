@@ -49,7 +49,7 @@ func (w *worker) collectActivity(ctx context.Context) error {
 
 	id := w.target.ID
 	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorActivity, At: at,
-		Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+		Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 			return s.InsertPoints(ctx, id, at, points)
 		}})
 	interesting := rep.Analysis.Summary.BlockedSessions > 0 || rep.Analysis.Summary.LongTransactions > 0
@@ -61,7 +61,7 @@ func (w *worker) collectActivity(ctx context.Context) error {
 		}
 		sum := rep.Analysis.Summary
 		w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorActivity, At: at,
-			Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+			Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 				return s.InsertActivitySnapshot(ctx, id, at, sum.BlockedSessions, sum.RootBlockers, sum.LongTransactions, raw)
 			}})
 	}
@@ -69,7 +69,7 @@ func (w *worker) collectActivity(ctx context.Context) error {
 		w.lastVacuumStored = at
 		raw, _ := json.Marshal(vacuum)
 		w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorActivity, At: at,
-			Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+			Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 				return s.InsertStateSnapshot(ctx, id, "vacuum_progress", at, raw)
 			}})
 	}

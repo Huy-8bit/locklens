@@ -4,29 +4,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/report"
 )
-
-// CollectorStatus is the outcome of a collector's most recent runs.
-type CollectorStatus struct {
-	Name                string     `json:"name"`
-	IntervalSeconds     float64    `json:"interval_seconds"`
-	Enabled             bool       `json:"enabled"`
-	DisabledReason      string     `json:"disabled_reason,omitempty"`
-	LastAttempt         *time.Time `json:"last_attempt"`
-	LastSuccess         *time.Time `json:"last_success"`
-	LastError           *string    `json:"last_error"`
-	LastDurationMS      *int64     `json:"last_duration_ms"`
-	ConsecutiveFailures int        `json:"consecutive_failures"`
-	// BaseIntervalSeconds is the configured interval; IntervalSeconds is the
-	// one in effect (shorter during a burst, longer when slowed down).
-	BaseIntervalSeconds float64 `json:"base_interval_seconds"`
-	// Burst is true while the target is collected faster (adaptive sampling).
-	Burst bool `json:"burst,omitempty"`
-	// ThrottleReason says why the collector runs less often than configured.
-	ThrottleReason string `json:"throttle_reason,omitempty"`
-}
 
 // maxStatementHistory bounds the in-memory statements history used by the
 // workload rules (two hours at the default 15 s interval).
@@ -34,12 +15,6 @@ const maxStatementHistory = 480
 
 // maxPointHistory bounds per-metric in-memory history used by rules.
 const maxPointHistory = 360
-
-// TimedValue is a metric value at a time; nil Value means unknown.
-type TimedValue struct {
-	At    time.Time `json:"at"`
-	Value *float64  `json:"value"`
-}
 
 // State is the in-memory view of one target, updated by its worker and read
 // by the API and the analyzer. Access through Snapshot.
@@ -56,8 +31,8 @@ type State struct {
 	hostError     *string
 	statements    []observe.StatementsCollection
 	load          []observe.LoadBucket
-	points        map[string][]TimedValue
-	collectors    map[string]CollectorStatus
+	points        map[string][]live.TimedValue
+	collectors    map[string]live.CollectorStatus
 	connected     bool
 	connectError  *string
 	connectAt     *time.Time
@@ -93,12 +68,6 @@ func (s *State) takeRunSoon() map[string]bool {
 	return r
 }
 
-// Burst is a period of faster collection.
-type Burst struct {
-	Until  time.Time `json:"until"`
-	Reason string    `json:"reason"`
-}
-
 // setBurst starts or extends faster collection until a time and wakes the
 // worker so the shorter intervals apply at once.
 func (s *State) setBurst(until time.Time, reason string) {
@@ -118,57 +87,32 @@ func (s *State) setBurst(until time.Time, reason string) {
 }
 
 // burst returns the current burst, if any.
-func (s *State) burst(now time.Time) (Burst, bool) {
+func (s *State) burst(now time.Time) (live.Burst, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if !now.Before(s.burstUntil) {
-		return Burst{}, false
+		return live.Burst{}, false
 	}
-	return Burst{Until: s.burstUntil, Reason: s.burstReason}, true
+	return live.Burst{Until: s.burstUntil, Reason: s.burstReason}, true
 }
 
 func newState() *State {
-	return &State{points: map[string][]TimedValue{}, collectors: map[string]CollectorStatus{}, wake: make(chan struct{}, 1)}
-}
-
-// View is an immutable copy of a target's state. Slices and maps must not
-// be modified by readers.
-type View struct {
-	Capabilities *observe.Capabilities
-	Activity     *observe.Activity
-	Report       *report.Report
-	Replication  *observe.Replication
-	Tables       *observe.TableHealth
-	// TableActivity are the busiest tables between the last two table
-	// activity collections, of every database in scope.
-	TableActivity []observe.TableActivity
-	Host          *observe.HostMetrics
-	HostError     *string
-	Statements    []observe.StatementsCollection
-	// Load holds the last finished active session sampling buckets.
-	Load         []observe.LoadBucket
-	Points       map[string][]TimedValue
-	Collectors   map[string]CollectorStatus
-	Connected    bool
-	ConnectError *string
-	ConnectAt    *time.Time
-	// Burst is set while the target is collected faster.
-	Burst *Burst
+	return &State{points: map[string][]live.TimedValue{}, collectors: map[string]live.CollectorStatus{}, wake: make(chan struct{}, 1)}
 }
 
 // Snapshot returns a consistent copy.
-func (s *State) Snapshot() View {
+func (s *State) Snapshot() live.View {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	pts := make(map[string][]TimedValue, len(s.points))
+	pts := make(map[string][]live.TimedValue, len(s.points))
 	for k, v := range s.points {
 		pts[k] = v
 	}
-	colls := make(map[string]CollectorStatus, len(s.collectors))
+	colls := make(map[string]live.CollectorStatus, len(s.collectors))
 	for k, v := range s.collectors {
 		colls[k] = v
 	}
-	return View{
+	return live.View{
 		Capabilities: s.caps, Activity: s.activity, Report: s.report, Replication: s.replication,
 		Tables: s.tables, TableActivity: s.tableActivity, Host: s.host, HostError: s.hostError, Statements: s.statements, Load: s.load,
 		Points: pts, Collectors: colls, Connected: s.connected, ConnectError: s.connectError, ConnectAt: s.connectAt,
@@ -177,20 +121,11 @@ func (s *State) Snapshot() View {
 }
 
 // burstView is the current burst; the caller holds s.mu.
-func (s *State) burstView() *Burst {
+func (s *State) burstView() *live.Burst {
 	if !time.Now().Before(s.burstUntil) {
 		return nil
 	}
-	return &Burst{Until: s.burstUntil, Reason: s.burstReason}
-}
-
-// Latest returns the most recent value of a metric.
-func (v View) Latest(metric string) (TimedValue, bool) {
-	h := v.Points[metric]
-	if len(h) == 0 {
-		return TimedValue{}, false
-	}
-	return h[len(h)-1], true
+	return &live.Burst{Until: s.burstUntil, Reason: s.burstReason}
 }
 
 func (s *State) addPoints(at time.Time, points []observe.Point) {
@@ -201,16 +136,16 @@ func (s *State) addPoints(at time.Time, points []observe.Point) {
 		if p.Label != "" {
 			key += "{" + p.Label + "}"
 		}
-		h := append(s.points[key], TimedValue{At: at, Value: p.Value})
+		h := append(s.points[key], live.TimedValue{At: at, Value: p.Value})
 		if len(h) > maxPointHistory {
 			h = h[len(h)-maxPointHistory:]
 		}
 		// Copy-on-write so views taken earlier stay unchanged.
-		s.points[key] = append([]TimedValue(nil), h...)
+		s.points[key] = append([]live.TimedValue(nil), h...)
 	}
 }
 
-func (s *State) setCollector(st CollectorStatus) {
+func (s *State) setCollector(st live.CollectorStatus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.collectors[st.Name] = st
@@ -236,7 +171,7 @@ const (
 //
 // It describes LockLens' ability to monitor the target, not the health of
 // the database itself.
-func ComputeState(enabled bool, v View, interval time.Duration, now time.Time) string {
+func ComputeState(enabled bool, v live.View, interval time.Duration, now time.Time) string {
 	if !enabled {
 		return StateDisabled
 	}

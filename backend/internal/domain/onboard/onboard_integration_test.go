@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/locklens/locklens/internal/domain/collector"
 	"github.com/locklens/locklens/internal/domain/targets"
 	"github.com/locklens/locklens/internal/domain/workspace"
 	"github.com/locklens/locklens/internal/lib/secret"
@@ -20,7 +21,8 @@ import (
 	"github.com/locklens/locklens/internal/targetdb/investigate"
 )
 
-type noReload struct{}
+// noReload is a collector manager that ignores reloads.
+type noReload struct{ collector.Manager }
 
 func (noReload) Reload() {}
 
@@ -75,8 +77,9 @@ func TestOneConnectionString(t *testing.T) {
 	ctx := context.Background()
 	store := freshStore(t, admin)
 	box, _ := secret.New(make([]byte, 32))
-	ws := workspace.New(store, box)
-	svc := New(store, box, targets.NewService(store, box, noReload{}, "it"), ws)
+	ws := workspace.New(workspace.Repositories{WorkspaceRepository: store, TargetRepository: store}, box)
+	tsvc := targets.New(targets.Repositories{CollectionRepository: store, TargetRepository: store}, box, noReload{}, "it")
+	svc := New(Repositories{ManagedRoleRepository: store}, box, tsvc, ws)
 	t.Cleanup(func() {
 		c, err := pgx.Connect(context.Background(), admin)
 		if err != nil {

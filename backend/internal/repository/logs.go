@@ -11,6 +11,25 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// LogRepository is the store of server log events and the log agents that sent them.
+type LogRepository interface {
+	// InsertLogEvents stores log events of a target (ones already stored are
+	// skipped) and records the agent that sent them. It returns how many were
+	// new.
+	InsertLogEvents(ctx context.Context, targetID, tokenID int64, hostname, version string, sources []string, events []observe.LogEvent) (int64, error)
+	// LogAgents returns the live log agents of a target.
+	LogAgents(ctx context.Context, targetID int64) ([]LogAgent, error)
+	// LogEvents returns log events, the newest first.
+	LogEvents(ctx context.Context, f LogEventFilter) ([]observe.LogEvent, error)
+	// LogCounts returns the events per kind in buckets of step.
+	LogCounts(ctx context.Context, targetID int64, from, to time.Time, step time.Duration) ([]LogCount, error)
+	// LogStatements returns the statements with the most logged execution
+	// time.
+	LogStatements(ctx context.Context, targetID int64, from, to time.Time, limit int) ([]LogStatement, error)
+}
+
+var _ LogRepository = (*Store)(nil)
+
 // LogAgent is a log agent that sent events for a target.
 type LogAgent struct {
 	TokenID     int64      `json:"token_id"`

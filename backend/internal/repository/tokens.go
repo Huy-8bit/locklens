@@ -10,6 +10,20 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// TokenRepository is the store of API tokens for machines.
+type TokenRepository interface {
+	// CreateToken stores a token by the hash of its secret.
+	CreateToken(ctx context.Context, name, scope string, targetID *int64, hash []byte, prefix, by string) (APIToken, error)
+	// ListTokens returns every token, live ones first.
+	ListTokens(ctx context.Context) ([]APIToken, error)
+	// TokenByHash returns the live token with a secret hash and records its use.
+	TokenByHash(ctx context.Context, hash []byte) (APIToken, error)
+	// RevokeToken revokes a token; ErrNotFound when it is unknown or revoked.
+	RevokeToken(ctx context.Context, id int64) error
+}
+
+var _ TokenRepository = (*Store)(nil)
+
 // Token scopes.
 const (
 	TokenEvents = "events" // report change events

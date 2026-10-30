@@ -33,7 +33,7 @@ func (w *worker) collectCatalog(ctx context.Context) error {
 		collected = append(collected, c.DatName)
 		id := w.target.ID
 		w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorCatalog, At: c.At,
-			Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+			Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 				if err := s.SaveCatalog(ctx, id, c); err != nil {
 					return err
 				}
@@ -43,7 +43,7 @@ func (w *worker) collectCatalog(ctx context.Context) error {
 	if keep, ok := w.scopeNames(collected); ok {
 		id := w.target.ID
 		w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorCatalog, At: time.Now().UTC(),
-			Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+			Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 				return s.PruneCatalogs(ctx, id, keep)
 			}})
 	}

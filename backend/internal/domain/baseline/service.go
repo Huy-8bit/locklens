@@ -24,10 +24,24 @@ type Params struct {
 // (those with the most execution time in the last two hours).
 const maxStatements = 300
 
-// Service keeps statement rollups up to date and holds the baselines of
+// Service keeps statement rollups current and serves the query baselines of active statements.
+type Service interface {
+	// Get returns the baselines of a target's active statements (read-only).
+	Get(targetID int64) map[observe.QueryKey]Baseline
+	// Run refreshes every enabled target every interval until ctx ends.
+	Run(ctx context.Context, every time.Duration)
+	// Refresh brings a target's rollups up to date and rebuilds its baselines.
+	Refresh(ctx context.Context, targetID int64, now time.Time) error
+	// Load builds the baselines of some statements over [from, to).
+	Load(ctx context.Context, targetID int64, ids []int64, from, to time.Time, p Params) (map[int64]Baseline, error)
+}
+
+var _ Service = (*service)(nil)
+
+// service keeps statement rollups up to date and holds the baselines of
 // recently active statements in memory, refreshed on a schedule.
-type Service struct {
-	store  Store
+type service struct {
+	store  Repositories
 	params func() Params
 	log    *slog.Logger
 
@@ -35,13 +49,13 @@ type Service struct {
 	cache map[int64]map[observe.QueryKey]Baseline
 }
 
-// NewService returns a baseline service.
-func NewService(store Store, params func() Params, log *slog.Logger) *Service {
-	return &Service{store: store, params: params, log: log, cache: map[int64]map[observe.QueryKey]Baseline{}}
+// New returns a baseline service.
+func New(store Repositories, params func() Params, log *slog.Logger) Service {
+	return &service{store: store, params: params, log: log, cache: map[int64]map[observe.QueryKey]Baseline{}}
 }
 
 // Get returns the baselines of a target's active statements (read-only).
-func (s *Service) Get(targetID int64) map[observe.QueryKey]Baseline {
+func (s *service) Get(targetID int64) map[observe.QueryKey]Baseline {
 	if s == nil {
 		return nil
 	}
@@ -51,7 +65,7 @@ func (s *Service) Get(targetID int64) map[observe.QueryKey]Baseline {
 }
 
 // Run refreshes every enabled target every interval until ctx ends.
-func (s *Service) Run(ctx context.Context, every time.Duration) {
+func (s *service) Run(ctx context.Context, every time.Duration) {
 	t := time.NewTimer(30 * time.Second)
 	defer t.Stop()
 	for {
@@ -77,7 +91,7 @@ func (s *Service) Run(ctx context.Context, every time.Duration) {
 }
 
 // Refresh brings a target's rollups up to date and rebuilds its baselines.
-func (s *Service) Refresh(ctx context.Context, targetID int64, now time.Time) error {
+func (s *service) Refresh(ctx context.Context, targetID int64, now time.Time) error {
 	p := s.params()
 	if err := s.rollup(ctx, targetID, now, p); err != nil {
 		return err
@@ -123,7 +137,7 @@ func Window(now time.Time, p Params) (time.Time, time.Time) { return window(now,
 // rollup recomputes the rollup buckets since the last pass (with ten minutes
 // of overlap for late writes); the first pass backfills the baseline window
 // one day at a time.
-func (s *Service) rollup(ctx context.Context, targetID int64, now time.Time, p Params) error {
+func (s *service) rollup(ctx context.Context, targetID int64, now time.Time, p Params) error {
 	end := now.Truncate(repository.RollupBucket).Add(repository.RollupBucket)
 	last, ok, err := s.store.RollupWatermark(ctx, targetID)
 	if err != nil {
@@ -148,7 +162,7 @@ func (s *Service) rollup(ctx context.Context, targetID int64, now time.Time, p P
 }
 
 // Load builds the baselines of some statements over [from, to).
-func (s *Service) Load(ctx context.Context, targetID int64, ids []int64, from, to time.Time, p Params) (map[int64]Baseline, error) {
+func (s *service) Load(ctx context.Context, targetID int64, ids []int64, from, to time.Time, p Params) (map[int64]Baseline, error) {
 	points, cov, err := s.store.BaselinePoints(ctx, targetID, ids, from, to, p.Point)
 	if err != nil {
 		return nil, err

@@ -99,7 +99,7 @@ func (w *worker) flushLoad() {
 	w.state.addLoad(b)
 	id := w.target.ID
 	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: CollectorLoad, At: b.At,
-		Write: func(ctx context.Context, s Store, _ repository.IdentityCache) error {
+		Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
 			return s.InsertLoadBucket(ctx, id, b)
 		}})
 }

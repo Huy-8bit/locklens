@@ -117,7 +117,8 @@ func TestLifecycleAppliedVerifiedRegressed(t *testing.T) {
 	if err := s.SaveCatalog(ctx, tg.ID, cat); err != nil {
 		t.Fatal(err)
 	}
-	svc := NewService(s, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := New(Repositories{OptimizerRepository: s, PlanRepository: s, QueryRepository: s, TargetRepository: s}, nil, nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	stored, _ := s.GetTarget(ctx, tg.ID)
 	for range 2 { // the first pass records the change, the second judges it
 		if _, err := svc.Refresh(ctx, stored, now); err != nil {

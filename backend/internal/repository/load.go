@@ -10,6 +10,23 @@ import (
 	"github.com/locklens/locklens/internal/repository/queries"
 )
 
+// LoadRepository is the store of active session sampling buckets and their statements.
+type LoadRepository interface {
+	// InsertLoadBucket stores one bucket of active session samples. Writing the
+	// same bucket twice (a retried write) keeps the first copy.
+	InsertLoadBucket(ctx context.Context, targetID int64, b observe.LoadBucket) error
+	// LoadRows returns samples in [from, to) summed per step bucket, dimension
+	// value, and wait class, and the ticks per step bucket.
+	LoadRows(ctx context.Context, targetID int64, from, to time.Time, step time.Duration, dim LoadDimension, f LoadFilter) ([]LoadRow, []LoadTicks, error)
+	// QueryRefsByActivity resolves statements seen in pg_stat_activity to their
+	// stored pg_stat_statements identities: the top-level identity with the same
+	// database, user, and queryid, the most recently seen when a major upgrade
+	// left several.
+	QueryRefsByActivity(ctx context.Context, targetID int64, refs []StatementRef, includeText bool) ([]QueryRef, error)
+}
+
+var _ LoadRepository = (*Store)(nil)
+
 // InsertLoadBucket stores one bucket of active session samples. Writing the
 // same bucket twice (a retried write) keeps the first copy.
 func (s *Store) InsertLoadBucket(ctx context.Context, targetID int64, b observe.LoadBucket) error {
