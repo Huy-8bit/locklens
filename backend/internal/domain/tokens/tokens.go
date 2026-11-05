@@ -1,7 +1,8 @@
 // Package tokens issues and checks API tokens for machines: deploy
-// pipelines that report changes and log agents that ship log events. A
-// token is random, shown once, and stored only as a SHA-256 hash; it may be
-// limited to one instance.
+// pipelines that report changes, log agents that ship log events,
+// Prometheus scraping metrics, and scripts reading the API. A token is
+// random, shown once, and stored only as a SHA-256 hash; it may be limited
+// to one instance.
 package tokens
 
 import (
@@ -33,6 +34,10 @@ type Service interface {
 	// when it is limited to an instance, targetID is that instance (0 accepts
 	// any instance the token allows; the caller checks it then).
 	Authenticate(ctx context.Context, secret, scope string, targetID int64) (repository.APIToken, error)
+	// Ensure stores a token whose secret is given (from the environment, for
+	// automation) unless it is stored already; the secret must look like a
+	// generated one.
+	Ensure(ctx context.Context, name, scope, secret string) error
 	// List returns every token.
 	List(ctx context.Context) ([]repository.APIToken, error)
 	// Revoke revokes a token.
@@ -60,11 +65,14 @@ func (in Input) Validate() map[string]string {
 	if n := strings.TrimSpace(in.Name); n == "" || len(n) > 100 {
 		errs["name"] = "1 to 100 characters"
 	}
-	if !slices.Contains([]string{repository.TokenEvents, repository.TokenIngest}, in.Scope) {
-		errs["scope"] = "events or ingest"
+	if !slices.Contains([]string{repository.TokenEvents, repository.TokenIngest, repository.TokenMetrics, repository.TokenRead}, in.Scope) {
+		errs["scope"] = "events, ingest, metrics, or read"
 	}
 	if in.Scope == repository.TokenIngest && in.TargetID == nil {
 		errs["target_id"] = "a log agent token belongs to one instance"
+	}
+	if in.Scope == repository.TokenRead && in.TargetID != nil {
+		errs["target_id"] = "a read token reads every instance a viewer may read"
 	}
 	return errs
 }
@@ -98,6 +106,21 @@ func (s *service) Authenticate(ctx context.Context, secret, scope string, target
 		return t, ErrScope
 	}
 	return t, nil
+}
+
+// Ensure stores a token whose secret is given (from the environment, for
+// automation) unless it is stored already; the secret must look like a
+// generated one.
+func (s *service) Ensure(ctx context.Context, name, scope, secret string) error {
+	if !strings.HasPrefix(secret, prefix) || len(secret) < len(prefix)+24 {
+		return errors.New("the token must start with llk_ and have at least 24 more characters")
+	}
+	_, err := s.store.TokenByHash(ctx, hash(secret))
+	if err == nil || !errors.Is(err, repository.ErrNotFound) {
+		return err
+	}
+	_, err = s.store.CreateToken(ctx, name, scope, nil, hash(secret), secret[:len(prefix)+4], "environment")
+	return err
 }
 
 // List returns every token.

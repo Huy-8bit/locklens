@@ -30,7 +30,12 @@ func fmtDuration(sec float64) string {
 	if d < time.Minute {
 		return d.String()
 	}
-	return strings.TrimSuffix(d.String(), "0s")
+	// 2m0s reads 2m; 1m30s stays.
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	return s
 }
 
 func fmtBytes(b float64) string {

@@ -68,6 +68,22 @@ type Config struct {
 	// ServerID names this server among the servers sharing the store; by
 	// default the host name and a random suffix (unique per start).
 	ServerID string
+	// MetricsRequireToken protects /metrics with an API token of scope
+	// metrics (/metrics/targets always needs one).
+	MetricsRequireToken bool
+	// ExportTopStatements is how many statements per instance get
+	// statement metrics in exports (0: none).
+	ExportTopStatements int
+	// OTLPEndpoint is an OpenTelemetry collector's OTLP/HTTP metrics URL
+	// (for example http://otel-collector:4318/v1/metrics); empty: no push.
+	OTLPEndpoint string
+	// OTLPHeaders are sent with every push (for example an API key).
+	OTLPHeaders map[string]string
+	// OTLPInterval is the time between two pushes.
+	OTLPInterval time.Duration
+	// BootstrapMetricsToken is an API token of scope metrics stored at
+	// startup, so Prometheus can be configured before LockLens runs.
+	BootstrapMetricsToken string
 }
 
 // LoadConfig reads the configuration. getenv is os.Getenv in production.
@@ -130,6 +146,29 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	c.MaxConcurrent = num("LOCKLENS_MAX_CONCURRENT_COLLECTIONS", 4, 1, 64)
 	c.WriteQueue = num("LOCKLENS_WRITE_QUEUE", 2048, 16, 100000)
 	c.MetricsEnabled = boolean("LOCKLENS_METRICS_ENABLED", true)
+	c.MetricsRequireToken = boolean("LOCKLENS_METRICS_REQUIRE_TOKEN", false)
+	c.BootstrapMetricsToken = strings.TrimSpace(getenv("LOCKLENS_BOOTSTRAP_METRICS_TOKEN"))
+	c.ExportTopStatements = num("LOCKLENS_EXPORT_TOP_STATEMENTS", 0, 0, 50)
+	c.OTLPInterval = dur("LOCKLENS_OTLP_INTERVAL", time.Minute, 10*time.Second)
+	if v := strings.TrimSpace(getenv("LOCKLENS_OTLP_ENDPOINT")); v != "" {
+		u, err := url.Parse(v)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+			errs = append(errs, errors.New("LOCKLENS_OTLP_ENDPOINT must be an http or https URL such as http://otel-collector:4318/v1/metrics"))
+		} else {
+			c.OTLPEndpoint = v
+		}
+	}
+	if v := strings.TrimSpace(getenv("LOCKLENS_OTLP_HEADERS")); v != "" {
+		c.OTLPHeaders = map[string]string{}
+		for _, kv := range strings.Split(v, ",") {
+			k, val, ok := strings.Cut(kv, "=")
+			if !ok || strings.TrimSpace(k) == "" {
+				errs = append(errs, errors.New("LOCKLENS_OTLP_HEADERS must be name=value pairs separated by commas"))
+				break
+			}
+			c.OTLPHeaders[strings.TrimSpace(k)] = strings.TrimSpace(val)
+		}
+	}
 	c.DemoMode = boolean("LOCKLENS_DEMO_MODE", false)
 	c.LoadSampling = boolean("LOCKLENS_LOAD_SAMPLING", true)
 	if st, err := LoadStoreTimescale(getenv); err != nil {

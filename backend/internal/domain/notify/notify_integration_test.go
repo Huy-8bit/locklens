@@ -62,7 +62,8 @@ func TestNotificationFlow(t *testing.T) {
 	ctx := context.Background()
 	st := store(t)
 	box, _ := secret.New([]byte(strings.Repeat("k", 32)))
-	svc := New(Repositories{NotificationRepository: st, IncidentRepository: st, TargetRepository: st, FindingRepository: st}, box,
+	svc := New(Repositories{NotificationRepository: st, IncidentRepository: st, TargetRepository: st, FindingRepository: st,
+		ChangeRepository: st, MaintenanceRepository: st}, box,
 		slog.New(slog.NewTextHandler(io.Discard, nil)), "https://ll.example.com", "test").(*service)
 	svc.send.(*netSender).backoff = nil
 

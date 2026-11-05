@@ -29,6 +29,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/optimizer"
 	"github.com/locklens/locklens/internal/domain/settings"
 	"github.com/locklens/locklens/internal/domain/targets"
+	"github.com/locklens/locklens/internal/domain/telemetry"
 	"github.com/locklens/locklens/internal/domain/tokens"
 	"github.com/locklens/locklens/internal/domain/workspace"
 	"github.com/locklens/locklens/internal/lib/obs"
@@ -62,6 +63,7 @@ type Deps struct {
 	Tokens    tokens.Service
 	Logs      logs.Service
 	Cluster   cluster.Node
+	Telemetry telemetry.Service
 	// Events publishes to the browsers of every server; Stream delivers the
 	// events published on this server to its browsers.
 	Events  events.Publisher
@@ -75,6 +77,9 @@ type Deps struct {
 	TrustedProxyHosts []string
 	// LookupHost resolves TrustedProxyHosts (net.DefaultResolver when nil).
 	LookupHost func(ctx context.Context, host string) ([]string, error)
+	// MetricsRequireToken protects /metrics with an API token of scope
+	// metrics, as /metrics/targets always is.
+	MetricsRequireToken bool
 	// MetricsEnabled exposes /metrics.
 	MetricsEnabled bool
 	// DemoMode shows the lab guide in the UI.
@@ -105,11 +110,10 @@ func (s *Server) routes() {
 	})
 	m.HandleFunc("GET /readyz", s.ready)
 	if s.d.MetricsEnabled {
-		m.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-			_ = s.d.Metrics.Registry.WriteText(w)
-		})
+		m.HandleFunc("GET /metrics", s.selfMetrics)
 	}
+	// The monitored instances' metrics, for Prometheus (always a token).
+	m.HandleFunc("GET /metrics/targets", s.exportTargets)
 
 	m.HandleFunc("POST /api/v1/auth/login", s.login)
 	m.HandleFunc("POST /api/v1/auth/logout", s.authed(s.logout))
@@ -191,10 +195,16 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/v1/notifications/channels/{id}/test", s.allow(auth.PermManageSettings, s.testChannel))
 	m.HandleFunc("GET /api/v1/notifications/deliveries", s.authed(s.listDeliveries))
 	m.HandleFunc("GET /api/v1/notifications/silences", s.authed(s.listSilences))
+	m.HandleFunc("GET /api/v1/notifications/maintenance", s.authed(s.listMaintenance))
+	m.HandleFunc("POST /api/v1/notifications/maintenance", s.allow(auth.PermManageSettings, s.saveMaintenance))
+	m.HandleFunc("PUT /api/v1/notifications/maintenance/{id}", s.allow(auth.PermManageSettings, s.saveMaintenance))
+	m.HandleFunc("DELETE /api/v1/notifications/maintenance/{id}", s.allow(auth.PermManageSettings, s.deleteMaintenance))
 	m.HandleFunc("POST /api/v1/notifications/silences", s.allow(auth.PermAcknowledge, s.createSilence))
 	m.HandleFunc("DELETE /api/v1/notifications/silences/{id}", s.allow(auth.PermAcknowledge, s.endSilence))
 	m.HandleFunc("GET /api/v1/settings/rules", s.authed(s.getRuleSettings))
 	m.HandleFunc("PUT /api/v1/settings/rules", s.allow(auth.PermManageSettings, s.putRuleSettings))
+	m.HandleFunc("PUT /api/v1/settings/alerting", s.allow(auth.PermManageSettings, s.putAlerting))
+	m.HandleFunc("GET /api/v1/targets/{id}/policy", s.authed(s.targetPolicy))
 	m.HandleFunc("GET /api/v1/storage", s.authed(s.storageStats))
 	m.HandleFunc("POST /api/v1/ingest/logs", s.ingestLogs)
 	m.HandleFunc("GET /api/v1/targets/{id}/logs", s.authed(s.targetLogs))

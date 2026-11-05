@@ -177,6 +177,7 @@ DSNs of the run.
 | `TestQueryPerformanceIntelligence` | a real `pg_sleep(90)` appears under `/performance` as `queries.long_running` with metrics, impact components, and confidence; at the critical threshold it opens an incident whose investigation is available, lists missing evidence, and suggests one heavy execution; statement insight reports a learning baseline, bands, and percentiles as unavailable; pasted plans are saved, compared (shape changed), give an index candidate, and are deleted; an invalid plan is rejected |
 | `TestQueryOptimizer` | a schema with a foreign key without index, a duplicate index, and an invalid index (from a failed concurrent unique build) plus a real workload: "Analyse now" collects a fresh catalog and derives the foreign-key, duplicate, invalid, and missing-index recommendations with their statements and SQL; a decision is stored and an invalid one refused; the what-if check with HypoPG plans the statement with the hypothetical index (used, cheaper, confidence high on PostgreSQL 16+; refused without hypopg) and leaves no index behind; the statement page shows the parser's predicates and the recommendation; creating the index makes the missing-index and foreign-key recommendations applied |
 | `TestChangesTokensAndLogIngest` | a pipeline reports a deploy with an `events` token; a log agent's `ingest` token ships events (stored once when sent twice, rejected for another scope, a bad token, or an unknown kind); the instance's log summary has the statement's percentiles and the agent, the other instance none; token secrets are never listed |
+| `TestPrometheusExportAndAlertmanager` | `/metrics/targets` refuses a scrape without a token and, with a `metrics` token, serves the instance (up, sessions, counters) without credentials; `promtool check metrics` accepts the output; an instance that cannot be reached opens a `target.unreachable` incident that a real Alertmanager receives through an Alertmanager channel |
 | `TestTwoServersShareTheStore` | two servers on one store split two instances by leases, both answer with live data for both, and when one stops the other collects both |
 | `TestPrimaryAndStandby` | standby detected; primary lists the replica and slot; standby reports a streaming WAL receiver |
 | `TestOutageAndRecovery` | the database container (target and store) paused for 25 s; the target becomes healthy again and a collection gap is recorded |
@@ -385,3 +386,21 @@ The browser suite covers catalog and row browsing through the data explorer
 by the backend integration tests. The dated
 [workspace verification report](workspace-verification.md) describes the earlier
 UI and its results.
+
+## Documentation screenshots
+
+The images of alerting and integrations in [images](images) come from a real
+lab run, not from mocks: `tests/e2e/browser/screenshots.spec.ts` configures
+modes, overrides, Alertmanager channels, and maintenance windows through the
+API, runs the `chain` scenario and stops a standby, waits for the incidents
+to reach Alertmanager and for Prometheus' rules to fire, and captures
+LockLens, Prometheus, and Alertmanager at 1440×900:
+
+```bash
+LOCKLENS_E2E_OBSERVABILITY=1 LOCKLENS_E2E_SCREENSHOTS=$PWD/docs/images ./scripts/e2e.sh screenshots.spec.ts
+```
+
+It runs on a disposable Compose project (like the other browser tests) and
+is skipped unless both variables are set. `make check-observability`
+validates the Prometheus rules and configuration and the Alertmanager
+configuration with `promtool` and `amtool`.

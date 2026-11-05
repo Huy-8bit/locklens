@@ -138,7 +138,7 @@ func (r *recorder) continueIncident(ctx context.Context, t repository.Target, v 
 	if now.Sub(oi.openedAt) >= r.cfg.MaxDuration {
 		return r.resolve(ctx, t, ts, oi, now, ResolutionDuration, evs)
 	}
-	holds := len(firing) > 0 || conditionHolds(oi.ruleID, sample, findings, r.th.Thresholds())
+	holds := len(firing) > 0 || conditionHolds(oi.ruleID, sample, findings, r.th.Policy(t).Thresholds)
 	kind := KindSample
 	if !holds {
 		kind = KindPostTrigger
@@ -176,7 +176,7 @@ func (r *recorder) continueIncident(ctx context.Context, t repository.Target, v 
 	if oi.ruleID == rules.RuleMeanRegression && len(v.Statements) > 0 {
 		last := v.Statements[len(v.Statements)-1].At
 		if last.After(oi.lastWorkload) {
-			if ev := workloadEvent(v, r.th.Thresholds(), now); ev != nil {
+			if ev := workloadEvent(v, r.th.Policy(t).Thresholds, now); ev != nil {
 				evs = append(evs, *ev)
 			}
 			oi.lastWorkload = last

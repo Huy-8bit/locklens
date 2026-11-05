@@ -23,10 +23,12 @@ import (
 	"net/mail"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/locklens/locklens/internal/domain/rules"
 	"github.com/locklens/locklens/internal/lib/secret"
 	"github.com/locklens/locklens/internal/repository"
 )
@@ -36,6 +38,9 @@ const (
 	KindWebhook = "webhook"
 	KindSlack   = "slack"
 	KindEmail   = "email"
+	// KindAlertmanager posts alerts to a Prometheus Alertmanager, which
+	// routes them with its own configuration (PagerDuty, Opsgenie, ...).
+	KindAlertmanager = "alertmanager"
 )
 
 // SMTP connection security.
@@ -52,6 +57,8 @@ type Destination struct {
 	URL string `json:"url,omitempty"`
 	// Secret signs webhook bodies (HMAC-SHA256, X-LockLens-Signature).
 	Secret string `json:"secret,omitempty"`
+	// Token is sent to Alertmanager as a bearer token (optional).
+	Token string `json:"token,omitempty"`
 
 	SMTPHost string   `json:"smtp_host,omitempty"`
 	SMTPPort int      `json:"smtp_port,omitempty"`
@@ -65,16 +72,22 @@ type Destination struct {
 // ChannelInput creates or changes a channel. A nil Destination on update
 // keeps the stored one.
 type ChannelInput struct {
-	Name            string       `json:"name"`
-	Kind            string       `json:"kind"`
-	Enabled         bool         `json:"enabled"`
-	MinSeverity     string       `json:"min_severity"`
-	Environments    []string     `json:"environments"`
-	OnOpen          bool         `json:"on_open"`
-	OnEscalate      bool         `json:"on_escalate"`
-	OnResolve       bool         `json:"on_resolve"`
-	ReminderMinutes int          `json:"reminder_minutes"`
-	Destination     *Destination `json:"destination"`
+	Name            string   `json:"name"`
+	Kind            string   `json:"kind"`
+	Enabled         bool     `json:"enabled"`
+	MinSeverity     string   `json:"min_severity"`
+	Environments    []string `json:"environments"`
+	OnOpen          bool     `json:"on_open"`
+	OnEscalate      bool     `json:"on_escalate"`
+	OnResolve       bool     `json:"on_resolve"`
+	ReminderMinutes int      `json:"reminder_minutes"`
+	// RuleIDs and TargetIDs limit the channel (empty: all).
+	RuleIDs   []string `json:"rule_ids"`
+	TargetIDs []int64  `json:"target_ids"`
+	// DelayMinutes > 0 makes the channel an escalation tier: it receives an
+	// incident once it stayed open and unacknowledged this long.
+	DelayMinutes int          `json:"delay_minutes"`
+	Destination  *Destination `json:"destination"`
 }
 
 // ValidationError lists problems with an input, keyed by field.
@@ -123,6 +136,12 @@ type Service interface {
 	Channels(ctx context.Context) ([]repository.NotificationChannel, error)
 	// SaveChannel validates and stores a channel; id 0 creates one.
 	SaveChannel(ctx context.Context, id int64, in ChannelInput) (repository.NotificationChannel, error)
+	// MaintenanceWindows returns every maintenance window.
+	MaintenanceWindows(ctx context.Context) ([]repository.MaintenanceWindow, error)
+	// SaveMaintenanceWindow creates (id 0) or replaces a maintenance window.
+	SaveMaintenanceWindow(ctx context.Context, id int64, in WindowInput, by string) (repository.MaintenanceWindow, error)
+	// DeleteMaintenanceWindow deletes a maintenance window.
+	DeleteMaintenanceWindow(ctx context.Context, id int64) error
 	// DeleteChannel removes a channel and its delivery history.
 	DeleteChannel(ctx context.Context, id int64) error
 }
@@ -142,13 +161,16 @@ type service struct {
 	queue   chan int64
 	mu      sync.Mutex
 	pending map[int64]bool
+	// refreshed is when each open incident was last posted to each
+	// Alertmanager channel (by channel and incident).
+	refreshed map[[2]int64]time.Time
 }
 
 // New returns a service. publicURL is LockLens' address as users reach it
 // (for links in messages); it may be empty.
 func New(store Repositories, box *secret.Box, log *slog.Logger, publicURL, version string) Service {
 	return &service{store: store, box: box, log: log, publicURL: strings.TrimRight(publicURL, "/"), version: version,
-		send: newSender(version), now: time.Now, queue: make(chan int64, 256), pending: map[int64]bool{}}
+		send: newSender(version), now: time.Now, queue: make(chan int64, 256), pending: map[int64]bool{}, refreshed: map[[2]int64]time.Time{}}
 }
 
 // Channels returns every channel.
@@ -174,8 +196,23 @@ func (s *service) SaveChannel(ctx context.Context, id int64, in ChannelInput) (r
 	}
 	switch in.Kind {
 	case KindWebhook, KindSlack, KindEmail:
+	case KindAlertmanager:
+		// Alertmanager keeps the alert state: it is told about every
+		// change and refreshed while the incident is open, never reminded.
+		in.OnOpen, in.OnEscalate, in.OnResolve, in.ReminderMinutes = true, true, true, 0
 	default:
-		fields["kind"] = "webhook, slack, or email"
+		fields["kind"] = "webhook, slack, email, or alertmanager"
+	}
+	for _, r := range in.RuleIDs {
+		if !slices.Contains(rules.AllRules, r) {
+			fields["rule_ids"] = "unknown rule " + r
+		}
+	}
+	if len(in.TargetIDs) > 100 {
+		fields["target_ids"] = "at most 100 instances"
+	}
+	if in.DelayMinutes != 0 && (in.DelayMinutes < 5 || in.DelayMinutes > 24*60) {
+		fields["delay_minutes"] = "0 (notify at once) or between 5 minutes and 1 day"
 	}
 	if in.MinSeverity == "" {
 		in.MinSeverity = "warning"
@@ -228,6 +265,7 @@ func (s *service) SaveChannel(ctx context.Context, id int64, in ChannelInput) (r
 	}
 	c := repository.NotificationChannel{ID: id, Name: in.Name, Kind: in.Kind, Enabled: in.Enabled, MinSeverity: in.MinSeverity,
 		Environments: envs, OnOpen: in.OnOpen, OnEscalate: in.OnEscalate, OnResolve: in.OnResolve, ReminderSeconds: in.ReminderMinutes * 60,
+		RuleIDs: in.RuleIDs, TargetIDs: in.TargetIDs, DelaySeconds: in.DelayMinutes * 60,
 		ConfigCiphertext: sealed, Display: display}
 	out, err := s.store.SaveNotificationChannel(ctx, c)
 	if errors.Is(err, repository.ErrConflict) {
@@ -256,7 +294,7 @@ func (s *service) destination(c repository.NotificationChannel) (Destination, er
 func normalizeDestination(kind string, d Destination) (Destination, map[string]string) {
 	fields := map[string]string{}
 	switch kind {
-	case KindWebhook, KindSlack:
+	case KindWebhook, KindSlack, KindAlertmanager:
 		u, err := url.Parse(strings.TrimSpace(d.URL))
 		switch {
 		case err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http"):
@@ -272,8 +310,14 @@ func normalizeDestination(kind string, d Destination) (Destination, map[string]s
 			fields["destination.secret"] = "at most 256 characters"
 		}
 		out := Destination{URL: strings.TrimSpace(d.URL)}
-		if kind == KindWebhook {
+		switch kind {
+		case KindWebhook:
 			out.Secret = d.Secret
+		case KindAlertmanager:
+			if len(d.Token) > 512 {
+				fields["destination.token"] = "at most 512 characters"
+			}
+			out.Token = d.Token
 		}
 		return out, fields
 	case KindEmail:
@@ -327,7 +371,7 @@ func normalizeDestination(kind string, d Destination) (Destination, map[string]s
 // host of a URL (never its path, which holds tokens), or the recipients.
 func describe(kind string, d Destination) string {
 	switch kind {
-	case KindWebhook, KindSlack:
+	case KindWebhook, KindSlack, KindAlertmanager:
 		if u, err := url.Parse(d.URL); err == nil {
 			return u.Scheme + "://" + u.Host
 		}

@@ -118,6 +118,14 @@ the detailed explanation.
   ([test-report.md](test-report.md)). Larger fleets have not been measured;
   storage grows with the number of targets and their intervals
   ([storage-and-retention.md](storage-and-retention.md#storage-growth)).
+- **Exported counters** (`*_total`) are running sums of what LockLens
+  observed since it started collecting an instance: they restart at zero
+  after a LockLens restart or a takeover by another server (Prometheus treats
+  this as a reset), and missed collections are missing from them. Gauges are
+  the latest values, at the collectors' intervals.
+- **Unreachable instances** are reported after `target_down_seconds` of
+  failed attempts. Reconnection backs off up to a minute, so recovery is
+  noticed within about a minute.
 - **Several servers** share a store by leases: when a server crashes, its
   targets are collected again only after their leases expire (about a
   minute), and that time is a gap. For a moment around a takeover two servers

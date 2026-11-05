@@ -420,11 +420,17 @@ func TestTargetLifecycleBlockingIncidentAndExport(t *testing.T) {
 			Kind string `json:"kind"`
 		} `json:"events"`
 	}
-	inst.do(t, "GET", fmt.Sprintf("/api/v1/incidents/%d/events", open[0].ID), nil, 200, &events)
+	// The recorder adopts the open incident when the collector starts the
+	// target again, shortly after the server is ready.
 	kinds := map[string]bool{}
-	for _, e := range events.Events {
-		kinds[e.Kind] = true
-	}
+	waitFor(t, 30*time.Second, "the restart recorded in the incident", func() bool {
+		inst.do(t, "GET", fmt.Sprintf("/api/v1/incidents/%d/events", open[0].ID), nil, 200, &events)
+		kinds = map[string]bool{}
+		for _, e := range events.Events {
+			kinds[e.Kind] = true
+		}
+		return kinds["recorder_restarted"]
+	})
 	for _, k := range []string{"pre_trigger", "trigger", "blocking_snapshot", "recorder_restarted"} {
 		if !kinds[k] {
 			t.Errorf("event kind %s missing after restart: %v", k, kinds)

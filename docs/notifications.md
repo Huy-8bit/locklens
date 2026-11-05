@@ -7,17 +7,27 @@ keep the UI open to learn that a database is blocked or slow.
 
 Administrators add channels under **Settings → Notifications**.
 
+![Channels: a first tier and an escalation tier to Alertmanager](images/notifications.png)
+
 | Type | Destination | Notes |
 | --- | --- | --- |
 | **Slack** | An incoming webhook URL (`https://hooks.slack.com/services/…`) | A message with the title, severity, instance, rule, times, and up to three observations; the title links to the incident |
 | **Webhook** | Any `http` or `https` URL | A JSON `POST` (below), optionally signed |
 | **Email** | An SMTP server, sender, and up to 20 recipients | STARTTLS (587) or TLS (465); without TLS only for a local relay, and never with a password |
+| **Alertmanager** | A Prometheus Alertmanager's base URL, optionally a bearer token | Alerts on `/api/v2/alerts`, refreshed while the incident is open; see [integrations.md](integrations.md#alertmanager) |
 
 For each channel:
 
 - **Minimum severity**: info, warning (default), or critical.
 - **Environments**: only incidents of instances in these environments
   (empty: every environment).
+- **Rules** and **instances**: only incidents of these rules or instances
+  (empty: all).
+- **Escalation**: at once (the first tier), or only once an incident stayed
+  open and unacknowledged for 15 minutes to a day. A later tier is a second
+  channel (for example the team lead or a pager) that hears about an incident
+  only when the first tier did not act; its message says how long nobody
+  acknowledged it.
 - **Events**: an incident opens (or opens again after it resolved), becomes
   more severe, or is resolved; and optionally a **reminder** every 30 minutes
   to every day while it stays open and nobody acknowledged it.
@@ -94,6 +104,24 @@ and administrators create silences on the incident page ("Silence this rule on
 this instance for 1 hour / 4 hours / 1 day") or under **Settings → Notifications** (Silences),
 and can end them early. An event that falls in a silence is recorded once as
 silenced and is not sent later; reminders are skipped while silenced.
+
+## Maintenance windows
+
+A maintenance window holds notifications back for the instances,
+environments, and rules it covers (empty: all) during planned work; incidents
+are still recorded, so the evidence is there afterwards. Administrators add
+them under **Settings → Notifications → Maintenance windows**:
+
+| Kind | In effect |
+| --- | --- |
+| Once | From a start to an end time |
+| Weekly | On chosen days at a time of day, in a time zone, for a duration (a window may run past midnight) |
+| After each deploy | For a duration after each reported deploy or migration of the instance ([changes](api.md#changes)) |
+
+An event held back by a window is recorded once as silenced, with the
+window's name.
+
+![Maintenance windows: weekly patching, and quiet minutes after each deploy](images/maintenance-windows.png)
 
 ## Configuration
 

@@ -13,3 +13,9 @@ var LinkFindingsToIncident string
 
 //go:embed findings/list_findings.sql
 var ListFindings string
+
+//go:embed findings/resolve_missing_rule_findings.sql
+var ResolveMissingRuleFindings string
+
+//go:embed findings/active_finding_counts.sql
+var ActiveFindingCounts string

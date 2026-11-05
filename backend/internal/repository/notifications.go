@@ -47,29 +47,33 @@ var _ NotificationRepository = (*Store)(nil)
 // destination's address and credentials are in ConfigCiphertext, sealed
 // with the master key; Display is a non-secret description of it.
 type NotificationChannel struct {
-	ID               int64     `json:"id"`
-	Name             string    `json:"name"`
-	Kind             string    `json:"kind"`
-	Enabled          bool      `json:"enabled"`
-	MinSeverity      string    `json:"min_severity"`
-	Environments     []string  `json:"environments"`
-	OnOpen           bool      `json:"on_open"`
-	OnEscalate       bool      `json:"on_escalate"`
-	OnResolve        bool      `json:"on_resolve"`
-	ReminderSeconds  int       `json:"reminder_seconds"`
+	ID              int64    `json:"id"`
+	Name            string   `json:"name"`
+	Kind            string   `json:"kind"`
+	Enabled         bool     `json:"enabled"`
+	MinSeverity     string   `json:"min_severity"`
+	Environments    []string `json:"environments"`
+	OnOpen          bool     `json:"on_open"`
+	OnEscalate      bool     `json:"on_escalate"`
+	OnResolve       bool     `json:"on_resolve"`
+	ReminderSeconds int      `json:"reminder_seconds"`
+	// RuleIDs and TargetIDs limit the channel to some rules and instances
+	// (empty: all).
+	RuleIDs   []string `json:"rule_ids"`
+	TargetIDs []int64  `json:"target_ids"`
+	// DelaySeconds > 0 makes the channel an escalation tier: it receives an
+	// incident only once it stayed open and unacknowledged this long.
+	DelaySeconds     int       `json:"delay_seconds"`
 	ConfigCiphertext []byte    `json:"-"`
 	Display          string    `json:"display"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
-const channelColumns = `id, name, kind, enabled, min_severity, environments, on_open, on_escalate, on_resolve,
-reminder_seconds, config_ciphertext, display, created_at, updated_at`
-
 func scanChannel(row pgx.Row) (NotificationChannel, error) {
 	var c NotificationChannel
 	err := row.Scan(&c.ID, &c.Name, &c.Kind, &c.Enabled, &c.MinSeverity, &c.Environments, &c.OnOpen, &c.OnEscalate, &c.OnResolve,
-		&c.ReminderSeconds, &c.ConfigCiphertext, &c.Display, &c.CreatedAt, &c.UpdatedAt)
+		&c.ReminderSeconds, &c.ConfigCiphertext, &c.Display, &c.CreatedAt, &c.UpdatedAt, &c.RuleIDs, &c.TargetIDs, &c.DelaySeconds)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrNotFound
 	}
@@ -108,11 +112,18 @@ func (s *Store) SaveNotificationChannel(ctx context.Context, c NotificationChann
 	if c.Environments == nil {
 		c.Environments = []string{}
 	}
+	rules, targets := c.RuleIDs, c.TargetIDs
+	if rules == nil {
+		rules = []string{}
+	}
+	if targets == nil {
+		targets = []int64{}
+	}
 	var row pgx.Row
 	if c.ID == 0 {
-		row = s.pool.QueryRow(ctx, queries.InsertNotificationChannel, c.Name, c.Kind, c.Enabled, c.MinSeverity, c.Environments, c.OnOpen, c.OnEscalate, c.OnResolve, c.ReminderSeconds, c.ConfigCiphertext, c.Display)
+		row = s.pool.QueryRow(ctx, queries.InsertNotificationChannel, c.Name, c.Kind, c.Enabled, c.MinSeverity, c.Environments, c.OnOpen, c.OnEscalate, c.OnResolve, c.ReminderSeconds, c.ConfigCiphertext, c.Display, rules, targets, c.DelaySeconds)
 	} else {
-		row = s.pool.QueryRow(ctx, queries.UpdateNotificationChannel, c.ID, c.Name, c.Enabled, c.MinSeverity, c.Environments, c.OnOpen, c.OnEscalate, c.OnResolve, c.ReminderSeconds, c.ConfigCiphertext, c.Display)
+		row = s.pool.QueryRow(ctx, queries.UpdateNotificationChannel, c.ID, c.Name, c.Enabled, c.MinSeverity, c.Environments, c.OnOpen, c.OnEscalate, c.OnResolve, c.ReminderSeconds, c.ConfigCiphertext, c.Display, rules, targets, c.DelaySeconds)
 	}
 	out, err := scanChannel(row)
 	switch {

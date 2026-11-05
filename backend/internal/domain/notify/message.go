@@ -28,6 +28,9 @@ type Message struct {
 	Duration    string     `json:"duration"`
 	Observed    []string   `json:"observed"`
 	URL         string     `json:"url,omitempty"`
+	// Note is set for an escalation tier: why this channel receives the
+	// incident now.
+	Note string `json:"note,omitempty"`
 }
 
 // clean makes a server- or user-provided string safe for every channel: one
@@ -86,6 +89,9 @@ func (m Message) Text() string {
 		fmt.Fprintf(&b, "Resolved:    %s (%s)\n", m.ResolvedAt.UTC().Format(time.RFC3339), m.Resolution)
 	}
 	fmt.Fprintf(&b, "Duration:    %s\n", m.Duration)
+	if m.Note != "" {
+		fmt.Fprintf(&b, "Note:        %s\n", m.Note)
+	}
 	if len(m.Observed) > 0 {
 		b.WriteString("\nObserved:\n")
 		for _, o := range m.Observed {
@@ -130,6 +136,9 @@ func (m Message) slackBody() []byte {
 		ctx = fmt.Sprintf("*%s* (%s) · %s · `%s` · opened %s · %s", slackEscape(m.Instance), slackEscape(m.Environment), strings.ToUpper(m.Severity),
 			slackEscape(m.RuleID), m.OpenedAt.Format("2006-01-02 15:04 MST"), m.Duration)
 	}
+	if m.Note != "" {
+		ctx += " · " + slackEscape(m.Note)
+	}
 	blocks := []map[string]any{
 		{"type": "section", "text": map[string]string{"type": "mrkdwn", "text": head}},
 		{"type": "context", "elements": []map[string]string{{"type": "mrkdwn", "text": ctx}}},
@@ -142,5 +151,45 @@ func (m Message) slackBody() []byte {
 		blocks = append(blocks, map[string]any{"type": "section", "text": map[string]string{"type": "mrkdwn", "text": strings.Join(lines, "\n")}})
 	}
 	raw, _ := json.Marshal(map[string]any{"text": slackEscape(m.Subject()), "blocks": blocks})
+	return raw
+}
+
+// alertmanagerHold is how long an open incident stays firing in
+// Alertmanager without a refresh; LockLens refreshes it well before.
+const alertmanagerHold = 10 * time.Minute
+
+// alertmanagerBody is the alert posted to Alertmanager's /api/v2/alerts. An
+// open incident fires until refreshed or resolved; a resolved one ends at
+// its resolution. The labels identify the incident; Alertmanager's routes
+// can match environment, instance, rule, and severity.
+func (m Message) alertmanagerBody(now time.Time) []byte {
+	alertname := m.RuleID
+	ends := now.Add(alertmanagerHold)
+	if m.ResolvedAt != nil {
+		ends = m.ResolvedAt.UTC()
+	}
+	if m.Event == EventTest {
+		alertname, ends = "locklens.test", now.Add(time.Minute)
+	}
+	labels := map[string]string{"alertname": alertname, "severity": m.Severity, "instance": m.Instance, "rule": m.RuleID,
+		"source": "locklens"}
+	if m.Environment != "" {
+		labels["environment"] = m.Environment
+	}
+	if m.IncidentID > 0 {
+		labels["incident_id"] = fmt.Sprint(m.IncidentID)
+	}
+	ann := map[string]string{"summary": m.Title, "description": strings.Join(m.Observed, "\n")}
+	if m.URL != "" {
+		ann["url"] = m.URL
+	}
+	if m.Note != "" {
+		ann["note"] = m.Note
+	}
+	alert := map[string]any{"labels": labels, "annotations": ann, "startsAt": m.OpenedAt.UTC(), "endsAt": ends}
+	if m.URL != "" {
+		alert["generatorURL"] = m.URL
+	}
+	raw, _ := json.Marshal([]any{alert})
 	return raw
 }

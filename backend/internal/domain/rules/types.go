@@ -104,6 +104,10 @@ type Thresholds struct {
 	NPlusOneMinCallsPerSec  float64 `json:"n_plus_one_min_calls_per_s"`
 	NPlusOneMaxMeanMS       float64 `json:"n_plus_one_max_mean_ms"`
 	NPlusOneMaxRowsPerCall  float64 `json:"n_plus_one_max_rows_per_call"`
+
+	// TargetDownSeconds is how long connecting to a target, or collecting
+	// its activity, must keep failing before it is unreachable.
+	TargetDownSeconds float64 `json:"target_down_seconds"`
 }
 
 // Defaults returns the default thresholds.
@@ -132,6 +136,7 @@ func Defaults() Thresholds {
 		IORatio: 3, IOMinReadsPerCall: 100,
 		PatternRowsRatio:       5,
 		NPlusOneMinCallsPerSec: 50, NPlusOneMaxMeanMS: 1, NPlusOneMaxRowsPerCall: 1,
+		TargetDownSeconds: 60,
 	}
 }
 
@@ -160,6 +165,7 @@ func DemoDefaults() Thresholds {
 	t.LoadMinAddedMSPerSec = 5
 	t.IOMinReadsPerCall = 10
 	t.NPlusOneMinCallsPerSec = 5
+	t.TargetDownSeconds = 30
 	return t
 }
 
@@ -182,6 +188,9 @@ func (t Thresholds) Validate() error {
 		}
 	}
 	pos("blocking_min_seconds", t.BlockingMinSeconds)
+	if t.TargetDownSeconds < 15 {
+		errs = append(errs, errors.New("target_down_seconds must be at least 15"))
+	}
 	atLeast("blocking_min_samples", int64(t.BlockingMinSamples), 1)
 	atLeast("blocking_min_blocked", int64(t.BlockingMinBlocked), 1)
 	atLeast("blocking_critical_blocked", int64(t.BlockingCriticalBlocked), int64(t.BlockingMinBlocked))
@@ -286,6 +295,9 @@ const (
 	RuleIORegression     = "queries.io_regression"
 	RulePatternChange    = "queries.pattern_change"
 	RuleNPlusOne         = "queries.possible_n_plus_one"
+	// RuleTargetUnreachable is evaluated from failed connections and
+	// collections, not from collected data.
+	RuleTargetUnreachable = "target.unreachable"
 )
 
 // Versions of the rules above.
@@ -295,10 +307,13 @@ var Versions = map[string]int{
 	RuleMeanRegression: 2, RuleCallVolume: 2, RuleTempFiles: 1, RuleDeadlocks: 1,
 	RuleDeadTuples: 1, RuleXIDAge: 1, RuleReplicaLag: 1, RuleSlotRetainedWAL: 1, RuleArchiverFailures: 1,
 	RuleLongRunning: 1, RuleLoadIncrease: 1, RuleIORegression: 1, RulePatternChange: 1, RuleNPlusOne: 1,
+	RuleTargetUnreachable: 1,
 }
 
 // StatementRules report on one statement (their key names its identity).
 var StatementRules = []string{RuleMeanRegression, RuleCallVolume, RuleLoadIncrease, RuleIORegression, RulePatternChange, RuleNPlusOne}
 
-// TriggerRules may open incidents.
+// TriggerRules decide themselves when a finding is severe or persistent
+// enough to open an incident (Finding.Trigger); for the other rules, any
+// active warning or critical finding does when the rule's mode is incident.
 var TriggerRules = []string{RuleBlockingChain, RuleIdleBlocker, RuleConnections, RuleMeanRegression, RuleSlotRetainedWAL, RuleLongRunning}

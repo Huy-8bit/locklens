@@ -34,6 +34,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/rollup"
 	"github.com/locklens/locklens/internal/domain/settings"
 	"github.com/locklens/locklens/internal/domain/targets"
+	"github.com/locklens/locklens/internal/domain/telemetry"
 	"github.com/locklens/locklens/internal/domain/tokens"
 	"github.com/locklens/locklens/internal/domain/workspace"
 	"github.com/locklens/locklens/internal/lib/obs"
@@ -64,38 +65,48 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	}
 
 	store.SetRawRetention(cfg.HistoryRetention)
+	// Every Repositories struct is checked for a forgotten repository.
+	var wiring []error
 	metrics := obs.NewMetrics()
 	// Events reach this server's browsers through the hub and, over the
 	// cluster bus, the browsers of the other servers sharing the store.
 	hub := events.NewHub(100, func(n int) { metrics.SSEClients.Set(float64(n)) })
-	clusterRepos := cluster.Repositories{ClusterRepository: store}
+	clusterRepos := checked(&wiring, cluster.Repositories{ClusterRepository: store})
 	node := cluster.New(clusterRepos, serverID(cfg), hostname(), version, log)
 	bus := cluster.NewBus(node, clusterRepos, hub, log)
 
-	st, err := settings.Load(ctx, settings.Repositories{SettingRepository: store}, cfg.DemoMode,
+	st, err := settings.Load(ctx, checked(&wiring, settings.Repositories{SettingRepository: store}), cfg.DemoMode,
 		func() { bus.Send(messageSettingsChanged, nil) })
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)
 	}
-	notifier := notify.New(notify.Repositories{NotificationRepository: store, IncidentRepository: store, TargetRepository: store, FindingRepository: store},
+	notifier := notify.New(checked(&wiring, notify.Repositories{NotificationRepository: store, IncidentRepository: store, TargetRepository: store, FindingRepository: store,
+		ChangeRepository: store, MaintenanceRepository: store}),
 		box, log, cfg.PublicURL, version)
-	baselines := baseline.New(baseline.Repositories{RollupRepository: store, TargetRepository: store},
+	baselines := baseline.New(checked(&wiring, baseline.Repositories{RollupRepository: store, TargetRepository: store}),
 		func() baseline.Params { return insight.BaselineParams(st.Thresholds()) }, log)
 	// Incident events go to the browsers and to notifications (sent by the
 	// server that records the incident).
-	recorder := incidents.NewRecorder(incidents.Repositories{IncidentRepository: store, FindingRepository: store},
+	recorder := incidents.NewRecorder(checked(&wiring, incidents.Repositories{IncidentRepository: store, FindingRepository: store}),
 		incidents.DefaultConfig(), st, baselines, metrics, events.Fanout{bus, notifier}, log)
-	collectorRepos := collector.Repositories{ChangeRepository: store, ClusterRepository: store, CollectionRepository: store,
-		LoadRepository: store, OptimizerRepository: store, TargetRepository: store}
+	collectorRepos := checked(&wiring, collector.Repositories{ChangeRepository: store, ClusterRepository: store, CollectionRepository: store,
+		LoadRepository: store, OptimizerRepository: store, TargetRepository: store})
 	writer := collector.NewWriter(collectorRepos, cfg.WriteQueue, metrics, log)
 	manager := collector.NewManager(collector.Deps{Store: collectorRepos, Box: box, Writer: writer, Recorder: recorder, Events: bus,
 		Settings: st, Cluster: node, Bus: bus, Metrics: metrics, Log: log},
 		collector.Config{MaxConcurrent: cfg.MaxConcurrent, Version: version, StatementsInterval: statementsInterval(cfg), LoadInterval: loadInterval(cfg),
 			BurstDuration: burstDuration(cfg), BudgetPercent: cfg.CollectorBudgetPercent})
-	tsvc := targets.New(targets.Repositories{CollectionRepository: store, TargetRepository: store}, box, manager, version)
-	ws := workspace.New(workspace.Repositories{WorkspaceRepository: store, TargetRepository: store}, box)
-	opt := optimizer.New(optimizer.Repositories{OptimizerRepository: store, PlanRepository: store, QueryRepository: store, TargetRepository: store},
+	tsvc := targets.New(checked(&wiring, targets.Repositories{CollectionRepository: store, TargetRepository: store}), box, manager, version)
+	ws := workspace.New(checked(&wiring, workspace.Repositories{WorkspaceRepository: store, TargetRepository: store}), box)
+	opt := optimizer.New(checked(&wiring, optimizer.Repositories{OptimizerRepository: store, PlanRepository: store, QueryRepository: store, TargetRepository: store}),
 		ws, bus, log)
+
+	tokenSvc := tokens.New(checked(&wiring, tokens.Repositories{TokenRepository: store}))
+	if cfg.BootstrapMetricsToken != "" {
+		if err := tokenSvc.Ensure(ctx, "metrics (LOCKLENS_BOOTSTRAP_METRICS_TOKEN)", repository.TokenMetrics, cfg.BootstrapMetricsToken); err != nil {
+			return fmt.Errorf("LOCKLENS_BOOTSTRAP_METRICS_TOKEN: %w", err)
+		}
+	}
 
 	if cfg.BootstrapTargets != "" {
 		if err := bootstrapTargets(ctx, tsvc, ws, bootstrapStore{TargetRepository: store, WorkspaceRepository: store}, cfg.BootstrapTargets, log); err != nil {
@@ -121,32 +132,40 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 		}
 	})
 
+	exports := telemetry.New(checked(&wiring, telemetry.Repositories{FindingRepository: store, IncidentRepository: store, TargetRepository: store}),
+		manager, cfg.ExportTopStatements)
+
 	handler := httpapi.New(httpapi.Deps{
-		Store: httpapi.Repositories{AuthRepository: store, FindingRepository: store, HealthRepository: store, IncidentRepository: store,
+		Store: checked(&wiring, httpapi.Repositories{AuthRepository: store, FindingRepository: store, HealthRepository: store, IncidentRepository: store,
 			LoadRepository: store, MetricRollupRepository: store, OptimizerRepository: store, PlanRepository: store, QueryRepository: store,
 			RetentionRepository: store, SeriesRepository: store, SnapshotRepository: store, TargetRepository: store, TimescaleRepository: store,
-			TopologyRepository: store, WorkspaceRepository: store},
-		Auth:      auth.New(auth.Repositories{AuthRepository: store}, cfg.SessionIdle, cfg.CookieSecure),
+			TopologyRepository: store, WorkspaceRepository: store}),
+		Auth:      auth.New(checked(&wiring, auth.Repositories{AuthRepository: store}), cfg.SessionIdle, cfg.CookieSecure),
 		Targets:   tsvc,
-		Onboard:   onboard.New(onboard.Repositories{ManagedRoleRepository: store}, box, tsvc, ws),
+		Onboard:   onboard.New(checked(&wiring, onboard.Repositories{ManagedRoleRepository: store}), box, tsvc, ws),
 		Workspace: ws,
 		Manager:   manager,
 		Settings:  st,
 		Notify:    notifier,
 		Baselines: baselines,
-		Insight: insight.New(insight.Repositories{ChangeRepository: store, FindingRepository: store, LoadRepository: store,
-			LogRepository: store, PlanRepository: store, SeriesRepository: store}, cfg.LoadSampling),
+		Insight: insight.New(checked(&wiring, insight.Repositories{ChangeRepository: store, FindingRepository: store, LoadRepository: store,
+			LogRepository: store, PlanRepository: store, SeriesRepository: store}), cfg.LoadSampling),
 		Optimizer: opt,
-		Changes:   changes.New(changes.Repositories{ChangeRepository: store}),
-		Tokens:    tokens.New(tokens.Repositories{TokenRepository: store}),
-		Logs:      logs.New(logs.Repositories{ChangeRepository: store, LogRepository: store}),
+		Changes:   changes.New(checked(&wiring, changes.Repositories{ChangeRepository: store})),
+		Tokens:    tokenSvc,
+		Logs:      logs.New(checked(&wiring, logs.Repositories{ChangeRepository: store, LogRepository: store})),
 		Cluster:   node,
+		Telemetry: exports,
 		Events:    bus,
 		Stream:    hub,
 		Metrics:   metrics, Log: log, Tool: model.Tool{Name: "locklens", Version: version},
 		TrustedProxies: cfg.TrustedProxies, TrustedProxyHosts: cfg.TrustedProxyHosts,
-		MetricsEnabled: cfg.MetricsEnabled, DemoMode: cfg.DemoMode,
+		MetricsEnabled: cfg.MetricsEnabled, MetricsRequireToken: cfg.MetricsRequireToken, DemoMode: cfg.DemoMode,
 	})
+
+	if err := errors.Join(wiring...); err != nil {
+		return err
+	}
 
 	srv := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 64 << 10}
@@ -168,15 +187,21 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	singletons := map[string]func(context.Context){
 		"baselines": func(ctx context.Context) { baselines.Run(ctx, baselineRefresh(cfg)) },
 		"rollups": func(ctx context.Context) {
-			rollup.Run(ctx, rollup.Repositories{MetricRollupRepository: store, TargetRepository: store}, time.Minute, cfg.HistoryRetention, log)
+			rollup.Run(ctx, checked(&wiring, rollup.Repositories{MetricRollupRepository: store, TargetRepository: store}), time.Minute, cfg.HistoryRetention, log)
 		},
 		"optimizer": func(ctx context.Context) { opt.Run(ctx, optimizerEvery(cfg)) },
 		"retention": func(ctx context.Context) {
-			retention.Run(ctx, retention.Repositories{RetentionRepository: store}, repository.RetentionPolicy{History: cfg.HistoryRetention, Incidents: cfg.IncidentRetention,
+			retention.Run(ctx, checked(&wiring, retention.Repositories{RetentionRepository: store}), repository.RetentionPolicy{History: cfg.HistoryRetention, Incidents: cfg.IncidentRetention,
 				Findings: cfg.FindingRetention, Rollups: cfg.BaselineRetention,
 				MetricMinute: cfg.MinuteRollupRetention, MetricHour: cfg.HourRollupRetention}, time.Hour, log)
 		},
 		"notification-reminders": notifier.RunReminders,
+	}
+	if cfg.OTLPEndpoint != "" {
+		// Each server pushes the instances it collects.
+		p := &telemetry.Pusher{Service: exports, Endpoint: cfg.OTLPEndpoint, Headers: cfg.OTLPHeaders, Interval: cfg.OTLPInterval,
+			ServerID: node.ID(), Version: version, Log: log}
+		tasks = append(tasks, p.Run)
 	}
 	for name, run := range singletons {
 		tasks = append(tasks, func(ctx context.Context) { node.Singleton(ctx, name, run) })

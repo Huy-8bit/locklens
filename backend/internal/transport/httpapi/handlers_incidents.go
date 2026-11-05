@@ -13,6 +13,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/incidents"
 	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/rules"
+	"github.com/locklens/locklens/internal/domain/settings"
 	"github.com/locklens/locklens/internal/repository"
 )
 
@@ -49,7 +50,7 @@ func (s *Server) listIncidents(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"incidents": list, "total": total, "page_size": limit, "rules": rules.TriggerRules})
+	writeJSON(w, http.StatusOK, map[string]any{"incidents": list, "total": total, "page_size": limit, "rules": rules.AllRules})
 }
 
 func (s *Server) incidentOr404(w http.ResponseWriter, r *http.Request) (repository.Incident, bool) {
@@ -264,8 +265,41 @@ func (s *Server) importIncident(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getRuleSettings(w http.ResponseWriter, r *http.Request) {
+	al := s.d.Settings.Alerting()
 	writeJSON(w, http.StatusOK, map[string]any{"thresholds": s.d.Settings.Thresholds(), "defaults": rules.Defaults(),
-		"rule_versions": rules.Versions, "trigger_rules": rules.TriggerRules})
+		"rule_versions": rules.Versions, "rules": rules.AllRules, "default_modes": rules.DefaultModes(),
+		"modes": al.Modes, "overrides": al.Overrides, "threshold_keys": rules.ThresholdKeys()})
+}
+
+// putAlerting replaces the rule modes and the overrides per environment
+// and per instance.
+func (s *Server) putAlerting(w http.ResponseWriter, r *http.Request) {
+	var in settings.Alerting
+	if err := decode(w, r, &in, 256<<10); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := s.d.Settings.UpdateAlerting(r.Context(), in); err != nil {
+		writeError(w, r, http.StatusUnprocessableEntity, "validation", err.Error())
+		return
+	}
+	s.d.Log.Info("alerting settings updated", "user", sessionOf(r).Username)
+	writeJSON(w, http.StatusOK, s.d.Settings.Alerting())
+}
+
+// targetPolicy returns the thresholds and rule modes that apply to an
+// instance, and where each value that is not global comes from.
+func (s *Server) targetPolicy(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.targetOr404(w, r)
+	if !ok {
+		return
+	}
+	stored, err := s.d.Store.GetTarget(r.Context(), t.ID)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.d.Settings.Policy(stored))
 }
 
 func (s *Server) putRuleSettings(w http.ResponseWriter, r *http.Request) {

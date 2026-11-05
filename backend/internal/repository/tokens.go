@@ -28,6 +28,11 @@ var _ TokenRepository = (*Store)(nil)
 const (
 	TokenEvents = "events" // report change events
 	TokenIngest = "ingest" // ship log events
+	// TokenMetrics scrapes /metrics/targets (and /metrics when it is
+	// protected).
+	TokenMetrics = "metrics"
+	// TokenRead reads the API (GET) with the permissions of a viewer.
+	TokenRead = "read"
 )
 
 // APIToken is a stored machine token (without its secret).

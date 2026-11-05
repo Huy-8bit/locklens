@@ -41,6 +41,11 @@ type thresholds struct {
 
 func (f thresholds) Thresholds() rules.Thresholds { return f.t }
 
+func (f thresholds) Policy(repository.Target) rules.Policy {
+	p, _ := rules.Effective(f.t, nil, nil, nil)
+	return p
+}
+
 type nopSink struct{}
 
 func (nopSink) Publish(string, any) {}
@@ -307,5 +312,51 @@ func TestDurationLimitAndCooldown(t *testing.T) {
 	h.feed(h.rec, at.Add(10*time.Minute), 8, true, 100)
 	if n := len(h.incidents()); n != 2 {
 		t.Fatalf("want a new incident after the cooldown, got %d", n)
+	}
+}
+
+func TestUnreachableOpensAndResolvesAtTheNextCollection(t *testing.T) {
+	h := newHarness(t, incidents.DefaultConfig())
+	h.feed(h.rec, t0, 3, false, 100)
+	ctx := context.Background()
+	unreachable := func() []repository.Incident {
+		list, _, err := h.store.ListIncidents(ctx, repository.IncidentFilter{TargetID: h.target.ID, RuleID: rules.RuleTargetUnreachable, Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return list
+	}
+	// Failing for 30 s: not yet (target_down_seconds is 60 by default).
+	since := time.Now().UTC().Add(-30 * time.Second)
+	h.rec.Unreachable(ctx, h.target, rules.Reachability{FailingSince: since, Attempts: 3, Error: "connection refused"})
+	if n := len(unreachable()); n != 0 {
+		t.Fatalf("too early: %d", n)
+	}
+	since = time.Now().UTC().Add(-2 * time.Minute)
+	for range 3 { // repeated failures keep one incident
+		h.rec.Unreachable(ctx, h.target, rules.Reachability{FailingSince: since, Attempts: 6, Error: "connection refused"})
+	}
+	list := unreachable()
+	if len(list) != 1 || list[0].State != "open" || list[0].Severity != "critical" {
+		t.Fatalf("unreachable incident %+v", list)
+	}
+	// The other findings of the target are left alone while it is down.
+	fs, err := h.store.ListFindings(ctx, repository.FindingFilter{TargetID: h.target.ID, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var down bool
+	for _, f := range fs {
+		if f.Finding.RuleID == rules.RuleTargetUnreachable && f.Finding.Status == rules.Active {
+			down = true
+		}
+	}
+	if !down {
+		t.Fatalf("unreachable finding %+v", fs)
+	}
+	// Activity is collected again: resolved at once.
+	h.feed(h.rec, time.Now().UTC(), 1, false, 100)
+	if list := unreachable(); len(list) != 1 || list[0].State != "resolved" {
+		t.Fatalf("after recovery %+v", list)
 	}
 }

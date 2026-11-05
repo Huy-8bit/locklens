@@ -127,9 +127,34 @@ export function ChangesCard({ targetId }: { targetId: number }) {
   )
 }
 
-const SCOPE_LABEL: Record<ApiToken['scope'], string> = { events: 'Report changes', ingest: 'Ship logs (agent)' }
+const SCOPE_LABEL: Record<ApiToken['scope'], string> = { events: 'Report changes', ingest: 'Ship logs (agent)', metrics: 'Prometheus scraping', read: 'Read the API' }
 
-function TokenForm({ onCreated }: { onCreated: (secret: string) => void }) {
+/** How to use a new token of a scope, with its secret filled in. */
+function usage(scope: ApiToken['scope'], secret: string): string {
+  const base = window.location.origin
+  switch (scope) {
+    case 'metrics':
+      return `# prometheus.yml
+scrape_configs:
+  - job_name: locklens-targets
+    scheme: ${new URL(base).protocol.replace(':', '')}
+    metrics_path: /metrics/targets
+    authorization:
+      credentials: ${secret}
+    static_configs:
+      - targets: ["${new URL(base).host}"]`
+    case 'read':
+      return `curl -H "Authorization: Bearer ${secret}" ${base}/api/v1/fleet`
+    case 'ingest':
+      return `LOCKLENS_AGENT_TOKEN=${secret} locklens agent --server ${base} \\
+  --log /var/lib/postgresql/data/log --state-dir /var/lib/locklens-agent`
+  }
+  return `curl -X POST ${base}/api/v1/changes \\
+  -H "Authorization: Bearer ${secret}" -H "Content-Type: application/json" \\
+  -d '{"kind":"deploy","title":"orders-api v2.3.1","details":{"commit":"abc123"}}'`
+}
+
+function TokenForm({ onCreated }: { onCreated: (secret: string, scope: ApiToken['scope']) => void }) {
   const create = useCreateToken()
   const targets = useTargets()
   const [name, setName] = useState('')
@@ -138,7 +163,7 @@ function TokenForm({ onCreated }: { onCreated: (secret: string) => void }) {
   const fields = create.error instanceof ApiError ? create.error.fields : {}
   const submit = (e: FormEvent) => {
     e.preventDefault()
-    create.mutate({ name, scope, target_id: target }, { onSuccess: (r) => onCreated(r.secret) })
+    create.mutate({ name, scope, target_id: target }, { onSuccess: (r) => onCreated(r.secret, scope) })
   }
   return (
     <form onSubmit={submit} className="space-y-3">
@@ -149,9 +174,15 @@ function TokenForm({ onCreated }: { onCreated: (secret: string) => void }) {
         <select className={selectCls} value={scope} onChange={(e) => setScope(e.target.value as ApiToken['scope'])}>
           <option value="events">Reporting changes (POST /api/v1/changes)</option>
           <option value="ingest">Shipping logs from a log agent</option>
+          <option value="metrics">Prometheus scraping (/metrics/targets)</option>
+          <option value="read">Reading the API (GET, as a viewer)</option>
         </select>
       </Field>
-      <Field label="Instance" hint={scope === 'ingest' ? 'A log agent token belongs to one instance.' : 'Leave empty to allow every instance.'} error={fields.target_id}>
+      <Field
+        label="Instance"
+        hint={scope === 'ingest' ? 'A log agent token belongs to one instance.' : scope === 'read' ? 'A read token reads every instance.' : 'Leave empty to allow every instance.'}
+        error={fields.target_id}
+      >
         <select className={selectCls} value={target ?? ''} onChange={(e) => setTarget(e.target.value ? Number(e.target.value) : null)}>
           <option value="">Every instance</option>
           {(targets.data?.targets ?? []).map((t) => (
@@ -175,12 +206,12 @@ export function ApiTokensCard() {
   const targets = useTargets()
   const revoke = useRevokeToken()
   const [adding, setAdding] = useState(false)
-  const [secret, setSecret] = useState<string | null>(null)
+  const [secret, setSecret] = useState<{ value: string; scope: ApiToken['scope'] } | null>(null)
   const name = (id: number | null) => (id === null ? 'every instance' : (targets.data?.targets.find((t) => t.id === id)?.name ?? `#${id}`))
   return (
     <Card
       title="API tokens"
-      subtitle="For machines: a deploy pipeline reports deploys and migrations, a log agent ships PostgreSQL logs. LockLens keeps only a hash of each token."
+      subtitle="For machines: Prometheus scrapes the instances' metrics, a deploy pipeline reports deploys, a log agent ships PostgreSQL logs, a script reads the API. LockLens keeps only a hash of each token."
       actions={
         <Button size="sm" onClick={() => setAdding(true)}>
           <Plus aria-hidden className="h-3.5 w-3.5" /> New token
@@ -191,11 +222,9 @@ export function ApiTokensCard() {
       {secret && (
         <div className="p-4">
           <Notice tone="warn">
-            Copy this token now; it is not shown again: <code className="select-all break-all font-mono">{secret}</code>
+            Copy this token now; it is not shown again: <code className="select-all break-all font-mono">{secret.value}</code>
           </Notice>
-          <pre className="mt-2 overflow-x-auto rounded-lg bg-surface-2 p-3 text-xs">{`curl -X POST $LOCKLENS_URL/api/v1/changes \\
-  -H "Authorization: Bearer $LOCKLENS_TOKEN" -H "Content-Type: application/json" \\
-  -d '{"kind":"deploy","title":"orders-api v2.3.1","details":{"commit":"abc123"}}'`}</pre>
+          <pre className="mt-2 overflow-x-auto rounded-lg bg-surface-2 p-3 text-xs">{usage(secret.scope, secret.value)}</pre>
         </div>
       )}
       <Load q={q} label="Loading tokens">
@@ -242,8 +271,8 @@ export function ApiTokensCard() {
       </Load>
       <Drawer open={adding} title="New API token" onClose={() => setAdding(false)}>
         <TokenForm
-          onCreated={(s) => {
-            setSecret(s)
+          onCreated={(value, scope) => {
+            setSecret({ value, scope })
             setAdding(false)
           }}
         />

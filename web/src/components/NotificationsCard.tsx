@@ -10,13 +10,21 @@ import { RULE_INFO } from '../lib/incident'
 import { tableCls, tdCls, Th, trCls } from './Table'
 import { Badge, Button, Card, Confirm, Drawer, Empty, Field, inputCls, Load, Notice, selectCls } from './ui'
 
-const KIND_LABEL: Record<ChannelKind, string> = { webhook: 'Webhook', slack: 'Slack', email: 'Email' }
+const KIND_LABEL: Record<ChannelKind, string> = { webhook: 'Webhook', slack: 'Slack', email: 'Email', alertmanager: 'Alertmanager' }
 const REMINDERS = [
   { value: 0, label: 'Never' },
   { value: 30, label: 'Every 30 minutes' },
   { value: 60, label: 'Every hour' },
   { value: 240, label: 'Every 4 hours' },
   { value: 1440, label: 'Every day' },
+]
+
+const ESCALATIONS = [
+  { value: 0, label: 'At once (first tier)' },
+  { value: 15, label: 'After 15 minutes unacknowledged' },
+  { value: 30, label: 'After 30 minutes unacknowledged' },
+  { value: 60, label: 'After 1 hour unacknowledged' },
+  { value: 240, label: 'After 4 hours unacknowledged' },
 ]
 
 const statusTone = { sent: 'good', failed: 'crit', silenced: 'muted' } as const
@@ -40,6 +48,11 @@ function ChannelForm({ channel, onDone }: { channel?: NotificationChannel; onDon
   const [onEscalate, setOnEscalate] = useState(channel?.on_escalate ?? true)
   const [onResolve, setOnResolve] = useState(channel?.on_resolve ?? true)
   const [reminder, setReminder] = useState(Math.round((channel?.reminder_seconds ?? 0) / 60))
+  const [rulesSel, setRulesSel] = useState<string[]>(channel?.rule_ids ?? [])
+  const [targetSel, setTargetSel] = useState<number[]>(channel?.target_ids ?? [])
+  const [delay, setDelay] = useState(Math.round((channel?.delay_seconds ?? 0) / 60))
+  const targets = useTargets()
+  const am = kind === 'alertmanager'
   const [replace, setReplace] = useState(!channel)
   const [dest, setDest] = useState<ChannelDestination>({ tls: 'starttls', smtp_port: 587 })
   const [to, setTo] = useState('')
@@ -57,9 +70,14 @@ function ChannelForm({ channel, onDone }: { channel?: NotificationChannel; onDon
       on_open: onOpen,
       on_escalate: onEscalate,
       on_resolve: onResolve,
-      reminder_minutes: reminder,
+      reminder_minutes: am ? 0 : reminder,
+      rule_ids: rulesSel,
+      target_ids: targetSel,
+      delay_minutes: delay,
     }
-    if (replace) input.destination = kind === 'email' ? { ...dest, to: to.split(/[,\s]+/).filter(Boolean) } : { url: dest.url, secret: dest.secret }
+    if (replace)
+      input.destination =
+        kind === 'email' ? { ...dest, to: to.split(/[,\s]+/).filter(Boolean) } : am ? { url: dest.url, token: dest.token } : { url: dest.url, secret: dest.secret }
     save.mutate({ id: channel?.id, input }, { onSuccess: onDone })
   }
 
@@ -74,6 +92,7 @@ function ChannelForm({ channel, onDone }: { channel?: NotificationChannel; onDon
             <option value="slack">Slack (incoming webhook)</option>
             <option value="webhook">Webhook (JSON POST)</option>
             <option value="email">Email (SMTP)</option>
+            <option value="alertmanager">Prometheus Alertmanager</option>
           </select>
         </Field>
       )}
@@ -119,9 +138,14 @@ function ChannelForm({ channel, onDone }: { channel?: NotificationChannel; onDon
           </>
         ) : (
           <>
-            <Field label={kind === 'slack' ? 'Incoming webhook URL' : 'URL'} hint="Stored encrypted and never shown again." error={fields['destination.url']}>
-              <input required type="url" autoComplete="off" className={inputCls} value={dest.url ?? ''} onChange={set('url')} placeholder={kind === 'slack' ? 'https://hooks.slack.com/services/…' : 'https://example.com/hooks/locklens'} />
+            <Field label={kind === 'slack' ? 'Incoming webhook URL' : am ? 'Alertmanager URL' : 'URL'} hint={am ? 'Its base URL; alerts go to /api/v2/alerts. Stored encrypted.' : 'Stored encrypted and never shown again.'} error={fields['destination.url']}>
+              <input required type="url" autoComplete="off" className={inputCls} value={dest.url ?? ''} onChange={set('url')} placeholder={kind === 'slack' ? 'https://hooks.slack.com/services/…' : am ? 'http://alertmanager:9093' : 'https://example.com/hooks/locklens'} />
             </Field>
+            {am && (
+              <Field label="Bearer token (optional)" hint="When Alertmanager sits behind an authenticating proxy." error={fields['destination.token']}>
+                <input type="password" autoComplete="new-password" className={inputCls} value={dest.token ?? ''} onChange={set('token')} />
+              </Field>
+            )}
             {kind === 'webhook' && (
               <Field label="Signing secret (optional)" hint="Bodies are signed with HMAC-SHA256 in X-LockLens-Signature." error={fields['destination.secret']}>
                 <input type="password" autoComplete="new-password" className={inputCls} value={dest.secret ?? ''} onChange={set('secret')} />
@@ -137,6 +161,9 @@ function ChannelForm({ channel, onDone }: { channel?: NotificationChannel; onDon
           <option value="critical">Critical only</option>
         </select>
       </Field>
+      {am ? (
+        <Notice>Alertmanager is told when an incident opens, changes severity, and resolves, and the alert is refreshed while the incident is open; its own routes decide who is paged.</Notice>
+      ) : (
       <fieldset className="space-y-1.5">
         <legend className="mb-1 text-sm font-medium text-ink">Send when an incident</legend>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={onOpen} onChange={(e) => setOnOpen(e.target.checked)} /> opens (or opens again)</label>
@@ -144,11 +171,41 @@ function ChannelForm({ channel, onDone }: { channel?: NotificationChannel; onDon
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={onResolve} onChange={(e) => setOnResolve(e.target.checked)} /> is resolved</label>
         {fields.events && <p className="text-xs text-crit">{fields.events}</p>}
       </fieldset>
-      <Field label="Remind while open and unacknowledged" error={fields.reminder_minutes}>
-        <select className={`${selectCls} w-full`} value={reminder} onChange={(e) => setReminder(Number(e.target.value))}>
-          {REMINDERS.map((r) => (
+      )}
+      {!am && (
+        <Field label="Remind while open and unacknowledged" error={fields.reminder_minutes}>
+          <select className={`${selectCls} w-full`} value={reminder} onChange={(e) => setReminder(Number(e.target.value))}>
+            {REMINDERS.map((r) => (
+              <option key={r.value} value={r.value}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+      <Field label="Escalation" hint="A later tier: this channel hears about an incident only after nobody acknowledged it for this long." error={fields.delay_minutes}>
+        <select className={`${selectCls} w-full`} value={delay} onChange={(e) => setDelay(Number(e.target.value))}>
+          {ESCALATIONS.map((r) => (
             <option key={r.value} value={r.value}>
               {r.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Only these rules (optional)" hint="Empty: every rule. Hold Ctrl/⌘ to choose several." error={fields.rule_ids}>
+        <select multiple size={5} className={`${selectCls} w-full`} value={rulesSel} onChange={(e) => setRulesSel([...e.target.selectedOptions].map((o) => o.value))}>
+          {Object.entries(RULE_INFO).map(([id, info]) => (
+            <option key={id} value={id}>
+              {info.name}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Only these instances (optional)" hint="Empty: every instance of the environments below." error={fields.target_ids}>
+        <select multiple size={4} className={`${selectCls} w-full`} value={targetSel.map(String)} onChange={(e) => setTargetSel([...e.target.selectedOptions].map((o) => Number(o.value)))}>
+          {(targets.data?.targets ?? []).map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name}
             </option>
           ))}
         </select>
@@ -169,8 +226,19 @@ function ChannelForm({ channel, onDone }: { channel?: NotificationChannel; onDon
 }
 
 function eventsOf(c: NotificationChannel): string {
+  if (c.kind === 'alertmanager') return 'every change, refreshed while open'
   const e = [c.on_open && 'opened', c.on_escalate && 'escalated', c.on_resolve && 'resolved', c.reminder_seconds > 0 && `reminders every ${Math.round(c.reminder_seconds / 60)} min`].filter(Boolean)
   return e.join(', ')
+}
+
+/** Who a channel hears about, beyond severity and environment. */
+export function scopeOf(c: NotificationChannel): string {
+  const parts = [
+    c.rule_ids?.length ? `${c.rule_ids.length} rule(s)` : '',
+    c.target_ids?.length ? `${c.target_ids.length} instance(s)` : '',
+    c.delay_seconds > 0 ? `escalation after ${Math.round(c.delay_seconds / 60)} min` : '',
+  ].filter(Boolean)
+  return parts.join(' · ')
 }
 
 /** Notification channels and their recent deliveries (administrators). */
@@ -185,7 +253,7 @@ export function NotificationsCard() {
     <Card
       pad={false}
       title="Channels"
-      subtitle="Slack, webhook, and email destinations. Set LOCKLENS_PUBLIC_URL so messages link back to LockLens."
+      subtitle="Slack, webhook, email, and Prometheus Alertmanager destinations, with escalation tiers. Set LOCKLENS_PUBLIC_URL so messages link back to LockLens."
       actions={
         <Button size="sm" onClick={() => setEditing('new')}>
           <Plus aria-hidden className="h-4 w-4" /> Add channel
@@ -224,6 +292,7 @@ export function NotificationsCard() {
                         <td className={`${tdCls} font-mono text-xs`}>{c.display}</td>
                         <td className={`${tdCls} text-xs text-ink-2`}>
                           {c.min_severity} and above{c.environments.length ? ` in ${c.environments.join(', ')}` : ''}: {eventsOf(c)}
+                          {scopeOf(c) && <span className="block">{scopeOf(c)}</span>}
                         </td>
                         <td className={tdCls}>
                           {c.enabled ? <Badge tone="good">enabled</Badge> : <Badge>disabled</Badge>}

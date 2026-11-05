@@ -9,12 +9,19 @@
 # Requirements: Docker with Compose v2, Node.js, and the Playwright Chromium
 # browser (cd tests/e2e && npm ci && npx playwright install chromium).
 # Set LOCKLENS_E2E_KEEP=1 to keep the stack for debugging.
+# Set LOCKLENS_E2E_OBSERVABILITY=1 to add Prometheus and Alertmanager
+# (deploy/compose.observability.yaml); LOCKLENS_E2E_SCREENSHOTS=<dir> makes
+# browser/screenshots.spec.ts write the documentation screenshots there:
+#   LOCKLENS_E2E_OBSERVABILITY=1 LOCKLENS_E2E_SCREENSHOTS=$PWD/docs/images ./scripts/e2e.sh screenshots.spec.ts
 # Reports go to test-results/e2e-report, traces to test-results/e2e-artifacts.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 COMPOSE_FILES="$ROOT/deploy/compose.yaml,$ROOT/deploy/compose.lab.yaml"
+if [[ "${LOCKLENS_E2E_OBSERVABILITY:-0}" == "1" ]]; then
+  COMPOSE_FILES="$COMPOSE_FILES,$ROOT/deploy/compose.observability.yaml"
+fi
 ENV_FILE="$ROOT/deploy/lab.env"
 project="locklens-e2e-$(date +%s)-$$"
 
@@ -23,8 +30,14 @@ free_port() {
 }
 
 export LOCKLENS_HTTP_PORT=$(free_port) LOCKLENS_STORE_PORT=$(free_port) LOCKLENS_PG_PORT=$(free_port) LOCKLENS_STANDBY_PORT=$(free_port) \
-  LOCKLENS_STANDBY2_PORT=$(free_port) LOCKLENS_BACKEND_PORT=$(free_port)
-dc() { docker compose -p "$project" -f "$ROOT/deploy/compose.yaml" -f "$ROOT/deploy/compose.lab.yaml" --env-file "$ENV_FILE" "$@"; }
+  LOCKLENS_STANDBY2_PORT=$(free_port) LOCKLENS_BACKEND_PORT=$(free_port) \
+  LOCKLENS_PROMETHEUS_PORT=$(free_port) LOCKLENS_ALERTMANAGER_PORT=$(free_port)
+dc() {
+  local files=()
+  IFS=, read -ra list <<<"$COMPOSE_FILES"
+  for f in "${list[@]}"; do files+=(-f "$f"); done
+  docker compose -p "$project" "${files[@]}" --env-file "$ENV_FILE" "$@"
+}
 
 cleanup() {
   local status=$?
@@ -35,7 +48,7 @@ cleanup() {
   fi
   if [[ "${LOCKLENS_E2E_KEEP:-0}" == "1" ]]; then
     echo "Kept stack $project at http://127.0.0.1:$LOCKLENS_HTTP_PORT; remove it with:"
-    echo "  docker compose -p $project -f deploy/compose.yaml -f deploy/compose.lab.yaml --env-file deploy/lab.env --profile lab down -v --remove-orphans"
+    echo "  docker compose -p $project -f ${COMPOSE_FILES//,/ -f } --env-file deploy/lab.env --profile lab down -v --remove-orphans"
   else
     dc --profile lab down -v --remove-orphans >/dev/null 2>&1 || true
   fi
@@ -54,4 +67,6 @@ LOCKLENS_E2E_COMPOSE_PROJECT="$project" \
 LOCKLENS_E2E_COMPOSE_FILES="$COMPOSE_FILES" \
 LOCKLENS_E2E_COMPOSE_ENV_FILE="$ENV_FILE" \
 LOCKLENS_E2E_ADMIN_PASSWORD="locklens-lab-admin" \
+LOCKLENS_E2E_PROMETHEUS_URL="http://127.0.0.1:$LOCKLENS_PROMETHEUS_PORT" \
+LOCKLENS_E2E_ALERTMANAGER_URL="http://127.0.0.1:$LOCKLENS_ALERTMANAGER_PORT" \
   npx playwright test "$@"

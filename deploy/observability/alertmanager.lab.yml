@@ -1,0 +1,10 @@
+# Alertmanager of the lab: alerts from Prometheus and from LockLens'
+# "alertmanager" channel are kept and shown in its UI; nothing is sent.
+route:
+  receiver: lab
+  group_by: [alertname, target, instance]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+receivers:
+  - name: lab

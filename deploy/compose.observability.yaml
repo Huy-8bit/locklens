@@ -1,0 +1,33 @@
+# Prometheus and Alertmanager next to the lab, to try LockLens' exports and
+# its Alertmanager channel:
+#
+#   docker compose -f deploy/compose.yaml -f deploy/compose.lab.yaml -f deploy/compose.observability.yaml \
+#     --env-file deploy/lab.env up -d
+#
+# Prometheus: http://127.0.0.1:9090, Alertmanager: http://127.0.0.1:9093.
+services:
+  backend:
+    environment:
+      # Fake lab token, also in observability/prometheus.lab.yml.
+      LOCKLENS_BOOTSTRAP_METRICS_TOKEN: llk_lab_metrics_token_not_a_real_secret_0001
+      LOCKLENS_EXPORT_TOP_STATEMENTS: "5"
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d", "--web.enable-lifecycle"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - ./observability/prometheus.lab.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/locklens-rules.yml:/etc/prometheus/locklens-rules.yml:ro
+    ports:
+      - "127.0.0.1:${LOCKLENS_PROMETHEUS_PORT:-9090}:9090"
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    volumes:
+      - ./observability/alertmanager.lab.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "127.0.0.1:${LOCKLENS_ALERTMANAGER_PORT:-9093}:9093"

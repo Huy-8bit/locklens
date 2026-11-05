@@ -40,7 +40,7 @@ The backend answers `/api/`, the operational endpoints below, and `404` (with a
 hint) for anything else: the web UI is served by the frontend image, which
 proxies `/api/` to the backend ([deployment.md](deployment.md)).
 
-## Operational endpoints (no authentication)
+## Operational endpoints (no session)
 
 | Method and path | Description |
 | --- | --- |
@@ -56,6 +56,12 @@ Series: `locklens_collect_duration_seconds{collector}`,
 `locklens_store_write_errors_total`, `locklens_store_dropped_batches_total`,
 `locklens_incidents_opened_total`, `locklens_incidents_open`,
 `locklens_http_requests_total{route,code}`, `locklens_sse_clients`.
+
+## Exports
+
+| Method and path | Description |
+| --- | --- |
+| `GET /metrics/targets` | The monitored instances' metrics in the Prometheus text format, with `Authorization: Bearer <token of scope metrics>`; see [integrations.md](integrations.md#metrics). Each server of a cluster serves the instances it collects. |
 
 ## Authentication
 
@@ -194,7 +200,7 @@ See [query-intelligence.md](query-intelligence.md) for baselines, rules, impact,
 | `GET /api/v1/changes` | Changes in a period (`range`/`from`/`to`, 24h default), the newest first: `target_id` (repeatable or comma-separated; changes for every instance are always included), `kind`, `limit` (≤ 1,000). Each has `id`, `target_id` (null: every instance), `at`, `kind` (`settings`, `restart`, `promotion`, `demotion`, `upgrade`, `schema`, `deploy`, `migration`, `config`, `note`), `source` (`detected`, `api`, `user`), `title`, `details` (for detected ones `detected_after`/`detected_by` and the list of `changes`), `created_by`. |
 | `POST /api/v1/changes` | Report a change: `{"kind": "deploy" \| "migration" \| "config" \| "note", "title", "target_id" (optional; null for every instance), "at" (optional, within 30 days), "details" (≤ 16 KiB)}`. With a session (operators and administrators, CSRF header) or with `Authorization: Bearer <token>` of scope `events` (no session or CSRF; a token limited to an instance reports for that instance only). `201` with the change. |
 | `DELETE /api/v1/changes/{id}` | Delete a reported change (administrators); detected changes cannot be deleted. |
-| `GET /api/v1/tokens` · `POST` · `DELETE /{id}` | API tokens (administrators). Create with `{"name", "scope": "events" \| "ingest", "target_id"}` (`ingest` needs an instance); the response holds the `secret` once (`llk_…`), only its hash is kept. `DELETE` revokes. |
+| `GET /api/v1/tokens` · `POST` · `DELETE /{id}` | API tokens (administrators). Create with `{"name", "scope": "events" \| "ingest" \| "metrics" \| "read", "target_id"}` (`ingest` needs an instance; `read` may not have one; a `metrics` token with an instance exports only it); the response holds the `secret` once (`llk_…`), only its hash is kept. `DELETE` revokes. A `read` token may call every GET endpoint of the API as a viewer. |
 
 ## Server logs
 
@@ -210,7 +216,7 @@ See [query-intelligence.md](query-intelligence.md) for baselines, rules, impact,
 | --- | --- |
 | `GET /api/v1/incidents` | List, newest first. Filters: `target`, `state` (`open`/`resolved`), `rule`, `range`/`from`/`to`; paging. |
 | `GET /api/v1/incidents/{id}` | Incident and linked findings. |
-| `GET /api/v1/notifications/channels` · `POST` · `PUT /{id}` · `DELETE /{id}` | Notification channels (administrators). Destinations are write-only: requests may carry `destination`, responses only `display`. |
+| `GET /api/v1/notifications/channels` · `POST` · `PUT /{id}` · `DELETE /{id}` | Notification channels (administrators): `kind` (`slack`, `webhook`, `email`, `alertmanager`), `min_severity`, `environments`, `rule_ids`, `target_ids`, `delay_minutes` (an escalation tier), events, `reminder_minutes`. Destinations are write-only: requests may carry `destination` (`url`, `secret`, `token` for Alertmanager, SMTP fields), responses only `display`. |
 | `POST /api/v1/notifications/channels/{id}/test` | Send a test message now; returns the delivery (`sent` or `failed` with its error). |
 | `GET /api/v1/notifications/deliveries` | Recent deliveries; `incident` filters one incident (any role), without it administrators only. |
 | `GET /api/v1/notifications/silences` · `POST` · `DELETE /{id}` | Current silences (`all=true` includes ended ones); create (`target_id`, `rule_id`, `minutes` or `ends_at`, `reason`) and end silences (operators and administrators). |
@@ -228,8 +234,11 @@ See [incidents.md](incidents.md) for the format.
 | Method and path | Description |
 | --- | --- |
 | `POST /api/v1/snapshots/analyze` | Upload a CLI snapshot file (`locklens snapshot save`, ≤ 10 MiB) and get the rendered report. Nothing is stored. |
-| `GET /api/v1/settings/rules` | Current rule thresholds, defaults, and descriptions. |
-| `PUT /api/v1/settings/rules` | Replace thresholds (validated ranges). |
+| `GET /api/v1/settings/rules` | Global thresholds and their defaults, every rule (`rules`), their `default_modes` and global `modes`, the `overrides` (`environments` by name, `targets` by ID: `{modes, thresholds}`), and `threshold_keys`. |
+| `PUT /api/v1/settings/rules` | Replace the global thresholds (validated ranges). |
+| `PUT /api/v1/settings/alerting` | Replace the rule modes and overrides: `{"modes": {"<rule>": "incident" \| "finding" \| "off"}, "overrides": {"environments": {...}, "targets": {"<id>": {"modes": {...}, "thresholds": {"<name>": value}}}}}`. `422` names what is invalid. |
+| `GET /api/v1/targets/{id}/policy` | The thresholds and modes that apply to an instance, with `sources` naming the values that come from its environment's or its own override. |
+| `GET /api/v1/notifications/maintenance` · `POST` · `PUT /{id}` · `DELETE /{id}` | Maintenance windows (changes by administrators): `name`, `enabled`, `kind` (`once` with `starts_at`/`ends_at`; `weekly` with `weekdays` 0–6, `start_time` HH:MM, `timezone`, `duration_minutes`; `after_deploy` with `duration_minutes`), and `environments`, `target_ids`, `rule_ids` (empty: all). |
 | `GET /api/v1/storage` | Monitoring store table sizes and row estimates. |
 | `GET /api/v1/events` | Server-sent events: `target.collected`, `target.status`, `incident.updated`, `recommendation.updated`, `change.created` with `{"target_id"}` or `{"incident_id"}` payloads. The UI uses them to refresh; they carry no data themselves. With several servers, events reach the browsers of every server. |
 

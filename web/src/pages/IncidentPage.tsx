@@ -96,7 +96,8 @@ export default function IncidentPage() {
                     {parts.blocking.length > 0 && <BlockingCard events={parts.blocking} />}
                     {parts.sessions && <SessionsCard event={parts.sessions} rootPid={rootPid} />}
                     {parts.load && <LoadSummaryCard event={parts.load} refs={parts.refs} targetId={i.target_id} />}
-                    {i.target_id && (
+                    {/* An unreachable instance has no load to show while it is down. */}
+                    {i.target_id && i.rule_id !== 'target.unreachable' && (
                       <LoadPanel
                         targetId={i.target_id}
                         range={absolute(from - 30 * 60_000, to + 10 * 60_000)}

@@ -137,6 +137,18 @@ down: ## Stop LockLens (its data is kept)
 lab-up: ## Start LockLens with the lab: primary, three standbys, workload, node_exporter (http://127.0.0.1:8080)
 	$(LAB_COMPOSE) up -d --build --wait --wait-timeout 300
 
+.PHONY: lab-observability
+lab-observability: ## Same as lab-up, plus Prometheus (:9090) and Alertmanager (:9093) scraping and receiving from LockLens
+	$(LAB_COMPOSE) -f deploy/compose.observability.yaml up -d --build --wait --wait-timeout 300
+
+.PHONY: check-observability
+check-observability: ## Validate the Prometheus rules and configuration and the Alertmanager configuration (Docker)
+	docker run --rm -v "$(CURDIR)/deploy/observability:/w:ro" --entrypoint promtool prom/prometheus:v3.5.0 check rules /w/locklens-rules.yml
+	docker run --rm -v "$(CURDIR)/deploy/observability/prometheus.lab.yml:/etc/prometheus/prometheus.yml:ro" \
+		-v "$(CURDIR)/deploy/observability/locklens-rules.yml:/etc/prometheus/locklens-rules.yml:ro" \
+		--entrypoint promtool prom/prometheus:v3.5.0 check config /etc/prometheus/prometheus.yml
+	docker run --rm -v "$(CURDIR)/deploy/observability/alertmanager.lab.yml:/a.yml:ro" --entrypoint amtool prom/alertmanager:v0.28.1 check-config /a.yml
+
 .PHONY: lab-up-host
 lab-up-host: ## Same as lab-up, plus a node_exporter that reads the real host (/ mounted read-only)
 	$(LAB_COMPOSE) --profile host up -d --build --wait --wait-timeout 300

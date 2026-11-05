@@ -10,6 +10,7 @@ import (
 
 	"github.com/locklens/locklens/internal/domain/live"
 	"github.com/locklens/locklens/internal/domain/observe"
+	"github.com/locklens/locklens/internal/domain/rules"
 	"github.com/locklens/locklens/internal/lib/hostmetrics"
 	"github.com/locklens/locklens/internal/repository"
 	"github.com/locklens/locklens/internal/targetdb"
@@ -87,6 +88,11 @@ type worker struct {
 
 	lastSnapshotStored time.Time
 	lastVacuumStored   time.Time
+
+	// down tracks failed connections and activity collections since the
+	// last successful activity collection (target.unreachable).
+	down        rules.Reachability
+	lastSuccess *time.Time
 
 	jobs            []*job
 	connectFailures int
@@ -272,8 +278,12 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 		j.status.ConsecutiveFailures++
 		w.m.metrics.CollectTotal.Inc(j.name, "error")
 		w.m.log.Warn("collector failed", "target_id", w.target.ID, "collector", j.name, "error", msg)
-		if isConnectionError(err) {
+		lost := isConnectionError(err)
+		if lost {
 			w.disconnect(err)
+		}
+		if j.name == CollectorActivity {
+			w.failed(ctx, !lost, msg)
 		}
 	} else {
 		j.status.LastError = nil
@@ -298,6 +308,7 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 	}
 
 	if j.name == CollectorActivity && err == nil {
+		w.down, w.lastSuccess = rules.Reachability{}, &now
 		w.m.metrics.CollectFreshness.Set(float64(now.Unix()), strconv.FormatInt(w.target.ID, 10))
 		if w.m.recorder != nil {
 			actx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -414,4 +425,19 @@ func (w *worker) jobByName(name string) *job {
 		}
 	}
 	return nil
+}
+
+// failed records a failed connection or activity collection and tells the
+// recorder, which reports the target unreachable once the failures last.
+func (w *worker) failed(ctx context.Context, connected bool, msg string) {
+	if w.down.FailingSince.IsZero() {
+		w.down.FailingSince = time.Now().UTC()
+	}
+	w.down.Attempts++
+	w.down.Connected, w.down.Error, w.down.LastSuccess = connected, msg, w.lastSuccess
+	if w.m.recorder != nil {
+		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		w.m.recorder.Unreachable(rctx, w.target, w.down)
+	}
 }

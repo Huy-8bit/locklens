@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/locklens/locklens/internal/lib/textsafe"
@@ -62,8 +63,9 @@ func (s *service) Run(ctx context.Context) {
 	}
 }
 
-// RunReminders queues the open unacknowledged incidents every minute, so
-// due reminders are sent, until ctx ends. With several servers, one runs it.
+// RunReminders queues the open incidents every minute, so due reminders,
+// escalation tiers, and Alertmanager refreshes are sent, until ctx ends.
+// With several servers, one runs it.
 func (s *service) RunReminders(ctx context.Context) {
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
@@ -73,7 +75,7 @@ func (s *service) RunReminders(ctx context.Context) {
 			return
 		case <-tick.C:
 		}
-		ins, err := s.store.OpenUnacknowledgedIncidents(ctx)
+		ins, err := s.store.OpenIncidents(ctx)
 		if err != nil {
 			s.log.Warn("notification reminders: list incidents failed", "error", err.Error())
 			continue
@@ -115,6 +117,7 @@ func (s *service) process(ctx context.Context, id int64) {
 	now := s.now().UTC()
 	var observed []string
 	var silence *repository.Silence
+	var window *repository.MaintenanceWindow
 	var silenceChecked bool
 	for _, ch := range channels {
 		var mine []repository.Delivery
@@ -125,6 +128,9 @@ func (s *service) process(ctx context.Context, id int64) {
 		}
 		h := historyOf(mine)
 		event := decide(in, env, ch, h, now)
+		if event == "" && s.refreshDue(ch, in, h, now) {
+			event = eventRefresh
+		}
 		if event == "" || h.skip(event, in.Severity, now) {
 			continue
 		}
@@ -134,19 +140,88 @@ func (s *service) process(ctx context.Context, id int64) {
 				s.log.Warn("notification: check silences failed", "incident_id", id, "error", err.Error())
 				return
 			}
+			windows, err := s.store.MaintenanceWindows(ctx)
+			if err == nil {
+				window, err = s.inMaintenance(ctx, windows, in, env, now)
+			}
+			if err != nil {
+				s.log.Warn("notification: check maintenance windows failed", "incident_id", id, "error", err.Error())
+				return
+			}
 		}
-		if silence != nil {
-			// A silenced event is recorded once; reminders are simply skipped.
-			if event != EventReminder {
-				s.record(ctx, ch.ID, &in.ID, event, in.Severity, "silenced", 0, nil)
+		if silence != nil || window != nil {
+			// A silenced event is recorded once; reminders and refreshes
+			// are simply skipped.
+			if event != EventReminder && event != eventRefresh {
+				var why *string
+				if window != nil {
+					msg := "maintenance window: " + window.Name
+					why = &msg
+				}
+				s.record(ctx, ch.ID, &in.ID, event, in.Severity, "silenced", 0, why)
 			}
 			continue
 		}
 		if observed == nil {
 			observed = s.observed(ctx, in.ID)
 		}
-		s.deliver(ctx, ch, &in.ID, event, buildMessage(event, in, env, observed, s.publicURL, now))
+		if event == eventRefresh {
+			s.refresh(ctx, ch, in, buildMessage(EventOpened, in, env, observed, s.publicURL, now), now)
+			continue
+		}
+		m := buildMessage(event, in, env, observed, s.publicURL, now)
+		if ch.DelaySeconds > 0 && event == EventOpened {
+			m.Note = fmt.Sprintf("not acknowledged for %s", (time.Duration(ch.DelaySeconds) * time.Second).String())
+		}
+		if s.deliver(ctx, ch, &in.ID, event, m).Status == "sent" && ch.Kind == KindAlertmanager {
+			s.markRefreshed(ch.ID, in.ID, now)
+		}
 	}
+}
+
+// eventRefresh re-posts an open incident to Alertmanager, which would
+// otherwise resolve it after its hold time; refreshes are not recorded as
+// deliveries.
+const eventRefresh = "refresh"
+
+// alertmanagerRefresh is how often an open incident is re-posted.
+const alertmanagerRefresh = 2 * time.Minute
+
+// refreshDue reports whether an open incident Alertmanager was told about
+// should be posted again.
+func (s *service) refreshDue(ch repository.NotificationChannel, in repository.Incident, h history, now time.Time) bool {
+	if ch.Kind != KindAlertmanager || in.State != "open" || !h.opened || h.resolved {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	last, ok := s.refreshed[[2]int64{ch.ID, in.ID}]
+	if !ok {
+		last = h.lastSent
+	}
+	return now.Sub(last) >= alertmanagerRefresh
+}
+
+func (s *service) markRefreshed(channelID, incidentID int64, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refreshed[[2]int64{channelID, incidentID}] = now
+}
+
+// refresh re-posts an open incident to an Alertmanager channel; only a
+// failure is recorded.
+func (s *service) refresh(ctx context.Context, ch repository.NotificationChannel, in repository.Incident, m Message, now time.Time) {
+	d, err := s.destination(ch)
+	if err == nil {
+		sctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		_, err = s.send.send(sctx, ch.Kind, d, m)
+		cancel()
+	}
+	if err != nil {
+		s.log.Warn("alertmanager refresh failed", "channel", ch.Name, "incident_id", in.ID, "error", err.Error())
+		return
+	}
+	s.markRefreshed(ch.ID, in.ID, now)
 }
 
 // observed returns the observations of the incident's findings (facts, not

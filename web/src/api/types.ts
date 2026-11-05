@@ -745,7 +745,7 @@ export interface StoreTimescale {
 
 export interface StoreTable { table: string; bytes: number; estimated_rows: number; compressed_before_bytes?: number; compressed_after_bytes?: number }
 
-export type ChannelKind = 'webhook' | 'slack' | 'email'
+export type ChannelKind = 'webhook' | 'slack' | 'email' | 'alertmanager'
 
 export interface NotificationChannel {
   id: number
@@ -758,6 +758,11 @@ export interface NotificationChannel {
   on_escalate: boolean
   on_resolve: boolean
   reminder_seconds: number
+  /** Only these rules and instances (empty: all). */
+  rule_ids: string[]
+  target_ids: number[]
+  /** An escalation tier: only incidents open and unacknowledged this long. */
+  delay_seconds: number
   display: string
   created_at: string
   updated_at: string
@@ -766,6 +771,8 @@ export interface NotificationChannel {
 export interface ChannelDestination {
   url?: string
   secret?: string
+  /** Bearer token for Alertmanager. */
+  token?: string
   smtp_host?: string
   smtp_port?: number
   tls?: 'tls' | 'starttls' | 'none'
@@ -785,6 +792,9 @@ export interface ChannelInput {
   on_escalate: boolean
   on_resolve: boolean
   reminder_minutes: number
+  rule_ids: string[]
+  target_ids: number[]
+  delay_minutes: number
   /** Omit on update to keep the stored destination. */
   destination?: ChannelDestination
 }
@@ -1022,7 +1032,7 @@ export interface ChangeReport {
 export interface ApiToken {
   id: number
   name: string
-  scope: 'events' | 'ingest'
+  scope: 'events' | 'ingest' | 'metrics' | 'read'
   target_id: number | null
   prefix: string
   created_by: string
@@ -1095,3 +1105,50 @@ export interface LogSummary {
   agents: LogAgent[]
   settings: LogSettingCheck[]
 }
+
+export type RuleMode = 'incident' | 'finding' | 'off'
+
+/** Rule modes and threshold values (by JSON name) that override the global ones. */
+export interface RuleOverride {
+  modes?: Record<string, RuleMode>
+  thresholds?: Record<string, number>
+}
+
+export interface RuleSettings {
+  thresholds: Thresholds
+  defaults: Thresholds
+  rules: string[]
+  default_modes: Record<string, RuleMode>
+  modes: Record<string, RuleMode>
+  overrides: { environments: Record<string, RuleOverride>; targets: Record<string, RuleOverride> }
+  threshold_keys: string[]
+}
+
+/** The thresholds and modes that apply to one instance; sources name where non-global values come from. */
+export interface RulePolicy {
+  thresholds: Thresholds
+  modes: Record<string, RuleMode>
+  sources: Record<string, 'environment' | 'instance'>
+}
+
+export interface MaintenanceWindow {
+  id: number
+  name: string
+  enabled: boolean
+  kind: 'once' | 'weekly' | 'after_deploy'
+  environments: string[]
+  target_ids: number[]
+  rule_ids: string[]
+  starts_at: string | null
+  ends_at: string | null
+  /** 0 = Sunday … 6 = Saturday. */
+  weekdays: number[]
+  start_time: string
+  duration_minutes: number
+  timezone: string
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export type MaintenanceInput = Omit<MaintenanceWindow, 'id' | 'created_by' | 'created_at' | 'updated_at'>

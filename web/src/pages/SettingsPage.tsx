@@ -6,8 +6,10 @@ import type { Permission, Target } from '../api/types'
 import { PageHeader } from '../components/Shell'
 import { UsersCard } from '../components/UsersCard'
 import { ApiTokensCard } from '../components/ChangesCard'
+import { MaintenanceCard } from '../components/MaintenanceCard'
 import { NotificationsCard, SilencesCard } from '../components/NotificationsCard'
 import { useCan } from '../auth'
+import { AlertingCard } from '../components/AlertingCard'
 import { ThresholdsForm } from '../components/ThresholdsForm'
 import { tableCls, tdCls, tdNum, Th, trCls } from '../components/Table'
 import { Badge, Button, Card, Confirm, cx, Empty, ErrorBox, Load, StateBadge } from '../components/ui'
@@ -258,34 +260,36 @@ const SECTIONS: Section[] = [
   {
     id: 'notifications',
     label: 'Notifications',
-    description: 'Where incidents are sent, and silences for maintenance.',
+    description: 'Where incidents are sent, escalation tiers, silences, and maintenance windows.',
     icon: <Bell />,
     perm: 'settings.manage',
     render: () => (
       <div className="space-y-4">
         <NotificationsCard />
         <SilencesCard />
+        <MaintenanceCard />
       </div>
     ),
   },
   {
     id: 'rules',
     label: 'Alert rules',
-    description: 'When a rule reports a finding or opens an incident.',
+    description: 'Which rules open incidents, their thresholds, and overrides per environment and instance.',
     icon: <SlidersHorizontal />,
     perm: 'settings.manage',
     render: () => (
-      <Card>
-        <div className="pt-5">
+      <div className="space-y-4">
+        <AlertingCard />
+        <Card title="Global thresholds" subtitle="The values every instance uses unless an override changes them.">
           <ThresholdsForm />
-        </div>
-      </Card>
+        </Card>
+      </div>
     ),
   },
   {
     id: 'tokens',
     label: 'API tokens',
-    description: 'Tokens for deploy pipelines and log agents.',
+    description: 'Tokens for Prometheus, deploy pipelines, log agents, and scripts.',
     icon: <KeyRound />,
     perm: 'settings.manage',
     render: () => <ApiTokensCard />,

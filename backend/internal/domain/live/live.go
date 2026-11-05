@@ -26,8 +26,12 @@ type View struct {
 	HostError     *string
 	Statements    []observe.StatementsCollection
 	// Load holds the last finished active session sampling buckets.
-	Load         []observe.LoadBucket
-	Points       map[string][]TimedValue
+	Load   []observe.LoadBucket
+	Points map[string][]TimedValue
+	// Totals are running sums of the rate (.per_s) and delta (.delta)
+	// metrics since this server started collecting the target, keyed like
+	// Points.
+	Totals       map[string]float64
 	Collectors   map[string]CollectorStatus
 	Connected    bool
 	ConnectError *string

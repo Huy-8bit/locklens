@@ -14,7 +14,7 @@ import (
 )
 
 func (w *worker) collectActivity(ctx context.Context) error {
-	longTx := w.m.settings.LongTransactionThreshold()
+	longTx := w.m.settings.LongTransactionThreshold(w.target)
 	snap, err := w.obs.Collect(ctx, targetdb.Options{IncludeQuery: w.target.QueryTextEnabled, QueryMaxLength: 2000, MinTxAge: longTx})
 	if err != nil {
 		return err

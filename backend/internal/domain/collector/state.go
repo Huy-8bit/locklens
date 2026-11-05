@@ -1,6 +1,8 @@
 package collector
 
 import (
+	"maps"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,10 +34,14 @@ type State struct {
 	statements    []observe.StatementsCollection
 	load          []observe.LoadBucket
 	points        map[string][]live.TimedValue
-	collectors    map[string]live.CollectorStatus
-	connected     bool
-	connectError  *string
-	connectAt     *time.Time
+	// totals are running sums of the rate (.per_s) and delta (.delta)
+	// metrics since this server started collecting the target: counters
+	// for exporters, which compute rates themselves.
+	totals       map[string]float64
+	collectors   map[string]live.CollectorStatus
+	connected    bool
+	connectError *string
+	connectAt    *time.Time
 
 	burstUntil  time.Time
 	burstReason string
@@ -97,7 +103,7 @@ func (s *State) burst(now time.Time) (live.Burst, bool) {
 }
 
 func newState() *State {
-	return &State{points: map[string][]live.TimedValue{}, collectors: map[string]live.CollectorStatus{}, wake: make(chan struct{}, 1)}
+	return &State{points: map[string][]live.TimedValue{}, totals: map[string]float64{}, collectors: map[string]live.CollectorStatus{}, wake: make(chan struct{}, 1)}
 }
 
 // Snapshot returns a consistent copy.
@@ -115,7 +121,7 @@ func (s *State) Snapshot() live.View {
 	return live.View{
 		Capabilities: s.caps, Activity: s.activity, Report: s.report, Replication: s.replication,
 		Tables: s.tables, TableActivity: s.tableActivity, Host: s.host, HostError: s.hostError, Statements: s.statements, Load: s.load,
-		Points: pts, Collectors: colls, Connected: s.connected, ConnectError: s.connectError, ConnectAt: s.connectAt,
+		Points: pts, Totals: maps.Clone(s.totals), Collectors: colls, Connected: s.connected, ConnectError: s.connectError, ConnectAt: s.connectAt,
 		Burst: s.burstView(),
 	}
 }
@@ -136,12 +142,28 @@ func (s *State) addPoints(at time.Time, points []observe.Point) {
 		if p.Label != "" {
 			key += "{" + p.Label + "}"
 		}
+		s.accumulate(key, p)
 		h := append(s.points[key], live.TimedValue{At: at, Value: p.Value})
 		if len(h) > maxPointHistory {
 			h = h[len(h)-maxPointHistory:]
 		}
 		// Copy-on-write so views taken earlier stay unchanged.
 		s.points[key] = append([]live.TimedValue(nil), h...)
+	}
+}
+
+// accumulate adds a rate or delta point to its running total; the caller
+// holds s.mu. Unknown values add nothing (the total then undercounts, as a
+// missed collection does).
+func (s *State) accumulate(key string, p observe.Point) {
+	if p.Value == nil {
+		return
+	}
+	switch {
+	case strings.HasSuffix(p.Metric, ".delta"):
+		s.totals[key] += *p.Value
+	case strings.HasSuffix(p.Metric, ".per_s") && p.IntervalSeconds != nil:
+		s.totals[key] += *p.Value * *p.IntervalSeconds
 	}
 }
 

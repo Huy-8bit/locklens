@@ -86,6 +86,9 @@ type Manager interface {
 	// the target, otherwise the one its collecting server published (when it is
 	// recent), otherwise the last one this server had.
 	View(ctx context.Context, id int64) (live.View, bool)
+	// Collecting returns the live views of the targets this server
+	// collects (in a cluster, each target is collected by one server).
+	Collecting() map[int64]live.View
 	// Run synchronises workers with the stored targets until ctx is cancelled,
 	// then stops every worker.
 	Run(ctx context.Context)
@@ -348,6 +351,18 @@ func (m *manager) stopAll() {
 		delete(m.workers, id)
 	}
 	m.metrics.ActiveTargets.Set(0)
+}
+
+func (m *manager) Collecting() map[int64]live.View {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[int64]live.View, len(m.workers))
+	for id := range m.workers {
+		if s := m.states[id]; s != nil {
+			out[id] = s.Snapshot()
+		}
+	}
+	return out
 }
 
 // publishLive publishes the live views of the targets this server collects

@@ -81,12 +81,18 @@ func decide(in repository.Incident, env string, ch repository.NotificationChanne
 	if !ch.Enabled || (len(ch.Environments) > 0 && !slices.Contains(ch.Environments, env)) {
 		return ""
 	}
+	if len(ch.RuleIDs) > 0 && !slices.Contains(ch.RuleIDs, in.RuleID) {
+		return ""
+	}
+	if len(ch.TargetIDs) > 0 && (in.TargetID == nil || !slices.Contains(ch.TargetIDs, *in.TargetID)) {
+		return ""
+	}
 	qualifies := rank(in.Severity) >= rank(ch.MinSeverity)
 	cycleOpen := h.opened && !h.resolved
 	switch in.State {
 	case "open":
 		switch {
-		case !cycleOpen && qualifies && ch.OnOpen:
+		case !cycleOpen && qualifies && ch.OnOpen && !waiting(in, ch, now):
 			return EventOpened
 		case cycleOpen && rank(in.Severity) > rank(h.maxSeverity) && ch.OnEscalate:
 			return EventEscalated
@@ -114,4 +120,13 @@ func (h history) skip(event, severity string, now time.Time) bool {
 		return true
 	}
 	return false
+}
+
+// waiting reports whether an escalation tier still waits: the incident has
+// not yet been open and unacknowledged for the channel's delay.
+func waiting(in repository.Incident, ch repository.NotificationChannel, now time.Time) bool {
+	if ch.DelaySeconds <= 0 {
+		return false
+	}
+	return in.AcknowledgedAt != nil || now.Sub(in.OpenedAt) < time.Duration(ch.DelaySeconds)*time.Second
 }

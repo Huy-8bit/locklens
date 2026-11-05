@@ -22,6 +22,12 @@ export interface ThresholdGroup {
 
 export const THRESHOLD_GROUPS: ThresholdGroup[] = [
   {
+    id: 'availability',
+    title: 'Availability',
+    description: 'Failed connections to the instance, or failed activity collections.',
+    fields: [{ key: 'target_down_seconds', label: 'Unreachable after', unit: 'seconds', help: 'Failures must last this long (at least 15 s) before the instance is reported unreachable.' }],
+  },
+  {
     id: 'blocking',
     title: 'Blocking',
     description: 'Sessions waiting for locks held by another session.',
@@ -178,4 +184,20 @@ export const UNIT_SUFFIX: Record<ThresholdUnit, string> = {
 export function ungrouped(keys: string[]): string[] {
   const known = new Set(THRESHOLD_GROUPS.flatMap((g) => g.fields.map((f) => f.key)))
   return keys.filter((k) => !known.has(k)).sort()
+}
+
+/** A threshold's field by its key (with a generic one for unknown keys). */
+export function thresholdField(key: string): ThresholdField {
+  for (const g of THRESHOLD_GROUPS) {
+    const f = g.fields.find((x) => x.key === key)
+    if (f) return f
+  }
+  return { key, label: key.replace(/_/g, ' '), unit: 'count' }
+}
+
+/** A threshold's label with its group, for lists outside the grouped form. */
+export function thresholdLabel(key: string): string {
+  const g = THRESHOLD_GROUPS.find((x) => x.fields.some((f) => f.key === key))
+  const f = thresholdField(key)
+  return g ? `${g.title}: ${f.label}` : f.label
 }

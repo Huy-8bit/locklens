@@ -111,7 +111,8 @@ backend/
     │   ├── changes/              change timeline: diffs of settings, server facts, schema; reports
     │   ├── logs/                 log event classification, redaction, ingest validation, summaries
     │   ├── cluster/              several servers: leases, singleton jobs, message bus
-    │   ├── tokens/               API tokens for machines (pipelines, log agents)
+    │   ├── tokens/               API tokens for machines (Prometheus, pipelines, log agents, scripts)
+    │   ├── telemetry/            exports for other monitoring systems: Prometheus format, OTLP
     │   └── …                     auth, targets, onboard, workspace, notify, baseline, rollup, retention, settings, export, plans, report, graph
     ├── repository/               monitoring store: executes SQL and scans rows (one file per area)
     │   └── queries/              the store's SQL: <area>/<name>.sql embedded by <area>.go; builders.go fills templates from fixed lists
@@ -180,7 +181,8 @@ back into it, so no package depends on another in both directions.
 | `internal/domain/changes` | The change timeline: diffs of settings, restarts, promotions, upgrades, and schema; reported deploys |
 | `internal/domain/logs` | Classification of server log records into events, redaction, ingest validation, summaries |
 | `internal/domain/cluster` | Several servers sharing a store: heartbeats, target leases, singleton jobs, LISTEN/NOTIFY bus |
-| `internal/domain/tokens` | API tokens (hashed) with a scope and an optional instance |
+| `internal/domain/tokens` | API tokens (hashed) with a scope (events, ingest, metrics, read) and an optional instance |
+| `internal/domain/telemetry` | Exports of the instances' metrics: Prometheus text format and OTLP push, from the live views of the instances this server collects |
 | `internal/domain/incidents` | Incident recorder: pre-trigger buffer, lifecycle, limits, adoption of a target's open incidents |
 | `internal/domain/auth` | bcrypt passwords, server-side sessions, CSRF and Origin checks, login rate limiting |
 | `internal/domain/targets`, `internal/domain/onboard` | Target validation and encryption; adding an instance from one connection string |

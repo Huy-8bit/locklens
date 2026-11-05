@@ -21,7 +21,7 @@ export default function AlertsPage() {
             {(d) =>
               d.incidents.length === 0 ? (
                 <div className="px-4 pb-4">
-                  <Empty title={state === 'open' ? 'No open incidents' : 'No incidents recorded'}>Incidents open for sustained blocking, connection pressure, slower queries, or WAL retained by a slot.</Empty>
+                  <Empty title={state === 'open' ? 'No open incidents' : 'No incidents recorded'}>Incidents open when a rule in incident mode fires: an unreachable instance, sustained blocking, connection pressure, slower queries, and more. Settings → Alert rules decides which.</Empty>
                 </div>
               ) : (
                 <div className="overflow-x-auto">

@@ -1,0 +1,95 @@
+# Prometheus alerting rules for LockLens and the instances it monitors.
+#
+# Load them with rule_files in prometheus.yml. Scrape LockLens itself at
+# /metrics (job "locklens") and the instances at /metrics/targets with an API
+# token of scope "metrics" (job "locklens-targets"); see
+# docs/integrations.md. Thresholds here are starting points: LockLens' own
+# rules (incidents) apply its per-environment and per-instance settings,
+# these apply one value everywhere.
+groups:
+  - name: locklens-self
+    rules:
+      - alert: LockLensDown
+        expr: up{job="locklens"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "LockLens server {{ $labels.instance }} is not answering"
+          description: "Prometheus cannot scrape LockLens; nothing is being collected or alerted by this server."
+      - alert: LockLensStoreWriteErrors
+        expr: increase(locklens_store_write_errors_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "LockLens cannot write to its monitoring store"
+          description: "{{ $value | humanize }} failed writes in 10 minutes; history may have gaps."
+      - alert: LockLensDroppedBatches
+        expr: increase(locklens_store_dropped_batches_total[10m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "LockLens dropped collected data"
+          description: "The write queue was full; {{ $value | humanize }} batches were dropped in 10 minutes."
+      - alert: LockLensCollectionStale
+        expr: time() - locklens_collect_last_success_timestamp_seconds > 300
+        labels: {severity: warning}
+        annotations:
+          summary: "LockLens has not collected target {{ $labels.target }} for 5 minutes"
+          description: "Its last successful activity collection was {{ $value | humanizeDuration }} ago."
+
+  - name: locklens-instances
+    rules:
+      - alert: PostgresInstanceDown
+        expr: locklens_target_up == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.target }} ({{ $labels.environment }}) cannot be reached by LockLens"
+      - alert: PostgresConnectionsNearlyExhausted
+        expr: locklens_pg_connections_usage_ratio > 0.9
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.target }} uses {{ $value | humanizePercentage }} of its connection slots"
+      - alert: PostgresSessionsBlocked
+        expr: locklens_pg_blocked_sessions > 0 and locklens_pg_lock_wait_max_seconds > 60
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.target }}: sessions wait for locks for more than a minute"
+      - alert: PostgresLongTransaction
+        expr: locklens_pg_transaction_oldest_age_seconds > 1800
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.target }}: a transaction has been open for {{ $value | humanizeDuration }}"
+      - alert: PostgresReplicaLagging
+        expr: locklens_pg_replica_replay_lag_bytes > 1e9
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.target }}: replica {{ $labels.replica }} is {{ $value | humanize1024 }}B behind"
+      - alert: PostgresReplicationSlotRetainsWAL
+        expr: locklens_pg_replication_slot_retained_bytes > 10e9
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.target }}: slot {{ $labels.slot }} retains {{ $value | humanize1024 }}B of WAL"
+      - alert: PostgresXIDWraparoundRisk
+        expr: locklens_pg_database_xid_age > 1.0e9
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.target }}: database {{ $labels.database }} is {{ $value | humanize }} transactions from its last freeze"
+      - alert: PostgresDeadlocks
+        expr: increase(locklens_pg_deadlocks_total[15m]) > 0
+        labels: {severity: info}
+        annotations:
+          summary: "{{ $labels.target }}: {{ $value | humanize }} deadlock(s) in 15 minutes"
+      - alert: PostgresArchivingFailing
+        expr: increase(locklens_pg_archiver_failed_total[15m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.target }}: WAL archiving failed {{ $value | humanize }} time(s) in 15 minutes"
+      - alert: LockLensCriticalIncident
+        expr: locklens_incidents_open{severity="critical"} > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.target }}: LockLens has an open critical incident ({{ $labels.rule }})"
+          description: "Open it in LockLens for the evidence and the timeline."

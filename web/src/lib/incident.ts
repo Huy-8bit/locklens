@@ -54,6 +54,23 @@ export const RULE_INFO: Record<string, { name: string; focus: IncidentFocus; wha
     focus: 'replication',
     what: 'A replication slot keeps WAL on the primary because its consumer is behind or gone. Disk usage grows until the consumer catches up or the slot is removed.',
   },
+  'target.unreachable': {
+    name: 'The instance cannot be reached',
+    focus: 'other',
+    what: 'LockLens could not connect to the instance, or could not collect its activity, for longer than the target-down threshold. Nothing about the instance is known meanwhile. The incident resolves at the next successful collection.',
+  },
+  'transactions.long': { name: 'A transaction is open for long', focus: 'other', what: 'A transaction has been open longer than the long-transaction threshold; it holds locks and keeps vacuum from cleaning up.' },
+  'queries.call_volume_increase': { name: 'A statement runs much more often', focus: 'statement', what: 'Calls per second of one statement are far above its usual level.' },
+  'queries.load_increase': { name: 'A statement adds much more load', focus: 'statement', what: 'Execution time per second of one statement is far above its usual level.' },
+  'queries.io_regression': { name: 'A statement reads much more per call', focus: 'statement', what: 'Blocks read per call of one statement are far above its usual level.' },
+  'queries.pattern_change': { name: 'A statement returns a different number of rows', focus: 'statement', what: 'Rows per call of one statement changed far from its usual level.' },
+  'queries.possible_n_plus_one': { name: 'Possible N+1 query pattern', focus: 'statement', what: 'Fast single-row lookups at a high rate, as issued by a loop in the application.' },
+  'temp_files.increase': { name: 'Temporary files increased', focus: 'other', what: 'Sorts and hashes spill to disk much more than before.' },
+  'deadlocks.increase': { name: 'Deadlocks detected', focus: 'other', what: 'PostgreSQL detected deadlocks and cancelled one of the transactions involved.' },
+  'vacuum.dead_tuples': { name: 'Dead rows accumulating', focus: 'other', what: 'Tables with many dead rows that vacuum has not removed recently.' },
+  'vacuum.xid_age': { name: 'Transaction ID wraparound risk', focus: 'other', what: 'A database has not been frozen for a large share of the wraparound limit.' },
+  'replication.replica_lag': { name: 'A replica is behind', focus: 'replication', what: 'A standby has not replayed a large amount of WAL.' },
+  'wal.archiver_failures': { name: 'WAL archiving fails', focus: 'other', what: 'archive_command failed; point-in-time recovery may be at risk and WAL accumulates.' },
 }
 
 export function ruleInfo(ruleId: string) {

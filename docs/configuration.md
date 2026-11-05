@@ -47,6 +47,12 @@ All problems are reported at once.
 | `LOCKLENS_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `LOCKLENS_LOG_FORMAT` | `text` | `text` or `json` (stderr). Logs never contain DSNs, passwords, or query text. |
 | `LOCKLENS_SHUTDOWN_TIMEOUT` | `10s` | Grace period for in-flight requests and collectors on SIGINT/SIGTERM. |
+| `LOCKLENS_METRICS_REQUIRE_TOKEN` | `false` | Require an API token of scope `metrics` for `/metrics` too (`/metrics/targets` always needs one). |
+| `LOCKLENS_BOOTSTRAP_METRICS_TOKEN` | (none) | An API token of scope `metrics` (`llk_` and at least 24 more characters) stored at startup, so Prometheus can be configured in advance. |
+| `LOCKLENS_EXPORT_TOP_STATEMENTS` | `0` | Statements per instance with statement metrics in exports (0–50; labelled by `queryid`, never SQL text). |
+| `LOCKLENS_OTLP_ENDPOINT` | (none) | An OTLP/HTTP metrics URL (for example `http://otel-collector:4318/v1/metrics`); metrics are pushed there. |
+| `LOCKLENS_OTLP_HEADERS` | (none) | `name=value` pairs, comma-separated, sent with each push. |
+| `LOCKLENS_OTLP_INTERVAL` | `60s` | Time between two pushes (at least 10 s). |
 | `LOCKLENS_SERVER_ID` | host name + random suffix | Names this server among the servers sharing the store (shown in Settings → Data and storage). Unique per running server. See [Several servers](#several-servers). |
 
 ## Users and the environment administrator
@@ -178,6 +184,12 @@ changes: `logging_collector`, `log_min_duration_statement` (slow statements),
 tab shows which of these are set.
 
 ## Rule thresholds
+
+Thresholds, rule modes (incident, finding only, off), and their overrides per
+environment and per instance are set in **Settings → Alert rules** and stored
+in the monitoring store; see [rules.md](rules.md#modes-and-overrides). Exports
+to Prometheus, Alertmanager, and OpenTelemetry are described in
+[integrations.md](integrations.md).
 
 Rule thresholds are edited in **Settings → Alert rules** (or
 `PUT /api/v1/settings/rules`) and stored in the monitoring store. They apply

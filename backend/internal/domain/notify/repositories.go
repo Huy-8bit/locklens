@@ -4,8 +4,10 @@ import "github.com/locklens/locklens/internal/repository"
 
 // Repositories are the stores this package reads and writes.
 type Repositories struct {
+	repository.ChangeRepository
 	repository.FindingRepository
 	repository.IncidentRepository
+	repository.MaintenanceRepository
 	repository.NotificationRepository
 	repository.TargetRepository
 }

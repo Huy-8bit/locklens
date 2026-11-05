@@ -20,6 +20,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/baseline"
 	"github.com/locklens/locklens/internal/domain/finding"
 	"github.com/locklens/locklens/internal/domain/observe"
+	"github.com/locklens/locklens/internal/domain/rules"
 	"github.com/locklens/locklens/internal/repository"
 )
 
@@ -1066,5 +1067,66 @@ func TestLogEvents(t *testing.T) {
 	agents, err := s.LogAgents(ctx, tg.ID)
 	if err != nil || len(agents) != 1 || agents[0].Received != int64(len(events)) || agents[0].Hostname != "db1" || len(agents[0].Sources) != 0 {
 		t.Fatalf("agents %+v %v", agents, err)
+	}
+}
+
+func TestAlertingStorage(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+	tg := target(t, s, "alerting")
+	// Maintenance windows.
+	from, to := time.Now().UTC().Truncate(time.Second), time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	w, err := s.SaveMaintenanceWindow(ctx, repository.MaintenanceWindow{Name: "patch", Enabled: true, Kind: repository.MaintenanceOnce,
+		StartsAt: &from, EndsAt: &to, TargetIDs: []int64{tg.ID}, CreatedBy: "admin"})
+	if err != nil || w.ID == 0 || w.Timezone != "UTC" || len(w.Weekdays) != 0 {
+		t.Fatalf("insert %+v %v", w, err)
+	}
+	w.Kind, w.Weekdays, w.StartTime, w.DurationMinutes = repository.MaintenanceWeekly, []int{0, 6}, "02:00", 90
+	if w, err = s.SaveMaintenanceWindow(ctx, w); err != nil || len(w.Weekdays) != 2 || w.Kind != repository.MaintenanceWeekly {
+		t.Fatalf("update %+v %v", w, err)
+	}
+	if ws, err := s.MaintenanceWindows(ctx); err != nil || len(ws) != 1 || ws[0].TargetIDs[0] != tg.ID {
+		t.Fatalf("list %+v %v", ws, err)
+	}
+	if err := s.DeleteMaintenanceWindow(ctx, w.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteMaintenanceWindow(ctx, w.ID); !errors.Is(err, repository.ErrNotFound) {
+		t.Fatalf("delete twice: %v", err)
+	}
+	// Channel routing fields and the alertmanager kind.
+	ch, err := s.SaveNotificationChannel(ctx, repository.NotificationChannel{Name: "am", Kind: "alertmanager", Enabled: true, MinSeverity: "warning",
+		OnOpen: true, OnResolve: true, RuleIDs: []string{"target.unreachable"}, TargetIDs: []int64{tg.ID}, DelaySeconds: 900,
+		ConfigCiphertext: []byte{1}, Display: "http://am"})
+	if err != nil || ch.DelaySeconds != 900 || ch.RuleIDs[0] != "target.unreachable" || ch.TargetIDs[0] != tg.ID {
+		t.Fatalf("channel %+v %v", ch, err)
+	}
+	// Counts of findings and incidents by rule.
+	now := time.Now().UTC()
+	f := rules.Finding{RuleID: "vacuum.dead_tuples", RuleVersion: 1, Key: "rel:1", Severity: rules.Warning, Title: "t", Status: rules.Active,
+		ObservedFrom: now, ObservedTo: now}
+	if _, err := s.SyncRuleFindings(ctx, tg.ID, now, f.RuleID, []rules.Finding{f}); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := s.ActiveFindingCounts(ctx, []int64{tg.ID}); err != nil || len(c) != 1 || c[0].Count != 1 || c[0].Severity != "warning" {
+		t.Fatalf("finding counts %+v %v", c, err)
+	}
+	if c, err := s.OpenIncidentCounts(ctx, []int64{tg.ID}); err != nil || len(c) != 0 {
+		t.Fatalf("incident counts %+v %v", c, err)
+	}
+	// Syncing one rule leaves the findings of other rules alone.
+	g := f
+	g.RuleID, g.Key = "target.unreachable", "target"
+	if _, err := s.SyncRuleFindings(ctx, tg.ID, now, g.RuleID, []rules.Finding{g}); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := s.ActiveFindingCounts(ctx, []int64{tg.ID}); len(c) != 2 {
+		t.Fatalf("both rules active: %+v", c)
+	}
+	if _, err := s.SyncRuleFindings(ctx, tg.ID, now, g.RuleID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := s.ActiveFindingCounts(ctx, []int64{tg.ID}); len(c) != 1 || c[0].RuleID != "vacuum.dead_tuples" {
+		t.Fatalf("only the synced rule resolved: %+v", c)
 	}
 }

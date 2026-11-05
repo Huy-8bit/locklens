@@ -38,7 +38,23 @@ Thresholds are configurable in **Settings → Alert rules**. Defaults are
 shown; values in parentheses apply in demo mode (`LOCKLENS_DEMO_MODE`), which
 shortens windows so lab scenarios trigger within minutes.
 
-Rules marked **trigger** can open incidents ([incidents.md](incidents.md)).
+Rules marked **trigger** decide themselves when a finding is severe or
+persistent enough to open an incident; for the other rules in incident mode,
+any active warning or critical finding does ([Modes and overrides](#modes-and-overrides)).
+
+### `target.unreachable` — the instance cannot be reached
+
+Connecting to the instance, or collecting its activity, has kept failing for
+`target_down_seconds` (60 s; 30 s in demo mode; at least 15 s) and for at
+least two attempts. Critical. It is evaluated from LockLens' own failed
+attempts (not from collected data), so it works precisely when nothing can be
+collected. Evidence: how long, how many attempts, the last success, the
+latest error (redacted). The incident records a note every 5 minutes while
+the instance stays down and resolves at the next successful activity
+collection. Other findings of the instance are left as they were meanwhile.
+Incident mode by default.
+
+![An unreachable instance's incident: what was observed, and the notification sent](images/incident-unreachable.png)
 
 ### `blocking.long_chain` — persistent blocking (trigger)
 
@@ -176,6 +192,38 @@ Inactive slots are called out because nothing is consuming them.
 Warning when `pg_stat_archiver.failed_count` increased in the last
 `archiver_window_seconds` = 900 s (300 s), with the last failed WAL file and
 time as evidence.
+
+## Modes and overrides
+
+Each rule has a mode, set in **Settings → Alert rules**:
+
+| Mode | Findings | Incidents and notifications |
+| --- | --- | --- |
+| Incident + notify | yes | when the rule fires |
+| Finding only | yes | no |
+| Off | no | no |
+
+![Alert rules: the mode of each rule](images/alert-rules.png)
+
+By default `target.unreachable`, the six trigger rules (blocking chain,
+idle-in-transaction blocker, connection pressure, slower statements, slots
+retaining WAL, statements running for long), replica lag, transaction ID
+age, and WAL archiving failures open incidents; the other rules report
+findings only.
+
+Modes and thresholds can be **overridden per environment** (for example
+staging) and **per instance**. What applies to an instance is layered: the
+global values, then its environment's override, then its own override. The
+settings page shows, for any instance, what applies and where each value
+that is not global comes from (`GET /api/v1/targets/{id}/policy`). An
+override is validated against the global thresholds when it is saved; one
+that no longer fits after the global thresholds change is ignored rather than
+stopping the rules.
+
+![Overrides for the lab environment and one instance, and what applies to that instance with the source of each value](images/alert-overrides.png)
+
+![Editing an environment's override: each rule inherits or changes its mode](images/alert-override-edit.png) An open incident of a rule whose mode is changed is still
+followed until it resolves.
 
 ## Evaluation and history
 

@@ -42,7 +42,7 @@ export default function IncidentsPage() {
             if (rows.length === 0)
               return (
                 <div className="px-5 pb-5">
-                  <Empty title={state === 'open' ? 'No open incidents' : 'No incidents recorded'}>Incidents open for sustained blocking, connection pressure, slower queries, or WAL retained by a slot.</Empty>
+                  <Empty title={state === 'open' ? 'No open incidents' : 'No incidents recorded'}>Incidents open when a rule in incident mode fires: an unreachable instance, sustained blocking, connection pressure, slower queries, and more. Settings → Alert rules decides which.</Empty>
                 </div>
               )
             return (

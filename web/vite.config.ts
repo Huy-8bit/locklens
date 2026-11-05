@@ -11,6 +11,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': { target: process.env.LOCKLENS_DEV_API ?? 'http://127.0.0.1:8080', changeOrigin: false },
+      '/metrics/targets': { target: process.env.LOCKLENS_DEV_API ?? 'http://127.0.0.1:8080', changeOrigin: false },
       '/healthz': process.env.LOCKLENS_DEV_API ?? 'http://127.0.0.1:8080',
     },
   },

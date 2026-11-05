@@ -1,0 +1,27 @@
+# Prometheus configuration of the lab (compose.observability.yaml). The
+# bearer token is the lab's fake LOCKLENS_BOOTSTRAP_METRICS_TOKEN.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/locklens-rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  # LockLens itself (collector, store writer, HTTP).
+  - job_name: locklens
+    static_configs:
+      - targets: ["backend:8080"]
+  # The instances LockLens monitors. Every LockLens server serves the
+  # instances it collects: scrape all of them.
+  - job_name: locklens-targets
+    metrics_path: /metrics/targets
+    authorization:
+      credentials: llk_lab_metrics_token_not_a_real_secret_0001
+    static_configs:
+      - targets: ["backend:8080"]

@@ -18,7 +18,8 @@ func (s *Server) reportFrom(raw json.RawMessage) (*report.Report, error) {
 	if err := json.Unmarshal(raw, &snap); err != nil {
 		return nil, err
 	}
-	return report.Build(&snap, s.d.Settings.LongTransactionThreshold()), nil
+	// Stored and uploaded snapshots are read with the global threshold.
+	return report.Build(&snap, time.Duration(s.d.Settings.Thresholds().LongTxWarnSeconds*float64(time.Second))), nil
 }
 
 func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) {

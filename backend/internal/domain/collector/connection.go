@@ -70,6 +70,7 @@ func (w *worker) connect(ctx context.Context) bool {
 		w.nextConnect = time.Now().Add(min(backoff, maxReconnectBackoff))
 		w.m.log.Warn("target connection failed", "target_id", w.target.ID, "target", w.target.Name, "error", msg)
 		w.m.events.Publish("target.status", map[string]any{"target_id": w.target.ID})
+		w.failed(ctx, false, msg)
 		return false
 	}
 	w.state.connected = true

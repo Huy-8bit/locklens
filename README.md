@@ -51,7 +51,9 @@ and keep the evidence when something goes wrong.
 | **Optimize** | Recommendations from each database's schema and workload, analysed with PostgreSQL's own parser: missing and redundant indexes, foreign keys without an index, invalid indexes, stale statistics, row misestimates, spills to disk, statement shapes that perform badly · ranked by benefit with evidence and the SQL to apply (LockLens never changes the database) · optional what-if checks with hypothetical indexes (HypoPG) · applied changes detected and measured before and after |
 | **Explore** *(opt-in)* | Browse schemas, tables, views, functions, types, indexes, and triggers · preview rows · read-only SQL editor with an execution-plan graph — never with an administrative role |
 | **Team** | Users with roles: administrators manage everything, operators also preview rows and run read-only SQL, viewers only read · add an instance by pasting one connection string |
-| **Operate** | Incident notifications to Slack, webhooks, and email, with reminders and silences · TimescaleDB store: time-partitioned, compressed history (plain PostgreSQL works too) · incident export to JSON and standalone HTML · Prometheus `/metrics` · health and readiness probes · retention · bounded buffering when the store is down · several servers on one store for availability |
+| **Alert** | Each rule opens incidents, reports findings only, or is off — globally, per environment, or per instance, with thresholds overridden the same way · instance-unreachable alerts · notifications to Slack, webhooks, email, and Prometheus Alertmanager, filtered by rule and instance, with escalation tiers, reminders, silences, and maintenance windows |
+| **Integrate** | Prometheus metrics of every instance (`/metrics/targets`, token-protected) with ready alerting rules and a Grafana dashboard · OpenTelemetry push · read-only API tokens |
+| **Operate** | TimescaleDB store: time-partitioned, compressed history (plain PostgreSQL works too) · incident export to JSON and standalone HTML · Prometheus `/metrics` · health and readiness probes · retention · bounded buffering when the store is down · several servers on one store for availability |
 
 <table>
   <tr>
@@ -83,6 +85,16 @@ and keep the evidence when something goes wrong.
     <td align="center">Optimize</td>
     <td align="center">A recommendation and its SQL</td>
     <td align="center">Hot tables</td>
+  </tr>
+  <tr>
+    <td width="33%"><img src="docs/images/alert-overrides.png" alt="Alert rules: overrides per environment and instance, and what applies to one instance"></td>
+    <td width="33%"><img src="docs/images/incident-unreachable.png" alt="An incident of an instance that cannot be reached, sent to Alertmanager"></td>
+    <td width="33%"><img src="docs/images/alertmanager.png" alt="Alertmanager receiving LockLens incidents and Prometheus alerts"></td>
+  </tr>
+  <tr>
+    <td align="center">Alert rules and overrides</td>
+    <td align="center">Instance unreachable</td>
+    <td align="center">Alertmanager</td>
   </tr>
 </table>
 
@@ -244,7 +256,7 @@ Details in [security](docs/security.md). To report a vulnerability, see
 | --- | --- |
 | **Getting started** | [Quickstart](docs/quickstart.md) · [Configuration](docs/configuration.md) · [UI guide](docs/ui-design.md) · [Troubleshooting](docs/troubleshooting.md) |
 | **Concepts** | [Architecture](docs/architecture.md) · [Collectors](docs/collectors.md) · [PostgreSQL observation](docs/postgresql-observation.md) · [Blocking graph](docs/blocking-graph.md) · [Query analysis](docs/query-analysis.md) · [Query performance intelligence](docs/query-intelligence.md) · [Query optimizer](docs/query-optimizer.md) · [Rules](docs/rules.md) · [Incidents](docs/incidents.md) · [Notifications](docs/notifications.md) · [Explorer and SQL](docs/investigation-workspace.md) |
-| **Operations** | [Deployment](docs/deployment.md) · [Storage and retention](docs/storage-and-retention.md) · [Security](docs/security.md) · [Limitations](docs/limitations.md) |
+| **Operations** | [Integrations (Prometheus, Alertmanager, Grafana, OTLP)](docs/integrations.md) · [Deployment](docs/deployment.md) · [Storage and retention](docs/storage-and-retention.md) · [Security](docs/security.md) · [Limitations](docs/limitations.md) |
 | **Reference** | [HTTP API](docs/api.md) · [CLI](docs/cli-reference.md) · [Snapshot format](docs/snapshot-format.md) |
 | **Development** | [Development](docs/development.md) · [Testing](docs/testing.md) · [Test report](docs/test-report.md) |
 

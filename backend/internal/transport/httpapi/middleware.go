@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/auth"
+	"github.com/locklens/locklens/internal/domain/tokens"
 	"github.com/locklens/locklens/internal/repository"
 )
 
@@ -80,9 +81,15 @@ func (r *statusRecorder) Flush() {
 	}
 }
 
-// authed requires a session and, for mutations, a valid CSRF token.
+// authed requires a session and, for mutations, a valid CSRF token. An API
+// token of scope "read" (Authorization: Bearer) may read (GET) with the
+// permissions of a viewer instead.
 func (s *Server) authed(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if secret, ok := bearer(r); ok {
+			s.readToken(w, r, secret, h)
+			return
+		}
 		sess, err := s.d.Auth.Authenticate(r)
 		if err != nil {
 			if !errors.Is(err, repository.ErrNotFound) {
@@ -98,6 +105,28 @@ func (s *Server) authed(h http.HandlerFunc) http.HandlerFunc {
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), keySession, sess)))
 	}
+}
+
+// readToken serves a request made with a read token as a viewer.
+func (s *Server) readToken(w http.ResponseWriter, r *http.Request, secret string, h http.HandlerFunc) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeError(w, r, http.StatusForbidden, "forbidden", "API tokens may only read (GET); changes need a session")
+		return
+	}
+	t, err := s.d.Tokens.Authenticate(r.Context(), secret, repository.TokenRead, 0)
+	switch {
+	case errors.Is(err, tokens.ErrInvalid):
+		writeError(w, r, http.StatusUnauthorized, "unauthenticated", err.Error())
+		return
+	case errors.Is(err, tokens.ErrScope):
+		writeError(w, r, http.StatusForbidden, "forbidden", err.Error())
+		return
+	case err != nil:
+		s.internal(w, r, err)
+		return
+	}
+	sess := auth.Session{Username: "token:" + t.Name, Role: auth.RoleViewer}
+	h(w, r.WithContext(context.WithValue(r.Context(), keySession, sess)))
 }
 
 // allow is authed plus a permission check. Missing permission answers 403.

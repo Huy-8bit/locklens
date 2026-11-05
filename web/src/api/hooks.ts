@@ -2,6 +2,11 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { api, ApiError, qs } from './client'
 import type {
   ApiToken,
+  MaintenanceInput,
+  MaintenanceWindow,
+  RuleOverride,
+  RulePolicy,
+  RuleSettings,
   LogEvent,
   LogSummary,
   ChangeReport,
@@ -230,7 +235,7 @@ export function useImportIncident() {
 }
 
 export function useRuleSettings() {
-  return useQuery({ queryKey: ['rule-settings'], queryFn: () => api<{ thresholds: Thresholds; defaults: Thresholds }>('/api/v1/settings/rules') })
+  return useQuery({ queryKey: ['rule-settings'], queryFn: () => api<RuleSettings>('/api/v1/settings/rules') })
 }
 
 export function useSaveRules() {
@@ -682,5 +687,42 @@ export function useLogEvents(id: number, kinds: string[], range: Range, fingerpr
     queryFn: () => api<{ events: LogEvent[] }>(`/api/v1/targets/${id}/logs/events${qs({ kind: kinds.join(','), fingerprint: fingerprint || undefined, ...rangeQuery(range) })}`),
     placeholderData: keepPreviousData,
     refetchInterval: every(HIST),
+  })
+}
+
+export function useSaveAlerting() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (x: { modes: RuleSettings['modes']; overrides: { environments: Record<string, RuleOverride>; targets: Record<string, RuleOverride> } }) =>
+      api<unknown>('/api/v1/settings/alerting', { method: 'PUT', json: x }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['rule-settings'] })
+      void qc.invalidateQueries({ queryKey: ['policy'] })
+    },
+  })
+}
+
+export function useTargetPolicy(id: number) {
+  return useQuery({ queryKey: ['policy', id], queryFn: () => api<RulePolicy>(`/api/v1/targets/${id}/policy`), enabled: id > 0 })
+}
+
+export function useMaintenance() {
+  return useQuery({ queryKey: ['notify', 'maintenance'], queryFn: () => api<{ windows: MaintenanceWindow[] }>('/api/v1/notifications/maintenance') })
+}
+
+export function useSaveMaintenance() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, input }: { id?: number; input: MaintenanceInput }) =>
+      api<MaintenanceWindow>(id ? `/api/v1/notifications/maintenance/${id}` : '/api/v1/notifications/maintenance', { method: id ? 'PUT' : 'POST', json: input }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['notify'] }),
+  })
+}
+
+export function useDeleteMaintenance() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api<undefined>(`/api/v1/notifications/maintenance/${id}`, { method: 'DELETE' }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['notify'] }),
   })
 }

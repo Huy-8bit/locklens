@@ -125,6 +125,11 @@ type Recorder interface {
 	// Forget drops the in-memory state of a target another server now
 	// collects; its incidents stay open and that server adopts them.
 	Forget(targetID int64)
+	// Unreachable records that connecting to a target, or collecting its
+	// activity, keeps failing: once the failures last target_down_seconds it
+	// reports target.unreachable and, in incident mode, opens an incident. The
+	// incident resolves at the next successful activity collection.
+	Unreachable(ctx context.Context, t repository.Target, rc rules.Reachability)
 	// Analyze evaluates rules for one target and advances incident lifecycles.
 	Analyze(ctx context.Context, t repository.Target, v live.View) Analysis
 }
@@ -238,7 +243,8 @@ func (r *recorder) analyze(ctx context.Context, t repository.Target, v live.View
 	ts := r.target(t.ID)
 	now := v.Activity.At.UTC()
 	interval := time.Duration(t.IntervalSeconds) * time.Second
-	th := r.th.Thresholds()
+	pol := r.th.Policy(t)
+	th := pol.Thresholds
 
 	sample := rules.Summarize(v.Activity, v.Report)
 	ts.history = append(ts.history, sample)
@@ -254,7 +260,7 @@ func (r *recorder) analyze(ctx context.Context, t repository.Target, v live.View
 	}
 	ts.lastAnalyze = now
 
-	findings := rules.Evaluate(rules.Input{Now: now, Interval: interval, View: v, History: ts.history, Baselines: r.baselinesOf(t.ID)}, th)
+	findings := pol.Filter(rules.Evaluate(rules.Input{Now: now, Interval: interval, View: v, History: ts.history, Baselines: r.baselinesOf(t.ID)}, th))
 	ids, err := r.store.SyncFindings(ctx, t.ID, now, findings)
 	if err != nil {
 		return Analysis{}, err
@@ -282,15 +288,23 @@ func (r *recorder) analyze(ctx context.Context, t repository.Target, v live.View
 		ts.pre = slices.Clone(ts.pre[len(ts.pre)-r.cfg.PreTriggerSamples:])
 	}
 
-	for _, ruleID := range rules.TriggerRules {
+	for _, ruleID := range rules.AllRules {
+		oi := ts.open[ruleID]
+		if oi == nil && pol.Mode(ruleID) != rules.ModeIncident {
+			continue
+		}
 		var firing []rules.Finding
 		for _, f := range findings {
-			if f.RuleID == ruleID && f.Status == rules.Active && f.Trigger {
+			if f.RuleID == ruleID && pol.Fires(f) {
 				firing = append(firing, f)
 			}
 		}
-		oi := ts.open[ruleID]
 		switch {
+		case oi != nil && ruleID == rules.RuleTargetUnreachable:
+			// Activity was collected: the instance is reachable again.
+			if err := r.resolve(ctx, t, ts, oi, now, ResolutionCleared, nil); err != nil {
+				return Analysis{}, err
+			}
 		case oi != nil:
 			if err := r.continueIncident(ctx, t, v, ts, oi, firing, findings, ids, now, sample, metrics, refs, snapRaw, sig, gap); err != nil {
 				return Analysis{}, err
@@ -303,6 +317,59 @@ func (r *recorder) analyze(ctx context.Context, t repository.Target, v live.View
 	}
 	r.updateOpenGauge()
 	return Analysis{Burst: burstReason(ts, findings)}, nil
+}
+
+// downNoteEvery is how often an open target.unreachable incident records
+// that the instance is still unreachable.
+const downNoteEvery = 5 * time.Minute
+
+// Unreachable records that connecting to a target, or collecting its
+// activity, keeps failing: once the failures last target_down_seconds it
+// reports target.unreachable and, in incident mode, opens an incident. The
+// incident resolves at the next successful activity collection.
+func (r *recorder) Unreachable(ctx context.Context, t repository.Target, rc rules.Reachability) {
+	pol := r.th.Policy(t)
+	if pol.Mode(rules.RuleTargetUnreachable) == rules.ModeOff {
+		return
+	}
+	now := time.Now().UTC()
+	fs := rules.Unreachable(rc, now, pol.Thresholds)
+	if len(fs) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.unreachable(ctx, t, pol, fs, now); err != nil {
+		r.log.Warn("recording an unreachable instance failed", "target_id", t.ID, "error", err.Error())
+	}
+}
+
+func (r *recorder) unreachable(ctx context.Context, t repository.Target, pol rules.Policy, fs []rules.Finding, now time.Time) error {
+	ids, err := r.store.SyncRuleFindings(ctx, t.ID, now, rules.RuleTargetUnreachable, fs)
+	if err != nil {
+		return err
+	}
+	if !pol.Fires(fs[0]) {
+		return nil
+	}
+	ts := r.target(t.ID)
+	oi := ts.open[rules.RuleTargetUnreachable]
+	if oi == nil {
+		err := r.startIncident(ctx, t, live.View{}, ts, rules.RuleTargetUnreachable, fs, ids, now, pol.Thresholds, nil)
+		r.updateOpenGauge()
+		return err
+	}
+	if now.Sub(oi.lastSampleAt) < downNoteEvery {
+		// Still down: the incident was seen now (its duration grows).
+		return r.appendEvents(ctx, oi, now, nil, true)
+	}
+	oi.lastSampleAt = now
+	oi.title = fs[0].Title
+	if err := r.store.UpdateIncidentState(ctx, oi.id, "open", nil, nil, oi.severity, oi.title, oi.truncated); err != nil {
+		return err
+	}
+	ev := repository.IncidentEvent{At: now, Kind: KindSample, Summary: fs[0].Title + ". " + fs[0].Observed[0]}
+	return r.appendEvents(ctx, oi, now, []repository.IncidentEvent{ev}, true)
 }
 
 // burstReasons are the active findings that make a target worth watching

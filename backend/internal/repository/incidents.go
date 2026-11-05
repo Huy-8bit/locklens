@@ -39,6 +39,9 @@ type IncidentRepository interface {
 	// OpenUnacknowledgedIncidents returns open incidents nobody acknowledged
 	// (candidates for reminders).
 	OpenUnacknowledgedIncidents(ctx context.Context) ([]Incident, error)
+	// OpenIncidentCounts counts the open incidents of targets by rule and
+	// severity.
+	OpenIncidentCounts(ctx context.Context, targetIDs []int64) ([]RuleCount, error)
 }
 
 var _ IncidentRepository = (*Store)(nil)
@@ -264,4 +267,15 @@ func (s *Store) OpenUnacknowledgedIncidents(ctx context.Context) ([]Incident, er
 		out = append(out, in)
 	}
 	return out, s.red.Error(rows.Err())
+}
+
+// OpenIncidentCounts counts the open incidents of targets by rule and
+// severity.
+func (s *Store) OpenIncidentCounts(ctx context.Context, targetIDs []int64) ([]RuleCount, error) {
+	rows, err := s.pool.Query(ctx, queries.OpenIncidentCounts, targetIDs)
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	out, err := scanRuleCounts(rows)
+	return out, s.red.Error(err)
 }

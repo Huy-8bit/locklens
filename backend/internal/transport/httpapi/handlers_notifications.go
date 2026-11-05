@@ -143,3 +143,53 @@ func (s *Server) endSilence(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func (s *Server) listMaintenance(w http.ResponseWriter, r *http.Request) {
+	ws, err := s.d.Notify.MaintenanceWindows(r.Context())
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"windows": ws})
+}
+
+// saveMaintenance creates (POST) or replaces (PUT /{id}) a maintenance
+// window.
+func (s *Server) saveMaintenance(w http.ResponseWriter, r *http.Request) {
+	var id int64
+	if r.PathValue("id") != "" {
+		var ok bool
+		if id, ok = pathID(r, "id"); !ok {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "invalid window id")
+			return
+		}
+	}
+	var in notify.WindowInput
+	if err := decode(w, r, &in, 16<<10); err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	out, err := s.d.Notify.SaveMaintenanceWindow(r.Context(), id, in, sessionOf(r).Username)
+	if err != nil {
+		s.notifyError(w, r, err)
+		return
+	}
+	status := http.StatusOK
+	if id == 0 {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, out)
+}
+
+func (s *Server) deleteMaintenance(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r, "id")
+	if !ok {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "invalid window id")
+		return
+	}
+	if err := s.d.Notify.DeleteMaintenanceWindow(r.Context(), id); err != nil {
+		s.notifyError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

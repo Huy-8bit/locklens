@@ -99,10 +99,21 @@ settings in the DSN are honoured and never weakened.
   held in memory by the UI.
 - **API tokens** (Settings → API tokens) are for machines only: scope
   `events` reports changes, scope `ingest` ships log events and belongs to one
-  instance. A token is 24 random bytes (`llk_…`), shown once; the store keeps
+  instance, scope `metrics` scrapes `/metrics/targets` (only its instance when
+  it has one), scope `read` reads the API (GET only) as a viewer. A token is 24 random bytes (`llk_…`), shown once; the store keeps
   its SHA-256 hash. Token requests carry no cookie and need no CSRF header;
   a token can do nothing else (no reads, no other endpoints). Revoking takes
   effect at once.
+
+## Exports
+
+- `/metrics/targets` always needs a `metrics` token; `/metrics` (LockLens'
+  own health, no database data) needs one with
+  `LOCKLENS_METRICS_REQUIRE_TOKEN=true`. Exports and Alertmanager alerts never
+  contain SQL text, connection strings, or credentials; statement metrics are
+  off by default and labelled by `queryid` only.
+- The Alertmanager channel's URL and bearer token are encrypted like other
+  channel destinations.
 
 ## Log agent
 

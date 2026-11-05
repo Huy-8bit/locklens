@@ -87,6 +87,8 @@ func (s *netSender) once(ctx context.Context, kind string, d Destination, m Mess
 		return s.post(ctx, d.URL, m.slackBody(), "", m.Event)
 	case KindEmail:
 		return true, s.mail(ctx, d, m)
+	case KindAlertmanager:
+		return s.postAlertmanager(ctx, d, m)
 	}
 	return false, fmt.Errorf("unknown channel kind %q", kind)
 }
@@ -106,6 +108,12 @@ func (s *netSender) post(ctx context.Context, rawURL string, body []byte, secret
 		mac.Write(body)
 		req.Header.Set("X-LockLens-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}
+	return s.do(req)
+}
+
+// do sends a request and classifies its outcome: retry on network errors,
+// 429, and 5xx.
+func (s *netSender) do(req *http.Request) (bool, error) {
 	resp, err := s.client.Do(req)
 	if err != nil {
 		var ue *url.Error
@@ -187,4 +195,20 @@ func (s *netSender) mail(ctx context.Context, d Destination, m Message) error {
 		return fmt.Errorf("send the message: %w", err)
 	}
 	return c.Quit()
+}
+
+// postAlertmanager posts an alert to Alertmanager's API (v2), with the
+// bearer token when the channel has one.
+func (s *netSender) postAlertmanager(ctx context.Context, d Destination, m Message) (bool, error) {
+	endpoint := strings.TrimRight(d.URL, "/") + "/api/v2/alerts"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(m.alertmanagerBody(time.Now().UTC())))
+	if err != nil {
+		return false, errors.New("invalid destination URL")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "LockLens/"+s.version)
+	if d.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+d.Token)
+	}
+	return s.do(req)
 }

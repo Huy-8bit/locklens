@@ -18,6 +18,12 @@ type FindingRepository interface {
 	// findings that are no longer reported. Returns the IDs of current findings
 	// keyed by rule and key.
 	SyncFindings(ctx context.Context, targetID int64, now time.Time, fs []rules.Finding) (map[[2]string]int64, error)
+	// SyncRuleFindings is SyncFindings for the findings of one rule: the
+	// findings of other rules stay as they are.
+	SyncRuleFindings(ctx context.Context, targetID int64, now time.Time, ruleID string, fs []rules.Finding) (map[[2]string]int64, error)
+	// ActiveFindingCounts counts the active findings of targets by rule and
+	// severity.
+	ActiveFindingCounts(ctx context.Context, targetIDs []int64) ([]RuleCount, error)
 	// LinkFindingsToIncident records which incident a finding belongs to.
 	LinkFindingsToIncident(ctx context.Context, incidentID int64, findingIDs []int64) error
 	// ListFindings returns findings, newest first.
@@ -41,6 +47,18 @@ type FindingRow struct {
 // findings that are no longer reported. Returns the IDs of current findings
 // keyed by rule and key.
 func (s *Store) SyncFindings(ctx context.Context, targetID int64, now time.Time, fs []rules.Finding) (map[[2]string]int64, error) {
+	return s.syncFindings(ctx, targetID, now, "", fs)
+}
+
+// SyncRuleFindings is SyncFindings for the findings of one rule: the
+// findings of other rules stay as they are.
+func (s *Store) SyncRuleFindings(ctx context.Context, targetID int64, now time.Time, ruleID string, fs []rules.Finding) (map[[2]string]int64, error) {
+	return s.syncFindings(ctx, targetID, now, ruleID, fs)
+}
+
+// syncFindings upserts findings and resolves the missing ones: of every
+// rule, or of ruleID only.
+func (s *Store) syncFindings(ctx context.Context, targetID int64, now time.Time, ruleID string, fs []rules.Finding) (map[[2]string]int64, error) {
 	ids := map[[2]string]int64{}
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		var keepRules, keepKeys []string
@@ -65,6 +83,13 @@ func (s *Store) SyncFindings(ctx context.Context, targetID int64, now time.Time,
 			ids[[2]string{f.RuleID, f.Key}] = id
 			keepRules = append(keepRules, f.RuleID)
 			keepKeys = append(keepKeys, f.Key)
+		}
+		if ruleID != "" {
+			if keepKeys == nil {
+				keepKeys = []string{}
+			}
+			_, err := tx.Exec(ctx, queries.ResolveMissingRuleFindings, targetID, now.UTC(), ruleID, keepKeys)
+			return err
 		}
 		_, err := tx.Exec(ctx, queries.ResolveMissingFindings,
 			targetID, now.UTC(), keepRules, keepKeys)
@@ -134,4 +159,32 @@ func scanFinding(r pgx.CollectableRow) (FindingRow, error) {
 		}
 	}
 	return fr, nil
+}
+
+// RuleCount is a number of findings or incidents of a target, rule, and
+// severity.
+type RuleCount struct {
+	TargetID int64
+	RuleID   string
+	Severity string
+	Count    int64
+}
+
+func scanRuleCounts(rows pgx.Rows) ([]RuleCount, error) {
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (RuleCount, error) {
+		var c RuleCount
+		err := r.Scan(&c.TargetID, &c.RuleID, &c.Severity, &c.Count)
+		return c, err
+	})
+}
+
+// ActiveFindingCounts counts the active findings of targets by rule and
+// severity.
+func (s *Store) ActiveFindingCounts(ctx context.Context, targetIDs []int64) ([]RuleCount, error) {
+	rows, err := s.pool.Query(ctx, queries.ActiveFindingCounts, targetIDs)
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	out, err := scanRuleCounts(rows)
+	return out, s.red.Error(err)
 }
