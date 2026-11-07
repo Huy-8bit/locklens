@@ -78,6 +78,31 @@ vet: ## Run go vet (including integration-tagged files)
 	$(GO) -C backend vet -tags integration ./...
 	$(GO) -C tests/e2e vet -tags integration ./...
 
+# Linters run with `go run` at pinned versions, so CI and laptops use the
+# same ones without installing anything.
+STATICCHECK := honnef.co/go/tools/cmd/staticcheck@v0.8.2
+GOVULNCHECK := golang.org/x/vuln/cmd/govulncheck@v1.9.0
+
+.PHONY: lint
+lint: ## Run staticcheck on all Go code (including integration-tagged files)
+	$(GO) -C backend run $(STATICCHECK) ./...
+	$(GO) -C backend run $(STATICCHECK) -tags integration ./...
+	$(GO) -C tests/e2e run $(STATICCHECK) -tags integration ./...
+
+.PHONY: vuln
+vuln: ## Report known vulnerabilities in code paths the Go binaries use (govulncheck)
+	$(GO) -C backend run $(GOVULNCHECK) ./...
+
+.PHONY: lint-ci
+lint-ci: ## Lint the GitHub workflows (actionlint with shellcheck) and the shell scripts (Docker)
+	docker run --rm -v "$(CURDIR):/repo:ro" -w /repo rhysd/actionlint:1.7.12 -no-color
+	docker run --rm -v "$(CURDIR):/mnt:ro" -w /mnt koalaman/shellcheck:v0.11.0 -S warning scripts/*.sh
+
+.PHONY: scan-images
+scan-images: image ## Fail on critical vulnerabilities with a fix in the two images (grype, Docker), as CI does
+	for i in locklens-backend:local locklens-frontend:local; do \
+		docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/grype:v0.104.0 $$i --only-fixed --fail-on critical || exit 1; done
+
 .PHONY: check-separation
 check-separation: ## Verify the locklens binary does not depend on demo/lab (write) code
 	@deps=$$($(GO) -C backend list -deps ./cmd/locklens) || exit $$?; \
@@ -118,7 +143,7 @@ e2e: ## Browser end-to-end tests against an isolated full stack (Docker, Playwri
 	./scripts/e2e.sh
 
 .PHONY: check
-check: fmt-check vet check-separation backend-test test-race ## All Go checks that need no database
+check: fmt-check vet lint check-separation backend-test test-race ## All Go checks that need no database
 
 ## ---- LockLens (deploy/compose.yaml, project "locklens")
 

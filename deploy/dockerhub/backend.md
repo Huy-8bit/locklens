@@ -63,6 +63,8 @@ Full list: [configuration](https://github.com/Huy-8bit/locklens/blob/main/docs/c
   (liveness), `GET /readyz` (store reachable), `/metrics` (Prometheus). Expose
   it to the frontend only, not to browsers directly.
 - Runs as the non-root user `10001`. Platforms: `linux/amd64`, `linux/arm64`.
+- Signed with cosign (keyless, GitHub Actions); carries an SBOM and SLSA
+  provenance.
 - Tags: `latest` (main branch), `X.Y.Z` and `X.Y` (releases). Use the same tag
   for the backend and the frontend.
 - Also contains the CLI (`locklens inspect`, `watch`, `snapshot`, `doctor`) and

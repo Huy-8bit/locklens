@@ -24,7 +24,7 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
-for attempt in $(seq 1 60); do
+for _ in $(seq 1 60); do
   kill -0 "$server_pid" 2>/dev/null || { wait "$server_pid"; exit 1; }
   if curl -fsS "$LOCKLENS_DEV_API/readyz" >/dev/null 2>&1; then
     cd web

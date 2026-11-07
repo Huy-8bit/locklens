@@ -123,6 +123,21 @@ lock; back up the store before upgrading across releases
 ([storage-and-retention.md](storage-and-retention.md)). Images are built for
 `linux/amd64` and `linux/arm64` and run as non-root users.
 
+Published images are signed with cosign (keyless, by the repository's
+GitHub Actions workflow) and carry an SBOM and SLSA provenance. To verify a
+tag before running it:
+
+```bash
+cosign verify docker.io/<namespace>/locklens-backend:X.Y.Z \
+  --certificate-identity-regexp '^https://github.com/Huy-8bit/locklens/\.github/workflows/images\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+docker buildx imagetools inspect docker.io/<namespace>/locklens-backend:X.Y.Z --format '{{ json .SBOM }}'
+```
+
+Each GitHub release also lists the image digests and attaches static Linux
+binaries of the CLI (`locklens_X.Y.Z_linux_amd64.tar.gz`, `..._arm64`) with
+`SHA256SUMS`.
+
 ## Health checks
 
 | Check | Meaning |

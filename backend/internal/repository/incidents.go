@@ -80,10 +80,6 @@ type IncidentEvent struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
-const incidentColumns = `id, target_id, target_name, rule_id, rule_version, severity, title, state, opened_at,
-last_seen_at, resolved_at, resolution, trigger_config, acknowledged_at, acknowledged_by, ack_note, event_count,
-size_bytes, truncated, source`
-
 func scanIncident(row pgx.Row) (Incident, error) {
 	var i Incident
 	err := row.Scan(&i.ID, &i.TargetID, &i.TargetName, &i.RuleID, &i.RuleVersion, &i.Severity, &i.Title, &i.State,

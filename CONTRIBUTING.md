@@ -40,7 +40,7 @@ welcome.
 4. Run the checks:
 
    ```bash
-   make check                # Go formatting, vet, unit and race tests
+   make check                # Go formatting, vet, staticcheck, unit and race tests
    make web-check            # frontend typecheck, lint, unit tests
    make test-integration     # isolated Docker Compose projects, removed afterwards
    make e2e                  # browser tests against the Docker stack

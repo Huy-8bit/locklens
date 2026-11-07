@@ -82,7 +82,7 @@ tests/e2e/
   go.mod, go.sum        test module; local replacement points to backend/
   package.json          isolated Playwright toolchain
 docs/                   documentation and examples
-.github/workflows/      build and test automation
+.github/workflows/      CI, release, nightly (docs/testing.md#continuous-integration)
 ```
 
 No root Go module or workspace is required. Application imports keep the
@@ -101,10 +101,13 @@ Static assets such as the favicon live in `web/public/`.
 | Task | Command |
 | --- | --- |
 | Format / check formatting | `make fmt` / `make fmt-check` |
-| Static checks | `make vet` (with and without the `integration` tag) |
+| Static checks | `make vet` (with and without the `integration` tag), `make lint` (staticcheck) |
+| Known vulnerabilities in Go code paths | `make vuln` (govulncheck) |
+| Workflows and shell scripts | `make lint-ci` (actionlint, shellcheck; Docker) |
+| Critical vulnerabilities in the images | `make scan-images` (grype; Docker) |
 | `locklens` does not import demo code | `make check-separation` |
 | Go unit tests / with race detector | `make backend-test` / `make test-race` |
-| All Go checks without a database | `make check` |
+| All Go checks without a database | `make check` (formatting, vet, staticcheck, separation, unit and race tests) |
 | Frontend typecheck, lint, unit tests | `make web-check` |
 | Integration tests (PostgreSQL 14.24 and 18.6) | `make test-integration` |
 | Integration tests on every supported major | `make test-compat` |

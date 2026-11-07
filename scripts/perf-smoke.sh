@@ -104,7 +104,6 @@ done
 size1=$(store_size)
 curl -fs "http://127.0.0.1:$port/metrics" >"$work/metrics.txt"
 cpu=$(ps -o time= -p "$pid" | tr -d ' ')
-ready=$(curl -fs "http://127.0.0.1:$port/api/v1/session" -o /dev/null -w '%{http_code}' || true)
 
 python3 -I - "$work/metrics.txt" "$work/samples" "$TARGETS" "$INTERVAL" "$CONCURRENCY" "$DURATION" "$size0" "$size1" "$cpu" >"$out" <<'EOF'
 import re, sys

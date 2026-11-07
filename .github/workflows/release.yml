@@ -1,0 +1,101 @@
+name: Release
+
+# Pushing a tag vX.Y.Z (or a pre-release such as vX.Y.Z-rc.1) releases that
+# commit: every check runs again on it (checks.yml), the images are published
+# as X.Y.Z and X.Y (images.yml), and a GitHub release is created with notes,
+# the image digests, how to verify the signatures, and the static Linux CLI
+# binaries taken from the published backend image.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/checks.yml
+
+  images:
+    name: Images
+    needs: checks
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/images.yml
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  github-release:
+    name: GitHub release
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: CLI binaries from the published image
+        run: |
+          version=${TAG#v}
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            id=$(docker create --platform "linux/$arch" "docker.io/$NAMESPACE/locklens-backend:$version")
+            work=$(mktemp -d)
+            docker cp "$id:/usr/local/bin/locklens" "$work/locklens"
+            docker rm "$id" >/dev/null
+            cp LICENSE README.md "$work/"
+            tar -C "$work" -czf "dist/locklens_${version}_linux_${arch}.tar.gz" locklens LICENSE README.md
+          done
+          (cd dist && sha256sum ./*.tar.gz >SHA256SUMS)
+          cat dist/SHA256SUMS
+      - name: Release notes
+        run: |
+          version=${TAG#v}
+          {
+            echo "## Images"
+            echo
+            for image in locklens-backend locklens-frontend; do
+              ref="docker.io/$NAMESPACE/$image:$version"
+              digest=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | jq -r .digest)
+              echo "- \`$ref\` (\`$digest\`)"
+            done
+            echo
+            echo "Run the same tag of both images. linux/amd64 and linux/arm64; each image carries an SBOM and SLSA provenance."
+            echo
+            echo "Verify a signature:"
+            echo
+            echo '```sh'
+            echo "cosign verify docker.io/$NAMESPACE/locklens-backend:$version \\"
+            echo "  --certificate-identity-regexp '^https://github.com/$GITHUB_REPOSITORY/\\.github/workflows/images\\.yml@' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+            echo '```'
+            echo
+            echo "## CLI"
+            echo
+            echo "Static Linux binaries of \`locklens\` (the CLI and server) are attached, with \`SHA256SUMS\`."
+            echo
+          } >notes.md
+          cat notes.md
+      - name: Create or update the release
+        run: |
+          flags=()
+          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --verify-tag --title "$TAG" --notes-file notes.md --generate-notes "${flags[@]}"
+          fi

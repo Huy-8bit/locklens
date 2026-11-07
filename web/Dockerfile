@@ -13,7 +13,11 @@ RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.30-alpine
+# Security fixes Alpine published after the base image was built.
+USER root
+RUN apk upgrade --no-cache
+USER 101
 # The entrypoint renders /etc/nginx/templates/*.template with the variables
 # below (only those, so nginx's own $variables are left alone).
 ENV LOCKLENS_BACKEND_URL=http://backend:8080 \

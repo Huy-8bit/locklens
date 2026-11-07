@@ -128,11 +128,9 @@ type viewModel struct {
 // font, or stylesheet is loaded from anywhere.
 func WriteHTML(w io.Writer, e Incident) error {
 	vm := viewModel{E: e}
-	end := time.Now().UTC()
+	end := e.Incident.LastSeenAt
 	if e.Incident.ResolvedAt != nil {
 		end = *e.Incident.ResolvedAt
-	} else {
-		end = e.Incident.LastSeenAt
 	}
 	vm.Duration = render.Duration(end.Sub(e.Incident.OpenedAt).Seconds())
 	for _, f := range e.Findings {

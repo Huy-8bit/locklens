@@ -1,0 +1,25 @@
+name: Nightly
+
+# Every check on every supported PostgreSQL major (make test-compat), once a
+# day on main. It also catches what changes without a commit: new
+# vulnerabilities (govulncheck, npm audit, the image scan) and new patch
+# releases of Go and the base images.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Checks
+    uses: ./.github/workflows/checks.yml
+    with:
+      pg-versions: '["14.24", "15.19", "16.15", "17.11", "18.6"]'

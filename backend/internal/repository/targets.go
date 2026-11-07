@@ -104,10 +104,6 @@ func databasesOrEmpty(d []string) []string {
 // ErrNameTaken is returned when another active target has the same name.
 var ErrNameTaken = errors.New("a target with this name already exists")
 
-const targetColumns = `id, name, description, dsn_ciphertext, display_host, display_port, display_database,
-display_user, enabled, interval_seconds, query_text_enabled, max_connections, node_exporter_url,
-created_at, updated_at, deleted_at, environment`
-
 func scanTarget(row pgx.Row) (Target, error) {
 	var t Target
 	err := row.Scan(&t.ID, &t.Name, &t.Description, &t.DSNCiphertext, &t.DisplayHost, &t.DisplayPort,
@@ -286,9 +282,6 @@ func (s *Store) SaveTargetStatus(ctx context.Context, st TargetStatus) error {
 		st.LastAttemptAt, st.LastSuccessAt, st.LastError, st.LastErrorAt)
 	return s.red.Error(err)
 }
-
-const statusColumns = `target_id, state, server_version, server_version_num, is_standby, capabilities, collectors,
-last_attempt_at, last_success_at, last_error, last_error_at, updated_at`
 
 func scanStatus(row pgx.Row) (TargetStatus, error) {
 	var st TargetStatus

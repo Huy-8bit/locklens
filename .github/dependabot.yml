@@ -1,0 +1,41 @@
+# Weekly dependency updates, grouped so that each ecosystem opens one pull
+# request for minor and patch releases. Major releases come one by one. A
+# release is proposed only after it has been public for a week.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directories: [/backend, /tests/e2e]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      go:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directories: [/web, /tests/e2e]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directories: [/backend, /web]
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

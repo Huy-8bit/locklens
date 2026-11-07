@@ -42,6 +42,8 @@ address) so login rate limits apply per real client.
   `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`, and
   does not advertise its nginx version.
 - Runs as nginx's unprivileged user. Platforms: `linux/amd64`, `linux/arm64`.
+- Signed with cosign (keyless, GitHub Actions); carries an SBOM and SLSA
+  provenance.
 - Tags: `latest` (main branch), `X.Y.Z` and `X.Y` (releases). Use the same tag
   as the backend.
 - Put TLS in front of it (a load balancer or another proxy) for anything

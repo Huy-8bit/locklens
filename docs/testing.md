@@ -340,16 +340,59 @@ make lab-down    # remove the lab containers and volumes
 
 The suite has been run against the pinned images listed in
 [test-report.md](test-report.md#environment); run it locally with
-`make test-integration` (or `make test-compat` for 14 through 18). CI
-([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) runs only the fast
-checks (Go formatting, vet, separation, build, unit tests with and without the
-race detector; frontend typecheck, lint, unit tests, build) and then builds and
-pushes the Docker image on pushes to `main` and `v*` tags. The integration
-suite, the browser E2E suite, and the demo scenarios are not part of CI; run
-`make test-integration`, `make e2e`, and `make demo` before a release.
+`make test-integration` (or `make test-compat` for 14 through 18). CI runs
+them too; see [Continuous integration](#continuous-integration).
 
 PostgreSQL 14 reaches end of life on 2026-11-12 according to the
 [PostgreSQL versioning policy](https://www.postgresql.org/support/versioning/).
+
+## Continuous integration
+
+Every check lives in one reusable workflow,
+[`checks.yml`](../.github/workflows/checks.yml). Each job calls the same make
+targets and scripts as a laptop, so a failure in CI reproduces locally:
+
+| Job | Runs | Locally |
+| --- | --- | --- |
+| Go lint and vulnerabilities | gofmt, `go vet` (with and without the `integration` tag), staticcheck, the CLI/demo import boundary, govulncheck | `make fmt-check vet lint check-separation vuln` |
+| Go unit tests | build, unit tests, race detector, build and parser tests without cgo; on the oldest supported Go (go.mod) and the newest stable | `make backend-build backend-test test-race` |
+| Frontend | typecheck, lint, unit and accessibility tests, build, `npm audit` of runtime dependencies (high and above) | `make web-check` |
+| Workflows, scripts, Prometheus rules | actionlint (with shellcheck for workflow scripts), shellcheck for `scripts/`, promtool and amtool | `make lint-ci check-observability` |
+| Integration | the integration suite on disposable PostgreSQL 14.24 and 18.6, one job each | `make test-integration` |
+| Images, smoke, E2E, scan | builds both images, the Docker smoke test, the browser E2E suite, then a grype scan that fails on critical vulnerabilities with a fix | `make docker-smoke e2e scan-images` |
+
+The `ok` job ("Checks / ok") fails if any of them did not pass; it is the one
+status to require in branch protection. Failed integration and E2E jobs keep
+`test-results/` (logs, Playwright report, traces) as a workflow artifact for
+14 days.
+
+The workflows that run it:
+
+- [`ci.yml`](../.github/workflows/ci.yml): pull requests and pushes to `main`.
+  A new push to a pull request cancels its running checks. When the checks on
+  `main` pass, the images are published as `latest`.
+- [`release.yml`](../.github/workflows/release.yml): a tag `vX.Y.Z` (or a
+  pre-release such as `vX.Y.Z-rc.1`). It runs every check on the tagged
+  commit, publishes the images as `X.Y.Z` and `X.Y`, and creates the GitHub
+  release with the image digests, how to verify the signatures, and static
+  Linux CLI binaries with `SHA256SUMS`.
+- [`nightly.yml`](../.github/workflows/nightly.yml): every day on `main`, the
+  same checks with the integration suite on every supported major (14 through
+  18). It catches what changes without a commit: new vulnerabilities and new
+  Go or base image patch releases.
+- [`images.yml`](../.github/workflows/images.yml): the publishing steps both
+  use. Each platform builds on a native runner (arm64 on `ubuntu-24.04-arm`;
+  cgo under QEMU emulation was most of the old pipeline's time), the images are
+  pushed by digest, joined into one multi-platform tag, and signed with cosign
+  (keyless, GitHub OIDC). BuildKit attaches an SBOM and SLSA provenance.
+
+Actions are pinned to commit SHAs with the version in a comment; Dependabot
+([`.github/dependabot.yml`](../.github/dependabot.yml)) proposes updates to
+them, Go modules, npm packages, and base images weekly, for releases public
+for at least a week. Publishing needs the repository secrets
+`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`; the variable `DOCKERHUB_NAMESPACE`
+overrides the Docker Hub namespace. Pull requests never see the secrets and
+never publish.
 
 ## Monorepo checks
 

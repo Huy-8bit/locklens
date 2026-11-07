@@ -123,7 +123,7 @@ func target(t *testing.T, s *repository.Store, name string) repository.Target {
 func TestSessionsAndAdmin(t *testing.T) {
 	s := migrated(t)
 	ctx := context.Background()
-	id, changed, err := s.UpsertManagedAdmin(ctx, "admin", "$2a$12$hash")
+	_, changed, err := s.UpsertManagedAdmin(ctx, "admin", "$2a$12$hash")
 	if err != nil || changed {
 		t.Fatalf("first admin: %v changed=%v", err, changed)
 	}
@@ -145,7 +145,7 @@ func TestSessionsAndAdmin(t *testing.T) {
 	if u, err := s.UserByUsername(ctx, "DANA"); err != nil || u.ID != viewer.ID {
 		t.Fatalf("other users must stay: %+v %v", u, err)
 	}
-	id, _, _ = s.UpsertManagedAdmin(ctx, "admin", "$2a$12$hash")
+	id, _, _ := s.UpsertManagedAdmin(ctx, "admin", "$2a$12$hash")
 	if _, changed, _ := s.UpsertManagedAdmin(ctx, "admin", "$2a$12$new"); !changed {
 		t.Fatal("a new password must be reported as changed")
 	}

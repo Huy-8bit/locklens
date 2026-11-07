@@ -66,8 +66,6 @@ type User struct {
 	LastLoginAt  *time.Time
 }
 
-const userColumns = "id, username, password_hash, role, disabled, managed, created_at, updated_at, last_login_at"
-
 func scanUser(row pgx.Row) (User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Disabled, &u.Managed, &u.CreatedAt, &u.UpdatedAt, &u.LastLoginAt)

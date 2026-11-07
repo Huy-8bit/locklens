@@ -48,13 +48,6 @@ func fmtBytes(b float64) string {
 	return fmt.Sprintf("%.1f %s", b, units[i])
 }
 
-func deref[T any](p *T, def T) T {
-	if p == nil {
-		return def
-	}
-	return *p
-}
-
 func strOr(p *string, def string) string {
 	if p == nil {
 		return def

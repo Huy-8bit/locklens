@@ -221,7 +221,6 @@ type candidate struct {
 	columns    []string
 	statements []StatementRef
 	share      float64
-	reasons    []string
 }
 
 // proposeIndex orders a statement's predicates on one table into index
