@@ -13,7 +13,7 @@ RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.30-alpine
+FROM nginxinc/nginx-unprivileged:1.31-alpine
 # Security fixes Alpine published after the base image was built.
 USER root
 RUN apk upgrade --no-cache
