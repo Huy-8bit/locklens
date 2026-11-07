@@ -6,7 +6,7 @@
 #   docker run -e LOCKLENS_BACKEND_URL=http://backend:8080 -p 8080:8080 locklens-frontend
 
 # The UI is plain static files; build them on the build machine's architecture.
-FROM --platform=$BUILDPLATFORM node:24-alpine AS build
+FROM --platform=$BUILDPLATFORM node:25-alpine AS build
 WORKDIR /src
 COPY package.json package-lock.json .npmrc ./
 RUN npm ci --no-audit --no-fund
