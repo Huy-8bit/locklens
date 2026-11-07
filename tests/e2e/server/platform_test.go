@@ -196,14 +196,21 @@ func (i *instance) scrape(t *testing.T, token string) (int, string) {
 }
 
 // docker runs docker and returns its trimmed output.
+// docker runs the docker CLI and returns its standard output. Progress
+// messages (such as an image pull on a fresh machine) go to standard error,
+// which is returned instead when the command fails.
 func docker(t *testing.T, stdin string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command("docker", args...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
-	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return strings.TrimSpace(stdout.String() + "\n" + stderr.String()), err
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // TestPrometheusExportAndAlertmanager: Prometheus scrapes the monitored
@@ -250,7 +257,7 @@ func TestPrometheusExportAndAlertmanager(t *testing.T) {
 	t.Cleanup(func() { _, _ = docker(t, "", "rm", "-f", id) })
 	addr, err := docker(t, "", "port", id, "9093/tcp")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("alertmanager port: %v %s", err, addr)
 	}
 	am := "http://" + strings.Split(addr, "\n")[0]
 	waitFor(t, 30*time.Second, "alertmanager ready", func() bool {

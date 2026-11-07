@@ -1,6 +1,7 @@
 # Weekly dependency updates, grouped so that each ecosystem opens one pull
 # request for minor and patch releases. Major releases come one by one. A
-# release is proposed only after it has been public for a week.
+# release is proposed only after it has been public for a week. Majors that
+# need a coordinated change are ignored below and updated by hand.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -32,6 +33,14 @@ updates:
     groups:
       npm:
         update-types: [minor, patch]
+    ignore:
+      # @types/node follows the Node.js major the project runs (24 LTS).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # typescript-eslint has to support a TypeScript major before it can be
+      # taken; update both together by hand.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: docker
     directories: [/backend, /web]
@@ -39,3 +48,7 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    ignore:
+      # The web build stays on a Node.js LTS major; move it by hand.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
