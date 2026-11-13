@@ -27,10 +27,14 @@ in the measured window after the warm-up (steady state):
    between a run's scheduled start and its actual start, including the wait
    for a collection slot, divided by the interval in effect for that run
    (`locklens_collect_lag_ratio`).
-2. **0 write operations dropped** (`locklens_store_dropped_ops_total`, every
-   reason).
+2. **No target moves between servers in steady state**: no lease taken,
+   released, or lost during the measured window
+   (`locklens_cluster_lease_changes_total`).
 3. **The store's WAL rate and CPU are reported** (no threshold yet; they are
-   the baseline for later phases).
+   the baseline for later changes).
+
+Write operations dropped (`locklens_store_dropped_ops_total`) are reported
+too; the write path is not changed in this round.
 
 A collector that exceeds its time budget is slowed down by LockLens itself
 (`LOCKLENS_COLLECTOR_BUDGET_PERCENT`), which lengthens its interval and so
@@ -40,12 +44,15 @@ is reported as such, not as a clean pass.
 
 ### Method
 
-- **Matrix:** N = 20 / 100 / 300 targets × 1 / 2 / 3 servers × two network
-  profiles: `local` (the servers reach the store directly) and `rtt` (through
-  toxiproxy, +1 ms each way, as with a store on another host).
+- **Before and after each change:** N = 20 / 100 targets × 1 / 3 servers ×
+  two network profiles: `local` (the servers reach the store directly) and
+  `rtt` (through toxiproxy, +1 ms each way, as with a store on another host);
+  2 minutes of warm-up, 5 minutes measured.
+- **Goal configuration:** 300 targets on 3 servers, both profiles, 3 minutes
+  of warm-up, 10 minutes measured.
 - **Each run:** empty volumes; 10 PostgreSQL 18 instances carry the targets
   (N/10 each, light `pgbench` traffic on every instance); targets created
-  through the API; 3 minutes of warm-up, 10 minutes measured.
+  through the API.
 - **Measured:** every server's `/metrics` at the start and end of the window
   (counters and histograms as differences; percentiles interpolated within
   histogram buckets), gauges every 5 seconds, the store's `pg_stat_database`

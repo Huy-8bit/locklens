@@ -1130,3 +1130,97 @@ func TestAlertingStorage(t *testing.T) {
 		t.Fatalf("only the synced rule resolved: %+v", c)
 	}
 }
+
+// Batched lease, live view and status statements, as the collector manager
+// uses them with hundreds of targets.
+func TestClusterBatchStatements(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+
+	// HoldLeases takes free leases, renews its own, skips another holder's.
+	names := make([]string, 0, 300)
+	for i := range 300 {
+		names = append(names, fmt.Sprintf("target:%d", i+1))
+	}
+	got, err := s.HoldLeases(ctx, names[:200], "a", time.Minute)
+	if err != nil || len(got) != 200 {
+		t.Fatalf("a takes 200: %d %v", len(got), err)
+	}
+	got, err = s.HoldLeases(ctx, names[150:], "b", time.Minute)
+	if err != nil || len(got) != 100 {
+		t.Fatalf("b gets the 100 free ones only: %d %v", len(got), err)
+	}
+	got, err = s.HoldLeases(ctx, names[:200], "a", time.Minute)
+	if err != nil || len(got) != 200 {
+		t.Fatalf("a renews its 200: %d %v", len(got), err)
+	}
+	// Expired leases are taken over in the same statement.
+	if _, err := s.HoldLeases(ctx, names[200:], "b", time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	got, err = s.HoldLeases(ctx, names[200:], "a", time.Minute)
+	if err != nil || len(got) != 100 {
+		t.Fatalf("a takes b's expired leases: %d %v", len(got), err)
+	}
+	// ReleaseLeases only releases the holder's own.
+	if err := s.ReleaseLeases(ctx, names, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if ls, _ := s.Leases(ctx, "target:"); len(ls) != 300 {
+		t.Fatalf("b released a's leases: %d left", len(ls))
+	}
+	if err := s.ReleaseLeases(ctx, names[:100], "a"); err != nil {
+		t.Fatal(err)
+	}
+	if ls, _ := s.Leases(ctx, "target:"); len(ls) != 200 {
+		t.Fatalf("after releasing 100: %d", len(ls))
+	}
+
+	// Two servers taking overlapping sets at the same time do not deadlock.
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, h := range []string{"c", "d"} {
+		wg.Go(func() {
+			for range 20 {
+				if _, err := s.HoldLeases(ctx, names, h, time.Millisecond); err != nil {
+					errs <- err
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent HoldLeases: %v", err)
+	}
+
+	// LiveStates reads many views in one statement.
+	t1, t2, t3 := target(t, s, "ls1"), target(t, s, "ls2"), target(t, s, "ls3")
+	for _, tg := range []repository.Target{t1, t2} {
+		if err := s.SaveLiveState(ctx, tg.ID, "a", time.Now(), []byte(`{"Connected":true}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	views, err := s.LiveStates(ctx, []int64{t1.ID, t2.ID, t3.ID})
+	if err != nil || len(views) != 2 {
+		t.Fatalf("live states: %d %v", len(views), err)
+	}
+
+	// SaveTargetStatuses writes a batch; a row that cannot be written (its
+	// target was deleted) does not hold back the others.
+	ok := repository.TargetStatus{TargetID: t1.ID, State: "healthy"}
+	gone := repository.TargetStatus{TargetID: 999999, State: "healthy"}
+	other := repository.TargetStatus{TargetID: t2.ID, State: "unreachable"}
+	failed, err := s.SaveTargetStatuses(ctx, []repository.TargetStatus{ok, gone, other})
+	if err == nil || len(failed) != 1 || failed[0] != 999999 {
+		t.Fatalf("failed rows: %v %v", failed, err)
+	}
+	if st, err := s.GetTargetStatus(ctx, t2.ID); err != nil || st.State != "unreachable" {
+		t.Fatalf("t2 status: %+v %v", st, err)
+	}
+	if failed, err := s.SaveTargetStatuses(ctx, []repository.TargetStatus{ok, other}); err != nil || len(failed) != 0 {
+		t.Fatalf("batch: %v %v", failed, err)
+	}
+}

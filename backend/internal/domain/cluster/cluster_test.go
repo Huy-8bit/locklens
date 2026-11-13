@@ -21,6 +21,8 @@ type memStore struct {
 	beats   map[string]time.Time
 	leases  map[string]repository.Lease
 	notices []string
+	// batchCalls counts HoldLeases and ReleaseLeases statements.
+	batchCalls int
 }
 
 func newMem() *memStore {
@@ -57,6 +59,29 @@ func (m *memStore) HoldLease(_ context.Context, name, holder string, ttl time.Du
 	l.ExpiresAt = m.now.Add(ttl)
 	m.leases[name] = l
 	return true, l.AcquiredAt, nil
+}
+
+func (m *memStore) HoldLeases(ctx context.Context, names []string, holder string, ttl time.Duration) ([]string, error) {
+	m.mu.Lock()
+	m.batchCalls++
+	m.mu.Unlock()
+	var out []string
+	for _, name := range names {
+		if ok, _, _ := m.HoldLease(ctx, name, holder, ttl); ok {
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) ReleaseLeases(ctx context.Context, names []string, holder string) error {
+	m.mu.Lock()
+	m.batchCalls++
+	m.mu.Unlock()
+	for _, name := range names {
+		_ = m.ReleaseLease(ctx, name, holder)
+	}
+	return nil
 }
 
 func (m *memStore) ReleaseLease(_ context.Context, name, holder string) error {
@@ -138,6 +163,37 @@ func TestTargetsAreSplitAndTakenOver(t *testing.T) {
 	}
 }
 
+func TestAssignCostsAConstantNumberOfStatements(t *testing.T) {
+	ctx := context.Background()
+	st := newMem()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a, b := New(Repositories{ClusterRepository: st}, "a", "h", "v", log).(*node), New(Repositories{ClusterRepository: st}, "b", "h", "v", log).(*node)
+	targets := make([]int64, 300)
+	for i := range targets {
+		targets[i] = int64(i + 1)
+	}
+	a.beat(ctx)
+	if got, _ := a.Assign(ctx, targets); len(got) != 300 {
+		t.Fatalf("alone: %d", len(got))
+	}
+	if st.batchCalls != 1 {
+		t.Fatalf("taking 300 leases took %d statements, want 1", st.batchCalls)
+	}
+	// b joins: a renews 150 and releases 150 in two statements.
+	b.beat(ctx)
+	a.beat(ctx)
+	st.batchCalls = 0
+	if got, _ := a.Assign(ctx, targets); len(got) != 150 {
+		t.Fatalf("a after b joined: %d", len(got))
+	}
+	if st.batchCalls != 2 {
+		t.Fatalf("renew + release took %d statements, want 2", st.batchCalls)
+	}
+	if got, _ := b.Assign(ctx, targets); len(got) != 150 {
+		t.Fatalf("b: %d", len(got))
+	}
+}
+
 func TestSingletonRunsOnOneServer(t *testing.T) {
 	st := newMem()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -196,3 +252,63 @@ func TestBusSkipsItsOwnMessagesAndRoutesByKind(t *testing.T) {
 type publishFunc func(kind string, payload any)
 
 func (f publishFunc) Publish(kind string, payload any) { f(kind, payload) }
+
+func TestCollectedEventsAreCoalescedPerTarget(t *testing.T) {
+	ctx := context.Background()
+	st := newMem()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a, b := New(Repositories{ClusterRepository: st}, "a", "h", "v", log).(*node), New(Repositories{ClusterRepository: st}, "b", "h", "v", log).(*node)
+	b.beat(ctx)
+	a.beat(ctx) // a is not alone: it sends
+	bs := NewBus(a, Repositories{ClusterRepository: st}, publishFunc(func(string, any) {}), nil, log).(*bus)
+	clock := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	bs.now = func() time.Time { return clock }
+	send := func(target int64, collector string, ok bool) {
+		bs.Send("target.collected", map[string]any{"target_id": target, "collector": collector, "at": clock, "ok": ok})
+	}
+	drain := func() []collectedEvent {
+		var out []collectedEvent
+		for len(bs.queue) > 0 {
+			e := <-bs.queue
+			var ev collectedEvent
+			_ = json.Unmarshal(e.Payload, &ev)
+			out = append(out, ev)
+		}
+		return out
+	}
+
+	// The first event of a target leaves at once; the next ones within a
+	// second are merged into one.
+	send(1, "activity", true)
+	send(1, "database", true)
+	send(1, "statements", false)
+	send(2, "activity", true)
+	if got := drain(); len(got) != 2 || got[0].TargetID != 1 || got[1].TargetID != 2 {
+		t.Fatalf("first events: %+v", got)
+	}
+	bs.flushCoalesced()
+	if got := drain(); len(got) != 0 {
+		t.Fatalf("merged event sent before a second passed: %+v", got)
+	}
+	clock = clock.Add(time.Second)
+	bs.flushCoalesced()
+	got := drain()
+	if len(got) != 1 || got[0].TargetID != 1 || strings.Join(got[0].Collectors, ",") != "database,statements" || got[0].OK {
+		t.Fatalf("merged event: %+v", got)
+	}
+	// 100 events of one target in one second: at most two messages.
+	for range 100 {
+		send(3, "load", true)
+	}
+	clock = clock.Add(time.Second)
+	bs.flushCoalesced()
+	if got := drain(); len(got) != 2 {
+		t.Fatalf("100 events in a second became %d messages, want 2", len(got))
+	}
+	// Other kinds are not coalesced.
+	bs.Send("incident.updated", map[string]any{"id": 1})
+	bs.Send("incident.updated", map[string]any{"id": 1})
+	if len(bs.queue) != 2 {
+		t.Fatalf("incident events: %d queued", len(bs.queue))
+	}
+}

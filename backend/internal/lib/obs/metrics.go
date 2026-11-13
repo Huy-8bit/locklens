@@ -19,6 +19,7 @@ type Metrics struct {
 	HTTPRequests     *Counter
 	SSEClients       *Gauge
 	CollectSlotsBusy *Gauge
+	LoadSlotsBusy    *Gauge
 
 	// Scaling instruments (see docs/test-report.md, "Scaling measurements").
 	CollectLag        *Histogram
@@ -39,6 +40,7 @@ type Metrics struct {
 	ManagerSync       *Histogram
 	ClusterAssign     *Histogram
 	ClusterAssignErr  *Counter
+	LeaseChanges      *Counter
 	LivePublish       *Histogram
 	LivePublishBytes  *Counter
 	LiveViewBytes     *Histogram
@@ -74,7 +76,8 @@ func NewMetrics() *Metrics {
 		IncidentsOpen:    r.NewGauge("locklens_incidents_open", "Currently open incidents."),
 		HTTPRequests:     r.NewCounter("locklens_http_requests_total", "HTTP requests by route class and status class.", "route", "status"),
 		SSEClients:       r.NewGauge("locklens_sse_clients", "Connected server-sent event clients."),
-		CollectSlotsBusy: r.NewGauge("locklens_collect_slots_busy", "Collections currently running (bounded by the global limit)."),
+		CollectSlotsBusy: r.NewGauge("locklens_collect_slots_busy", "Collections currently running (bounded by LOCKLENS_MAX_CONCURRENT_COLLECTIONS; active session samples have their own slots)."),
+		LoadSlotsBusy:    r.NewGauge("locklens_load_slots_busy", "Active session samples currently running (bounded by LOCKLENS_MAX_CONCURRENT_LOAD_SAMPLES)."),
 
 		CollectLag: r.NewHistogram("locklens_collect_lag_seconds",
 			"Delay between a collector run's scheduled time and its actual start (includes waiting for a collection slot).", latencyBuckets, "collector"),
@@ -91,7 +94,7 @@ func NewMetrics() *Metrics {
 		StoreDroppedOps: r.NewCounter("locklens_store_dropped_ops_total",
 			"Write operations dropped, by reason.", "reason"),
 		StatusWrite: r.NewHistogram("locklens_store_status_write_seconds",
-			"Duration of saving a target's collector status (written directly, not through the writer).", latencyBuckets),
+			"Duration of saving the changed collector statuses of this server's targets (one batch every few seconds).", latencyBuckets),
 		RecorderAnalyze: r.NewHistogram("locklens_recorder_analyze_seconds",
 			"Duration of rule evaluation and incident recording after an activity collection.", latencyBuckets),
 		PoolConns:         r.NewGauge("locklens_store_pool_conns", "Monitoring store pool connections by state.", "state"),
@@ -103,6 +106,8 @@ func NewMetrics() *Metrics {
 		ManagerSync:       r.NewHistogram("locklens_manager_sync_seconds", "Duration of one synchronisation of collector workers with the stored targets.", latencyBuckets),
 		ClusterAssign:     r.NewHistogram("locklens_cluster_assign_seconds", "Duration of renewing and taking target leases on one sync.", latencyBuckets),
 		ClusterAssignErr:  r.NewCounter("locklens_cluster_assign_errors_total", "Failed target lease assignments (workers are kept, leases not renewed)."),
+		LeaseChanges: r.NewCounter("locklens_cluster_lease_changes_total",
+			"Target leases this server took, released (rebalance, target removed) or lost (taken by another server). Steady clusters keep these flat.", "change"),
 		LivePublish:       r.NewHistogram("locklens_live_publish_seconds", "Duration of publishing the live views of this server's targets (one tick).", latencyBuckets),
 		LivePublishBytes:  r.NewCounter("locklens_live_publish_bytes_total", "Bytes of live views written to live_state."),
 		LiveViewBytes:     r.NewHistogram("locklens_live_view_bytes", "Size of one published live view (JSON).", sizeBuckets),

@@ -34,6 +34,11 @@ type TargetRepository interface {
 	PurgeTarget(ctx context.Context, id int64, keepIncidents bool) error
 	// SaveTargetStatus overwrites the status row.
 	SaveTargetStatus(ctx context.Context, st TargetStatus) error
+	// SaveTargetStatuses overwrites many status rows in one round trip. When
+	// the batch fails it writes them one by one, so one failing row (a target
+	// deleted meanwhile) does not hold back the others; it returns the IDs
+	// whose row could not be written and the last such error.
+	SaveTargetStatuses(ctx context.Context, sts []TargetStatus) (failed []int64, err error)
 	// GetTargetStatus returns the status of one target.
 	GetTargetStatus(ctx context.Context, id int64) (TargetStatus, error)
 	// ListTargetStatuses returns statuses keyed by target ID.
@@ -270,6 +275,34 @@ type TargetStatus struct {
 
 // SaveTargetStatus overwrites the status row.
 func (s *Store) SaveTargetStatus(ctx context.Context, st TargetStatus) error {
+	_, err := s.pool.Exec(ctx, queries.SaveTargetStatus, statusArgs(st)...)
+	return s.red.Error(err)
+}
+
+// SaveTargetStatuses overwrites many status rows in one round trip; see
+// TargetRepository.
+func (s *Store) SaveTargetStatuses(ctx context.Context, sts []TargetStatus) ([]int64, error) {
+	if len(sts) == 0 {
+		return nil, nil
+	}
+	b := &pgx.Batch{}
+	for _, st := range sts {
+		b.Queue(queries.SaveTargetStatus, statusArgs(st)...)
+	}
+	if err := s.pool.SendBatch(ctx, b).Close(); err == nil {
+		return nil, nil
+	}
+	var failed []int64
+	var last error
+	for _, st := range sts {
+		if err := s.SaveTargetStatus(ctx, st); err != nil {
+			failed, last = append(failed, st.TargetID), err
+		}
+	}
+	return failed, last
+}
+
+func statusArgs(st TargetStatus) []any {
 	caps, colls := st.Capabilities, st.Collectors
 	if caps == nil {
 		caps = json.RawMessage("{}")
@@ -277,10 +310,8 @@ func (s *Store) SaveTargetStatus(ctx context.Context, st TargetStatus) error {
 	if colls == nil {
 		colls = json.RawMessage("{}")
 	}
-	_, err := s.pool.Exec(ctx, queries.SaveTargetStatus,
-		st.TargetID, st.State, st.ServerVersion, st.ServerVersionNum, st.IsStandby, caps, colls,
-		st.LastAttemptAt, st.LastSuccessAt, st.LastError, st.LastErrorAt)
-	return s.red.Error(err)
+	return []any{st.TargetID, st.State, st.ServerVersion, st.ServerVersionNum, st.IsStandby, caps, colls,
+		st.LastAttemptAt, st.LastSuccessAt, st.LastError, st.LastErrorAt}
 }
 
 func scanStatus(row pgx.Row) (TargetStatus, error) {

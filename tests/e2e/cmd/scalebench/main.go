@@ -37,7 +37,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: scalebench setup|measure [flags]")
+		fmt.Fprintln(os.Stderr, "usage: scalebench setup|measure|report [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -46,6 +46,8 @@ func main() {
 		err = setup(os.Args[2:])
 	case "measure":
 		err = measure(os.Args[2:])
+	case "report":
+		err = report(os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}
@@ -494,7 +496,12 @@ func measure(args []string) error {
 	}
 	as := all1.histogram("locklens_cluster_assign_seconds", nil).minus(all0.histogram("locklens_cluster_assign_seconds", nil))
 	sy := all1.histogram("locklens_manager_sync_seconds", nil).minus(all0.histogram("locklens_manager_sync_seconds", nil))
+	leaseChanges := map[string]float64{}
+	for _, c := range all1.labelValues("locklens_cluster_lease_changes_total", "change") {
+		leaseChanges[c] = all1.sum("locklens_cluster_lease_changes_total", map[string]string{"change": c}) - all0.sum("locklens_cluster_lease_changes_total", map[string]string{"change": c})
+	}
 	res["cluster"] = map[string]any{
+		"lease_changes": leaseChanges,
 		"assign_p99_ms": ms(as.quantile(0.99)), "assign_max_bucket_ms": ms(maxBucket(as)),
 		"assign_errors": all1.sum("locklens_cluster_assign_errors_total", nil) - all0.sum("locklens_cluster_assign_errors_total", nil),
 		"sync_p99_ms":   ms(sy.quantile(0.99)),

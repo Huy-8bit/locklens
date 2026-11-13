@@ -54,7 +54,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	if err != nil {
 		return err
 	}
-	store, err := OpenStore(ctx, cfg.StoreDSN, &cfg.StoreTimescale, log)
+	store, err := OpenStore(ctx, cfg.StoreDSN, cfg.StoreMaxConns, &cfg.StoreTimescale, log)
 	if err != nil {
 		return err
 	}
@@ -72,7 +72,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	// cluster bus, the browsers of the other servers sharing the store.
 	hub := events.NewHub(100, func(n int) { metrics.SSEClients.Set(float64(n)) })
 	clusterRepos := checked(&wiring, cluster.Repositories{ClusterRepository: store})
-	node := cluster.New(clusterRepos, serverID(cfg), hostname(), version, log)
+	node := cluster.New(clusterRepos, serverID(cfg), hostname(), version, log, metrics)
 	bus := cluster.NewBus(node, clusterRepos, hub, metrics, log)
 	observePool(metrics, store)
 
@@ -95,7 +95,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	writer := collector.NewWriter(collectorRepos, cfg.WriteQueue, metrics, log)
 	manager := collector.NewManager(collector.Deps{Store: collectorRepos, Box: box, Writer: writer, Recorder: recorder, Events: bus,
 		Settings: st, Cluster: node, Bus: bus, Metrics: metrics, Log: log},
-		collector.Config{MaxConcurrent: cfg.MaxConcurrent, Version: version, StatementsInterval: statementsInterval(cfg), LoadInterval: loadInterval(cfg),
+		collector.Config{MaxConcurrent: cfg.MaxConcurrent, MaxConcurrentLoad: cfg.MaxConcurrentLoad, Version: version, StatementsInterval: statementsInterval(cfg), LoadInterval: loadInterval(cfg),
 			BurstDuration: burstDuration(cfg), BudgetPercent: cfg.CollectorBudgetPercent})
 	tsvc := targets.New(checked(&wiring, targets.Repositories{CollectionRepository: store, TargetRepository: store}), box, manager, version)
 	ws := workspace.New(checked(&wiring, workspace.Repositories{WorkspaceRepository: store, TargetRepository: store}), box)

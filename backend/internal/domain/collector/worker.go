@@ -231,14 +231,17 @@ func (w *worker) jobEnabled(j *job) (bool, string) {
 
 // runJob runs one collector; scheduled is when it was due (for the lag metrics).
 func (w *worker) runJob(ctx context.Context, j *job, scheduled time.Time) {
+	sem, busy, gauge := w.m.sem, &w.m.slotsBusy, w.m.metrics.CollectSlotsBusy
+	if j.name == CollectorLoad {
+		sem, busy, gauge = w.m.loadSem, &w.m.loadBusy, w.m.metrics.LoadSlotsBusy
+	}
 	waitFrom := time.Now()
 	select {
-	case w.m.sem <- struct{}{}:
+	case sem <- struct{}{}:
 	case <-ctx.Done():
 		return
 	}
-	w.m.slotsBusy.Add(1)
-	w.m.metrics.CollectSlotsBusy.Set(float64(w.m.slotsBusy.Load()))
+	gauge.Set(float64(busy.Add(1)))
 	start := time.Now()
 	w.m.metrics.CollectSlotWait.Observe(start.Sub(waitFrom).Seconds(), j.name)
 	if lag := start.Sub(scheduled); !scheduled.IsZero() {
@@ -251,9 +254,8 @@ func (w *worker) runJob(ctx context.Context, j *job, scheduled time.Time) {
 	jctx, cancel := context.WithTimeout(ctx, j.timeout)
 	err := j.run(jctx)
 	cancel()
-	<-w.m.sem
-	w.m.slotsBusy.Add(-1)
-	w.m.metrics.CollectSlotsBusy.Set(float64(w.m.slotsBusy.Load()))
+	<-sem
+	gauge.Set(float64(busy.Add(-1)))
 	if ctx.Err() != nil {
 		return
 	}
@@ -425,14 +427,8 @@ func (w *worker) saveStatus(ctx context.Context) {
 		st.LastError, st.LastErrorAt = v.ConnectError, v.ConnectAt
 		st.LastAttemptAt = v.ConnectAt
 	}
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	from := time.Now()
-	err := w.m.store.SaveTargetStatus(sctx, st)
-	w.m.metrics.StatusWrite.Observe(time.Since(from).Seconds())
-	if err != nil {
-		w.m.log.Warn("save target status failed", "target_id", w.target.ID, "error", err.Error())
-	}
+	// Written in a batch with the other targets' statuses (statusWriter).
+	w.m.status.put(st)
 }
 
 func (w *worker) jobByName(name string) *job {

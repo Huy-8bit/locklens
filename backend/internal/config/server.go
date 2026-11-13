@@ -30,10 +30,17 @@ type Config struct {
 	// this long, beyond the history retention.
 	BaselineRetention time.Duration
 	MaxConcurrent     int
-	WriteQueue        int
-	MetricsEnabled    bool
-	BootstrapTargets  string
-	DemoMode          bool
+	// MaxConcurrentLoad caps active session samples running at once; they
+	// have their own slots so the frequent, short samples never wait for
+	// (or delay) the other collectors.
+	MaxConcurrentLoad int
+	// StoreMaxConns is LOCKLENS_STORE_MAX_CONNS; 0 when unset (then
+	// pool_max_conns in the store DSN applies, else 8).
+	StoreMaxConns    int
+	WriteQueue       int
+	MetricsEnabled   bool
+	BootstrapTargets string
+	DemoMode         bool
 	// LoadSampling turns active session sampling on; LoadSampleInterval is
 	// the time between two samples of pg_stat_activity per target.
 	LoadSampling       bool
@@ -144,6 +151,10 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	c.BaselineRetention = dur("LOCKLENS_BASELINE_RETENTION", 15*24*time.Hour, 24*time.Hour)
 	c.ShutdownTimeout = dur("LOCKLENS_SHUTDOWN_TIMEOUT", 10*time.Second, time.Second)
 	c.MaxConcurrent = num("LOCKLENS_MAX_CONCURRENT_COLLECTIONS", 4, 1, 64)
+	c.MaxConcurrentLoad = num("LOCKLENS_MAX_CONCURRENT_LOAD_SAMPLES", 4, 1, 64)
+	if strings.TrimSpace(getenv("LOCKLENS_STORE_MAX_CONNS")) != "" {
+		c.StoreMaxConns = num("LOCKLENS_STORE_MAX_CONNS", 8, 2, 1000)
+	}
 	c.WriteQueue = num("LOCKLENS_WRITE_QUEUE", 2048, 16, 100000)
 	c.MetricsEnabled = boolean("LOCKLENS_METRICS_ENABLED", true)
 	c.MetricsRequireToken = boolean("LOCKLENS_METRICS_REQUIRE_TOKEN", false)

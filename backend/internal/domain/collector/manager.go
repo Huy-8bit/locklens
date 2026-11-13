@@ -34,8 +34,11 @@ const liveEvery = 5 * time.Second
 // Config configures the manager.
 type Config struct {
 	MaxConcurrent int
-	SyncInterval  time.Duration
-	Version       string
+	// MaxConcurrentLoad caps active session samples running at once (their
+	// own slots, so they never queue behind the other collectors).
+	MaxConcurrentLoad int
+	SyncInterval      time.Duration
+	Version           string
 	// StatementsInterval is the minimum pg_stat_statements interval (default 60 s).
 	StatementsInterval time.Duration
 	// LoadInterval is the active session sampling interval; 0 turns
@@ -89,6 +92,10 @@ type Manager interface {
 	// Collecting returns the live views of the targets this server
 	// collects (in a cluster, each target is collected by one server).
 	Collecting() map[int64]live.View
+	// Views is View for many targets (fleet pages): targets collected
+	// elsewhere are read from the store in one statement. Targets without a
+	// view are absent.
+	Views(ctx context.Context, ids []int64) map[int64]live.View
 	// Run synchronises workers with the stored targets until ctx is cancelled,
 	// then stops every worker.
 	Run(ctx context.Context)
@@ -115,11 +122,17 @@ type manager struct {
 
 	sem       chan struct{}
 	slotsBusy atomic.Int64
-	reload    chan struct{}
+	// loadSem bounds load samples separately: they run every few seconds per
+	// target and take milliseconds, so sharing sem would make them the bulk
+	// of its queue.
+	loadSem  chan struct{}
+	loadBusy atomic.Int64
+	reload   chan struct{}
 
 	cluster cluster.Node
 	bus     cluster.Bus
 	remote  remoteViews
+	status  *statusWriter
 
 	mu      sync.Mutex
 	workers map[int64]*running
@@ -137,6 +150,9 @@ func NewManager(d Deps, cfg Config) Manager {
 	if cfg.MaxConcurrent < 1 {
 		cfg.MaxConcurrent = 4
 	}
+	if cfg.MaxConcurrentLoad < 1 {
+		cfg.MaxConcurrentLoad = 4
+	}
 	if cfg.SyncInterval <= 0 {
 		cfg.SyncInterval = 15 * time.Second
 	}
@@ -149,8 +165,8 @@ func NewManager(d Deps, cfg Config) Manager {
 	return &manager{store: d.Store, box: d.Box, writer: d.Writer, recorder: d.Recorder, events: d.Events, settings: d.Settings,
 		cluster: d.Cluster, bus: d.Bus, metrics: d.Metrics, log: d.Log, version: cfg.Version, syncEvery: cfg.SyncInterval, stmtEvery: cfg.StatementsInterval, loadEvery: cfg.LoadInterval,
 		burstDur: cfg.BurstDuration, budget: float64(cfg.BudgetPercent) / 100,
-		sem: make(chan struct{}, cfg.MaxConcurrent), reload: make(chan struct{}, 1),
-		workers: map[int64]*running{}, states: map[int64]*State{}}
+		sem: make(chan struct{}, cfg.MaxConcurrent), loadSem: make(chan struct{}, cfg.MaxConcurrentLoad), reload: make(chan struct{}, 1),
+		workers: map[int64]*running{}, states: map[int64]*State{}, status: newStatusWriter()}
 }
 
 // Burst collects a target faster for the configured burst duration (from
@@ -233,6 +249,43 @@ func (m *manager) View(ctx context.Context, id int64) (live.View, bool) {
 	return live.View{}, false
 }
 
+// Views is View for many targets (fleet pages): targets collected elsewhere
+// are read from the store in one statement.
+func (m *manager) Views(ctx context.Context, ids []int64) map[int64]live.View {
+	out := make(map[int64]live.View, len(ids))
+	var others []int64
+	m.mu.Lock()
+	stale := map[int64]*State{}
+	for _, id := range ids {
+		_, running := m.workers[id]
+		s := m.states[id]
+		switch {
+		case running && s != nil:
+			out[id] = s.Snapshot()
+		default:
+			others = append(others, id)
+			if s != nil {
+				stale[id] = s
+			}
+		}
+	}
+	m.mu.Unlock()
+	if len(others) > 0 && m.cluster != nil && !m.cluster.Alone() {
+		from := time.Now()
+		for id, v := range m.remote.getMany(ctx, m.store, others) {
+			out[id] = v
+		}
+		m.metrics.LiveRemoteRead.Observe(time.Since(from).Seconds())
+	}
+	// As View: otherwise the last view this server had.
+	for id, s := range stale {
+		if _, ok := out[id]; !ok {
+			out[id] = s.Snapshot()
+		}
+	}
+	return out
+}
+
 // Run synchronises workers with the stored targets until ctx is cancelled,
 // then stops every worker.
 func (m *manager) Run(ctx context.Context) {
@@ -241,11 +294,14 @@ func (m *manager) Run(ctx context.Context) {
 	if m.cluster != nil {
 		go m.publishLive(ctx)
 	}
+	go m.runStatus(ctx)
 	m.sync(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			m.stopAll()
+			// The workers' last statuses (for example "stopped collecting").
+			m.flushStatus(context.Background())
 			return
 		case <-t.C:
 		case <-m.reload:
@@ -290,46 +346,71 @@ func (m *manager) sync(ctx context.Context) {
 			}
 		}
 	}
+	// Decide under the lock, but stop workers (which waits for a running
+	// collection) and adopt incidents (store reads) without it: View,
+	// Collecting and the live view publisher must not wait for a takeover of
+	// many targets.
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	var stopping []*running
 	updated := map[int64]bool{}
+	var forgotten []int64
 	for id, r := range m.workers {
 		t, ok := wanted[id]
 		if !ok || !t.UpdatedAt.Equal(r.updatedAt) {
 			r.cancel()
-			<-r.done
+			stopping = append(stopping, r)
 			delete(m.workers, id)
 			if ok {
 				updated[id] = true
 			} else {
-				m.metrics.CollectFreshness.Delete(strconv.FormatInt(id, 10))
-				if m.recorder != nil {
-					m.recorder.Forget(id)
-				}
+				forgotten = append(forgotten, id)
 			}
 		}
 	}
+	var starts []repository.Target
 	for id, t := range wanted {
-		if _, ok := m.workers[id]; ok {
-			continue
+		if _, ok := m.workers[id]; !ok {
+			starts = append(starts, t)
 		}
-		// A target this server starts collecting (at start-up or taken
-		// over from another server): attach its open incidents.
-		if m.recorder != nil && !updated[id] {
+	}
+	m.mu.Unlock()
+
+	for _, r := range stopping {
+		<-r.done
+	}
+	for _, id := range forgotten {
+		m.status.forget(id)
+		m.metrics.CollectFreshness.Delete(strconv.FormatInt(id, 10))
+		if m.recorder != nil {
+			m.recorder.Forget(id)
+		}
+	}
+	for _, t := range starts {
+		// A target this server starts collecting (at start-up or taken over
+		// from another server): attach its open incidents.
+		if m.recorder != nil && !updated[t.ID] {
 			actx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			if err := m.recorder.Adopt(actx, id); err != nil {
-				m.log.Warn("adopting open incidents failed", "target_id", id, "error", err.Error())
+			if err := m.recorder.Adopt(actx, t.ID); err != nil {
+				m.log.Warn("adopting open incidents failed", "target_id", t.ID, "error", err.Error())
 			}
 			cancel()
 		}
-		st, ok := m.states[id]
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range starts {
+		if _, ok := m.workers[t.ID]; ok {
+			continue
+		}
+		st, ok := m.states[t.ID]
 		if !ok {
 			st = newState()
-			m.states[id] = st
+			m.states[t.ID] = st
 		}
 		wctx, cancel := context.WithCancel(ctx)
 		r := &running{cancel: cancel, done: make(chan struct{}), updatedAt: t.UpdatedAt}
-		m.workers[id] = r
+		m.workers[t.ID] = r
 		w := newWorker(m, t, st)
 		go func() {
 			defer close(r.done)
@@ -351,11 +432,15 @@ func (m *manager) sync(ctx context.Context) {
 
 func (m *manager) stopAll() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	stopping := make([]*running, 0, len(m.workers))
 	for id, r := range m.workers {
 		r.cancel()
-		<-r.done
+		stopping = append(stopping, r)
 		delete(m.workers, id)
+	}
+	m.mu.Unlock()
+	for _, r := range stopping {
+		<-r.done
 	}
 	m.metrics.ActiveTargets.Set(0)
 }
@@ -419,7 +504,9 @@ func (m *manager) publishLive(ctx context.Context) {
 	}
 }
 
-// remoteViews caches the live views other servers published.
+// remoteViews caches the live views other servers published. The lock only
+// guards the map: store reads run without it, so concurrent API requests for
+// different targets do not queue behind one another.
 type remoteViews struct {
 	mu    sync.Mutex
 	cache map[int64]remoteView
@@ -431,20 +518,81 @@ type remoteView struct {
 	ok      bool
 }
 
-// get returns a published view younger than a minute (cached two seconds).
-func (r *remoteViews) get(ctx context.Context, store Repositories, id int64) (live.View, bool) {
+// remoteFresh is how long a fetched view is reused; remoteMaxAge is how old a
+// published view may be and still be shown.
+const (
+	remoteFresh  = 2 * time.Second
+	remoteMaxAge = time.Minute
+)
+
+func (r *remoteViews) cached(id int64, now time.Time) (remoteView, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if c, ok := r.cache[id]; ok && time.Since(c.fetched) < 2*time.Second {
-		return c.view, c.ok
-	}
+	c, ok := r.cache[id]
+	return c, ok && now.Sub(c.fetched) < remoteFresh
+}
+
+func (r *remoteViews) put(id int64, c remoteView) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.cache == nil {
 		r.cache = map[int64]remoteView{}
 	}
-	c := remoteView{fetched: time.Now()}
-	if _, at, raw, err := store.LiveState(ctx, id); err == nil && time.Since(at) < time.Minute {
+	r.cache[id] = c
+}
+
+// get returns a published view younger than a minute (cached two seconds).
+func (r *remoteViews) get(ctx context.Context, store Repositories, id int64) (live.View, bool) {
+	now := time.Now()
+	if c, ok := r.cached(id, now); ok {
+		return c.view, c.ok
+	}
+	c := remoteView{fetched: now}
+	if _, at, raw, err := store.LiveState(ctx, id); err == nil && now.Sub(at) < remoteMaxAge {
 		c.ok = json.Unmarshal(raw, &c.view) == nil
 	}
-	r.cache[id] = c
+	r.put(id, c)
 	return c.view, c.ok
+}
+
+// getMany is get for many targets with one store read for those not cached.
+func (r *remoteViews) getMany(ctx context.Context, store Repositories, ids []int64) map[int64]live.View {
+	now := time.Now()
+	out := make(map[int64]live.View, len(ids))
+	var missing []int64
+	for _, id := range ids {
+		if c, ok := r.cached(id, now); ok {
+			if c.ok {
+				out[id] = c.view
+			}
+			continue
+		}
+		missing = append(missing, id)
+	}
+	if len(missing) == 0 {
+		return out
+	}
+	rows, err := store.LiveStates(ctx, missing)
+	if err != nil {
+		return out // like get: unknown views are simply absent
+	}
+	found := make(map[int64]remoteView, len(rows))
+	for _, row := range rows {
+		c := remoteView{fetched: now}
+		if now.Sub(row.At) < remoteMaxAge {
+			c.ok = json.Unmarshal(row.View, &c.view) == nil
+		}
+		found[row.TargetID] = c
+	}
+	for _, id := range missing {
+		c, ok := found[id]
+		if !ok {
+			c = remoteView{fetched: now}
+		}
+		r.put(id, c)
+		if c.ok {
+			out[id] = c.view
+		}
+	}
+	return out
 }

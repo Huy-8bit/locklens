@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -22,12 +23,20 @@ type ClusterRepository interface {
 	HoldLease(ctx context.Context, name, holder string, ttl time.Duration) (held bool, acquired time.Time, err error)
 	// ReleaseLease gives up a lease the holder has.
 	ReleaseLease(ctx context.Context, name, holder string) error
+	// HoldLeases takes or renews many leases in one statement (as HoldLease)
+	// and returns the names the holder has afterwards.
+	HoldLeases(ctx context.Context, names []string, holder string, ttl time.Duration) ([]string, error)
+	// ReleaseLeases gives up many leases the holder has in one statement.
+	ReleaseLeases(ctx context.Context, names []string, holder string) error
 	// Leases returns the leases whose names start with prefix.
 	Leases(ctx context.Context, prefix string) ([]Lease, error)
 	// SaveLiveState publishes a target's live view for the other servers.
 	SaveLiveState(ctx context.Context, targetID int64, serverID string, at time.Time, view []byte) error
 	// LiveState returns a target's published live view.
 	LiveState(ctx context.Context, targetID int64) (serverID string, at time.Time, view []byte, err error)
+	// LiveStates returns the published live views of many targets in one
+	// statement (targets without one are absent).
+	LiveStates(ctx context.Context, targetIDs []int64) ([]LiveState, error)
 	// Notify sends a message to every server listening on a channel.
 	Notify(ctx context.Context, channel, payload string) error
 	// Listen calls fn with every message on a channel until ctx ends. It holds
@@ -46,6 +55,14 @@ type Server struct {
 	StartedAt   time.Time `json:"started_at"`
 	HeartbeatAt time.Time `json:"heartbeat_at"`
 	Alive       bool      `json:"alive"`
+}
+
+// LiveState is a target's live view as published by the server collecting it.
+type LiveState struct {
+	TargetID int64
+	ServerID string
+	At       time.Time
+	View     []byte
 }
 
 // Lease is a lease on a target's collection or a job.
@@ -94,6 +111,32 @@ func (s *Store) ReleaseLease(ctx context.Context, name, holder string) error {
 	return s.red.Error(err)
 }
 
+// HoldLeases takes or renews many leases in one statement (as HoldLease)
+// and returns the names the holder has afterwards. Names are sorted first, so
+// servers holding overlapping sets lock the rows in the same order.
+func (s *Store) HoldLeases(ctx context.Context, names []string, holder string, ttl time.Duration) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	sorted := slices.Clone(names)
+	slices.Sort(sorted)
+	rows, err := s.pool.Query(ctx, queries.HoldLeases, sorted, holder, ttl.Seconds())
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	out, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	return out, s.red.Error(err)
+}
+
+// ReleaseLeases gives up many leases the holder has in one statement.
+func (s *Store) ReleaseLeases(ctx context.Context, names []string, holder string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, queries.ReleaseLeases, names, holder)
+	return s.red.Error(err)
+}
+
 // Leases returns the leases whose names start with prefix.
 func (s *Store) Leases(ctx context.Context, prefix string) ([]Lease, error) {
 	rows, err := s.pool.Query(ctx, queries.ListLeases, prefix)
@@ -121,6 +164,24 @@ func (s *Store) LiveState(ctx context.Context, targetID int64) (serverID string,
 		return "", time.Time{}, nil, ErrNotFound
 	}
 	return serverID, at, view, s.red.Error(err)
+}
+
+// LiveStates returns the published live views of many targets in one
+// statement (targets without one are absent).
+func (s *Store) LiveStates(ctx context.Context, targetIDs []int64) ([]LiveState, error) {
+	if len(targetIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, queries.LiveStates, targetIDs)
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (LiveState, error) {
+		var x LiveState
+		err := r.Scan(&x.TargetID, &x.ServerID, &x.At, &x.View)
+		return x, err
+	})
+	return out, s.red.Error(err)
 }
 
 // Notify sends a message to every server listening on a channel.

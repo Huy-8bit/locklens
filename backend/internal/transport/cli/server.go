@@ -75,7 +75,7 @@ func (a *app) migrateCommand() *cobra.Command {
 			}
 			ctx, stop := signalContext(cmd.Context())
 			defer stop()
-			store, err := server.OpenStore(ctx, dsn, &ts, a.log)
+			store, err := server.OpenStore(ctx, dsn, 0, &ts, a.log)
 			if err != nil {
 				return err
 			}
@@ -153,7 +153,7 @@ exists where the target collected it).`,
 			defer stop()
 			octx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
-			store, err := server.OpenStore(octx, dsn, nil, a.log)
+			store, err := server.OpenStore(octx, dsn, 0, nil, a.log)
 			if err != nil {
 				return err
 			}

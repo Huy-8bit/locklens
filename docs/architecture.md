@@ -212,7 +212,10 @@ Settings (targets, thresholds, store size), Lab guide (demo mode).
 
 - One worker per target; collectors of a target never overlap.
 - `LOCKLENS_MAX_CONCURRENT_COLLECTIONS` (default 4) caps runs across all
-  targets; per-target pools hold 1–5 connections.
+  targets; active session samples, which run every few seconds per target,
+  have their own cap (`LOCKLENS_MAX_CONCURRENT_LOAD_SAMPLES`, default 4), so
+  they neither wait behind nor delay the other collectors. Per-target pools
+  hold 1–5 connections.
 - Every collector run has a timeout; a failing or slow target affects only its
   own worker.
 - The writer is the only component writing collected data to the store; its
@@ -273,11 +276,28 @@ releases the rest, and takes free or expired ones. A stopped server releases
 its leases; a crashed one loses them when they expire, so its targets move
 within about a minute. Once-per-cluster jobs hold a `job:<name>` lease.
 
+The cost of a sync does not grow with the number of targets in round trips:
+the leases are read in one query, taken and renewed in one statement (lease
+names sorted, so servers taking overlapping sets lock rows in the same order),
+and released in one. Stopping workers and adopting the open incidents of
+targets taken over happen outside the manager's lock, so API reads never wait
+for a takeover.
+
 Browser events are published on the server that observed them and carried
 to the others over PostgreSQL `LISTEN/NOTIFY`, as are requests (collect a
-target now) and settings changes. The collecting server publishes each
+target now) and settings changes. Collection events (`target.collected`)
+are relayed at most once a second per target: the first is sent at once,
+the next ones within the second are merged into one message that lists every
+collector that ran. A message larger than the NOTIFY limit (8000 bytes) is
+not relayed; it is logged and counted (`locklens_bus_dropped_total{reason="oversized"}`).
+The collecting server publishes each
 target's live view to `live_state` every 5 seconds while it is not alone, so
-any server answers API requests for any target.
+any server answers API requests for any target; fleet pages read the views
+of all their targets in one statement.
+
+Collector statuses (`target_status`) are gathered in memory and written in
+one batch every 5 seconds, at once when a target's state changes, and not at
+all when nothing changed.
 
 ## Log agent
 

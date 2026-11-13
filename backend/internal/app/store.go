@@ -13,10 +13,11 @@ import (
 // OpenStore connects to the store and applies migrations. With ts, it then
 // sets up TimescaleDB (see repository.SetupTimescale); nil skips that step,
 // for commands that only read.
-func OpenStore(ctx context.Context, dsn string, ts *config.StoreTimescale, log *slog.Logger) (*repository.Store, error) {
+// maxConns is LOCKLENS_STORE_MAX_CONNS (0: the DSN's pool_max_conns, else 8).
+func OpenStore(ctx context.Context, dsn string, maxConns int, ts *config.StoreTimescale, log *slog.Logger) (*repository.Store, error) {
 	octx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	store, err := repository.Open(octx, dsn, repository.Options{ConnectTimeout: 10 * time.Second})
+	store, err := repository.Open(octx, dsn, repository.Options{MaxConns: int32(maxConns), ConnectTimeout: 10 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("open monitoring store: %w", err)
 	}

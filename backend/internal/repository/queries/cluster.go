@@ -14,6 +14,12 @@ var HoldLease string
 //go:embed cluster/release_lease.sql
 var ReleaseLease string
 
+//go:embed cluster/hold_leases.sql
+var HoldLeases string
+
+//go:embed cluster/release_leases.sql
+var ReleaseLeases string
+
 //go:embed cluster/list_leases.sql
 var ListLeases string
 
@@ -22,6 +28,9 @@ var SaveLiveState string
 
 //go:embed cluster/live_state.sql
 var LiveState string
+
+//go:embed cluster/live_states.sql
+var LiveStates string
 
 //go:embed cluster/notify.sql
 var Notify string

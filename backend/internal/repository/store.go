@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -63,9 +64,15 @@ type Store struct {
 
 // Options configure the store pool.
 type Options struct {
+	// MaxConns caps the pool (LOCKLENS_STORE_MAX_CONNS). 0: pool_max_conns of
+	// the DSN when it sets one, else DefaultMaxConns.
 	MaxConns       int32
 	ConnectTimeout time.Duration
 }
+
+// DefaultMaxConns is the store pool size when neither LOCKLENS_STORE_MAX_CONNS
+// nor pool_max_conns in the DSN sets one.
+const DefaultMaxConns = 8
 
 // Open connects to the store. It does not run migrations.
 func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
@@ -75,10 +82,13 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 		return nil, &config.InvalidDSNError{}
 	}
 	red.Add(cfg.ConnConfig.Password)
-	if opts.MaxConns > 0 {
+	switch {
+	case opts.MaxConns > 0:
 		cfg.MaxConns = opts.MaxConns
-	} else {
-		cfg.MaxConns = 8
+	case dsnSetsPoolMaxConns(dsn):
+		// keep pool_max_conns as pgxpool parsed it
+	default:
+		cfg.MaxConns = DefaultMaxConns
 	}
 	if opts.ConnectTimeout > 0 {
 		cfg.ConnConfig.ConnectTimeout = opts.ConnectTimeout
@@ -103,6 +113,21 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("monitoring store runs PostgreSQL %d; 14 or later is required", num/10000)
 	}
 	return s, nil
+}
+
+// dsnSetsPoolMaxConns reports whether a DSN (URL or keyword/value form) sets
+// pgxpool's pool_max_conns.
+func dsnSetsPoolMaxConns(dsn string) bool {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		return err == nil && u.Query().Has("pool_max_conns")
+	}
+	for _, f := range strings.Fields(dsn) {
+		if k, _, ok := strings.Cut(f, "="); ok && strings.TrimSpace(k) == "pool_max_conns" {
+			return true
+		}
+	}
+	return false
 }
 
 // Close releases the pool.

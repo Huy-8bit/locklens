@@ -95,7 +95,10 @@ each other's within about a minute; see
 [architecture.md](architecture.md#several-servers). Give each a distinct
 `LOCKLENS_SERVER_ID` if you want stable names in Settings → Data and storage.
 The monitoring store itself is a single PostgreSQL; make it highly available
-with your usual PostgreSQL tooling.
+with your usual PostgreSQL tooling. Each server keeps up to
+`LOCKLENS_STORE_MAX_CONNS` (default 8) connections to it, one of them for
+the message bus: size the store's `max_connections` for every server plus
+its own background workers.
 
 ## Log agent
 

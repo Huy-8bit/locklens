@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/locklens/locklens/internal/lib/obs"
 	"github.com/locklens/locklens/internal/repository"
 )
 
@@ -68,6 +69,7 @@ var _ Node = (*node)(nil)
 type node struct {
 	store    Repositories
 	log      *slog.Logger
+	metrics  *obs.Metrics
 	self     repository.Server
 	mu       sync.RWMutex
 	servers  []repository.Server
@@ -76,8 +78,13 @@ type node struct {
 }
 
 // New returns the node of server id (unique per running server).
-func New(store Repositories, id, hostname, version string, log *slog.Logger) Node {
-	return &node{store: store, log: log, alive: 1, assigned: map[int64]bool{},
+// metrics may be nil.
+func New(store Repositories, id, hostname, version string, log *slog.Logger, metrics ...*obs.Metrics) Node {
+	m := obs.NewMetrics()
+	if len(metrics) > 0 && metrics[0] != nil {
+		m = metrics[0]
+	}
+	return &node{store: store, log: log, metrics: m, alive: 1, assigned: map[int64]bool{},
 		self: repository.Server{ID: id, Hostname: hostname, Version: version, StartedAt: time.Now().UTC()}}
 }
 
@@ -161,6 +168,9 @@ func (n *node) releaseAll() {
 // renews its leases up to an even share of them (ceil(targets / live
 // servers)), releases the rest, and takes free or expired ones while it has
 // fewer. The collector manager calls it on every sync.
+//
+// It costs three statements whatever the number of targets: one to read the
+// leases, one to take and renew (HoldLeases), one to release.
 func (n *node) Assign(ctx context.Context, wanted []int64) (map[int64]bool, error) {
 	leases, err := n.store.Leases(ctx, targetPrefix)
 	if err != nil {
@@ -193,41 +203,64 @@ func (n *node) Assign(ctx context.Context, wanted []int64) (map[int64]bool, erro
 	// for the same one.
 	slices.SortFunc(free, func(a, b int64) int { return cmp.Compare(n.spread(a), n.spread(b)) })
 
-	owned := map[int64]bool{}
-	for _, id := range mine {
-		if len(owned) >= share {
-			_ = n.store.ReleaseLease(ctx, leaseName(id), n.self.ID) // rebalance: another server takes it
-			continue
-		}
-		ok, _, err := n.store.HoldLease(ctx, leaseName(id), n.self.ID, targetLeaseTTL)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			owned[id] = true
-		}
-	}
-	for _, id := range free {
-		if len(owned) >= share {
-			break
-		}
-		ok, _, err := n.store.HoldLease(ctx, leaseName(id), n.self.ID, targetLeaseTTL)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			owned[id] = true
-		}
-	}
+	keep := mine[:min(len(mine), share)]
+	release := slices.Clone(mine[len(keep):]) // rebalance: another server takes them
+	take := free[:min(len(free), share-len(keep))]
 	// Leases of targets that are no longer collected (disabled, deleted).
 	for id, l := range held {
 		if l.Holder == n.self.ID && !want[id] {
-			_ = n.store.ReleaseLease(ctx, leaseName(id), n.self.ID)
+			release = append(release, id)
+		}
+	}
+
+	names := make([]string, 0, len(keep)+len(take))
+	for _, id := range keep {
+		names = append(names, leaseName(id))
+	}
+	for _, id := range take {
+		names = append(names, leaseName(id))
+	}
+	got, err := n.store.HoldLeases(ctx, names, n.self.ID, targetLeaseTTL)
+	if err != nil {
+		return nil, err
+	}
+	if len(release) > 0 {
+		rel := make([]string, 0, len(release))
+		for _, id := range release {
+			rel = append(rel, leaseName(id))
+		}
+		if err := n.store.ReleaseLeases(ctx, rel, n.self.ID); err != nil {
+			n.log.Warn("cluster: releasing leases failed; they expire on their own", "count", len(rel), "error", err.Error())
+		}
+	}
+	owned := make(map[int64]bool, len(got))
+	for _, name := range got {
+		if id, ok := leaseTarget(name); ok {
+			owned[id] = true
 		}
 	}
 	n.mu.Lock()
+	prev := n.assigned
 	n.assigned = owned
 	n.mu.Unlock()
+	released := map[int64]bool{}
+	for _, id := range release {
+		released[id] = true
+	}
+	for id := range owned {
+		if !prev[id] {
+			n.metrics.LeaseChanges.Inc("taken")
+		}
+	}
+	for id := range prev {
+		switch {
+		case owned[id]:
+		case released[id]:
+			n.metrics.LeaseChanges.Inc("released")
+		default:
+			n.metrics.LeaseChanges.Inc("lost")
+		}
+	}
 	return owned, nil
 }
 
