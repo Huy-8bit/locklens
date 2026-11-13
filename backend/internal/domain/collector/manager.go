@@ -7,6 +7,7 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"hash/fnv"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/locklens/locklens/internal/domain/events"
 	"github.com/locklens/locklens/internal/domain/incidents"
 	"github.com/locklens/locklens/internal/domain/live"
+	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/domain/settings"
 	"github.com/locklens/locklens/internal/lib/obs"
 	"github.com/locklens/locklens/internal/lib/secret"
@@ -50,6 +52,12 @@ type Config struct {
 	// BudgetPercent is the share of its interval a collector may spend
 	// before it is slowed down (default 10).
 	BudgetPercent int
+	// ViewOnly is a server without the collector role: it runs no workers
+	// and reads every live view from the ones collectors publish.
+	ViewOnly bool
+	// ExportTopStatements is how many statements of the latest collection a
+	// published live view keeps (the Prometheus export of API servers).
+	ExportTopStatements int
 }
 
 // Deps are the manager's collaborators.
@@ -96,6 +104,10 @@ type Manager interface {
 	// elsewhere are read from the store in one statement. Targets without a
 	// view are absent.
 	Views(ctx context.Context, ids []int64) map[int64]live.View
+	// ExportViews returns the views of the instances this server exports:
+	// the ones it collects, or on a server without the collector role every
+	// one of ids, as published.
+	ExportViews(ctx context.Context, ids []int64) map[int64]live.View
 	// Run synchronises workers with the stored targets until ctx is cancelled,
 	// then stops every worker.
 	Run(ctx context.Context)
@@ -134,6 +146,11 @@ type manager struct {
 	remote  remoteViews
 	status  *statusWriter
 
+	viewOnly  bool
+	exportTop int
+	// published holds a hash of each target's last published live view.
+	published map[int64]uint64
+
 	mu      sync.Mutex
 	workers map[int64]*running
 	states  map[int64]*State
@@ -166,7 +183,8 @@ func NewManager(d Deps, cfg Config) Manager {
 		cluster: d.Cluster, bus: d.Bus, metrics: d.Metrics, log: d.Log, version: cfg.Version, syncEvery: cfg.SyncInterval, stmtEvery: cfg.StatementsInterval, loadEvery: cfg.LoadInterval,
 		burstDur: cfg.BurstDuration, budget: float64(cfg.BudgetPercent) / 100,
 		sem: make(chan struct{}, cfg.MaxConcurrent), loadSem: make(chan struct{}, cfg.MaxConcurrentLoad), reload: make(chan struct{}, 1),
-		workers: map[int64]*running{}, states: map[int64]*State{}, status: newStatusWriter()}
+		workers: map[int64]*running{}, states: map[int64]*State{}, status: newStatusWriter(),
+		viewOnly: cfg.ViewOnly, exportTop: cfg.ExportTopStatements, published: map[int64]uint64{}}
 }
 
 // Burst collects a target faster for the configured burst duration (from
@@ -235,7 +253,7 @@ func (m *manager) View(ctx context.Context, id int64) (live.View, bool) {
 	if running && s != nil {
 		return s.Snapshot(), true
 	}
-	if m.cluster != nil && !m.cluster.Alone() {
+	if m.viewOnly || m.cluster != nil && !m.cluster.Alone() {
 		from := time.Now()
 		v, ok := m.remote.get(ctx, m.store, id)
 		m.metrics.LiveRemoteRead.Observe(time.Since(from).Seconds())
@@ -270,7 +288,7 @@ func (m *manager) Views(ctx context.Context, ids []int64) map[int64]live.View {
 		}
 	}
 	m.mu.Unlock()
-	if len(others) > 0 && m.cluster != nil && !m.cluster.Alone() {
+	if len(others) > 0 && (m.viewOnly || m.cluster != nil && !m.cluster.Alone()) {
 		from := time.Now()
 		for id, v := range m.remote.getMany(ctx, m.store, others) {
 			out[id] = v
@@ -286,9 +304,23 @@ func (m *manager) Views(ctx context.Context, ids []int64) map[int64]live.View {
 	return out
 }
 
+// ExportViews returns the views of the instances this server exports
+// (/metrics/targets, OTLP): the ones it collects, or, on a server without the
+// collector role, every one of ids as published by the collectors.
+func (m *manager) ExportViews(ctx context.Context, ids []int64) map[int64]live.View {
+	if m.viewOnly {
+		return m.Views(ctx, ids)
+	}
+	return m.Collecting()
+}
+
 // Run synchronises workers with the stored targets until ctx is cancelled,
 // then stops every worker.
 func (m *manager) Run(ctx context.Context) {
+	if m.viewOnly {
+		<-ctx.Done()
+		return
+	}
 	t := time.NewTicker(m.syncEvery)
 	defer t.Stop()
 	if m.cluster != nil {
@@ -471,37 +503,95 @@ func (m *manager) publishLive(ctx context.Context) {
 		if m.cluster.Alone() {
 			continue
 		}
-		m.mu.Lock()
-		views := map[int64]live.View{}
-		for id := range m.workers {
-			if s := m.states[id]; s != nil {
-				views[id] = s.Snapshot()
-			}
-		}
-		m.mu.Unlock()
-		tickFrom := time.Now()
-		for id, v := range views {
-			// Statement collections and load buckets are not read from the
-			// live view by the API; they are large.
-			v.Statements, v.Load = nil, nil
-			raw, err := json.Marshal(v)
-			if err != nil {
-				continue
-			}
-			m.metrics.LiveViewBytes.Observe(float64(len(raw)))
-			pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			if err := m.store.SaveLiveState(pctx, id, m.cluster.ID(), time.Now(), raw); err != nil && ctx.Err() == nil {
-				m.metrics.LivePublishErrors.Inc()
-				m.log.Warn("publishing live view failed", "target_id", id, "error", err.Error())
-			} else if err == nil {
-				m.metrics.LivePublishBytes.Add(float64(len(raw)))
-			}
-			cancel()
-		}
-		if len(views) > 0 {
-			m.metrics.LivePublish.Observe(time.Since(tickFrom).Seconds())
+		m.publishOnce(ctx)
+	}
+}
+
+// publishOnce writes the changed live views in one statement and marks the
+// unchanged ones as current in another.
+func (m *manager) publishOnce(ctx context.Context) {
+	m.mu.Lock()
+	views := map[int64]live.View{}
+	for id := range m.workers {
+		if s := m.states[id]; s != nil {
+			views[id] = s.Snapshot()
 		}
 	}
+	m.mu.Unlock()
+	if len(views) == 0 {
+		return
+	}
+	from := time.Now()
+	var changed, unchanged []int64
+	var raws [][]byte
+	hashes := map[int64]uint64{}
+	for id, v := range views {
+		raw, err := json.Marshal(publishable(v, m.exportTop))
+		if err != nil {
+			continue
+		}
+		m.metrics.LiveViewBytes.Observe(float64(len(raw)))
+		h := fnv.New64a()
+		h.Write(raw)
+		hashes[id] = h.Sum64()
+		if prev, ok := m.published[id]; ok && prev == hashes[id] {
+			unchanged = append(unchanged, id)
+			continue
+		}
+		changed = append(changed, id)
+		raws = append(raws, raw)
+	}
+	pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	now := time.Now()
+	if err := m.store.SaveLiveStates(pctx, m.cluster.ID(), now, changed, raws); err != nil {
+		if ctx.Err() == nil {
+			m.metrics.LivePublishErrors.Inc()
+			m.log.Warn("publishing live views failed", "targets", len(changed), "error", err.Error())
+		}
+		clear(m.published) // write everything at the next tick
+		return
+	}
+	for i, id := range changed {
+		m.published[id] = hashes[id]
+		m.metrics.LivePublishBytes.Add(float64(len(raws[i])))
+	}
+	if err := m.store.TouchLiveStates(pctx, m.cluster.ID(), now, unchanged); err != nil && ctx.Err() == nil {
+		m.metrics.LivePublishErrors.Inc()
+		m.log.Warn("marking live views current failed", "targets", len(unchanged), "error", err.Error())
+		clear(m.published)
+	}
+	for id := range m.published {
+		if _, ok := views[id]; !ok {
+			delete(m.published, id) // no longer collected here
+		}
+	}
+	m.metrics.LivePublish.Observe(time.Since(from).Seconds())
+}
+
+// publishable is the part of a live view other servers read: the API reads
+// the latest two points of each series (latest value and trend), and the
+// Prometheus export the latest point, the totals, and the busiest statements
+// of the latest collection. The point history (for rules and live charts
+// of the collecting server), active session samples, and older statement
+// collections stay in memory.
+func publishable(v live.View, topStatements int) live.View {
+	if len(v.Points) > 0 {
+		pts := make(map[string][]live.TimedValue, len(v.Points))
+		for k, h := range v.Points {
+			pts[k] = h[max(0, len(h)-2):]
+		}
+		v.Points = pts
+	}
+	v.Load = nil
+	if topStatements > 0 && len(v.Statements) > 0 {
+		last := v.Statements[len(v.Statements)-1]
+		last.Deltas = last.TopByTime(topStatements)
+		v.Statements = []observe.StatementsCollection{last}
+	} else {
+		v.Statements = nil
+	}
+	return v
 }
 
 // remoteViews caches the live views other servers published. The lock only

@@ -36,8 +36,10 @@ type Config struct {
 	MaxConcurrentLoad int
 	// StoreMaxConns is LOCKLENS_STORE_MAX_CONNS; 0 when unset (then
 	// pool_max_conns in the store DSN applies, else 8).
-	StoreMaxConns    int
-	WriteQueue       int
+	StoreMaxConns int
+	WriteQueue    int
+	// Roles is what this server does (LOCKLENS_ROLES); every role by default.
+	Roles            Roles
 	MetricsEnabled   bool
 	BootstrapTargets string
 	DemoMode         bool
@@ -152,6 +154,11 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	c.ShutdownTimeout = dur("LOCKLENS_SHUTDOWN_TIMEOUT", 10*time.Second, time.Second)
 	c.MaxConcurrent = num("LOCKLENS_MAX_CONCURRENT_COLLECTIONS", 4, 1, 64)
 	c.MaxConcurrentLoad = num("LOCKLENS_MAX_CONCURRENT_LOAD_SAMPLES", 4, 1, 64)
+	if r, err := ParseRoles(getenv("LOCKLENS_ROLES")); err != nil {
+		errs = append(errs, err)
+	} else {
+		c.Roles = r
+	}
 	if strings.TrimSpace(getenv("LOCKLENS_STORE_MAX_CONNS")) != "" {
 		c.StoreMaxConns = num("LOCKLENS_STORE_MAX_CONNS", 8, 2, 1000)
 	}

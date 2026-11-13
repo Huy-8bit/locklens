@@ -55,6 +55,7 @@ All problems are reported at once.
 | `LOCKLENS_OTLP_ENDPOINT` | (none) | An OTLP/HTTP metrics URL (for example `http://otel-collector:4318/v1/metrics`); metrics are pushed there. |
 | `LOCKLENS_OTLP_HEADERS` | (none) | `name=value` pairs, comma-separated, sent with each push. |
 | `LOCKLENS_OTLP_INTERVAL` | `60s` | Time between two pushes (at least 10 s). |
+| `LOCKLENS_ROLES` | `all` | What this server does: `all`, or a comma-separated list of `api` (HTTP API, event stream, `/metrics/targets`), `collector` (collects instances by lease, records incidents, writes collected data), `jobs` (retention, rollups, baselines, the optimizer, notification reminders). See [Several servers](#several-servers). |
 | `LOCKLENS_SERVER_ID` | host name + random suffix | Names this server among the servers sharing the store (shown in Settings → Data and storage). Unique per running server. See [Several servers](#several-servers). |
 
 ## Users and the environment administrator
@@ -158,6 +159,23 @@ browser events to each other through the store, so a load balancer can send
 any request to any server (use sticky sessions so that a running SQL
 workspace statement can be cancelled). Nothing else needs configuring; when a
 server stops, the others take its instances over within about a minute.
+
+With many instances, servers can be given roles (`LOCKLENS_ROLES`):
+
+- `collector` servers share the instances (only they hold leases) and record
+  incidents. Without the `api` role a server answers only `/healthz`,
+  `/readyz`, and `/metrics`, so it needs no public address. Add collectors as
+  instances grow; nothing per instance changes.
+- `api` servers answer every request, for every instance, from the live views
+  the collectors publish (`live_state`). They also serve `/metrics/targets`
+  for every instance: point Prometheus at the API servers only, or at servers
+  with every role, not at both (each of those exports only what it collects).
+- `jobs` servers run the once-per-cluster jobs. Keep at least one alive: while
+  none is, retention, rollups, baselines, the optimizer and reminders stop,
+  each server logs a warning, and `locklens_cluster_jobs_missing` is 1.
+
+A server with every role (the default) behaves as before roles existed; a
+single server needs no setting at all.
 
 ## Log agent
 

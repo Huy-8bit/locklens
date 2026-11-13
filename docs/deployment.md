@@ -94,8 +94,27 @@ that runs the statement). They split the instances by leases and take over
 each other's within about a minute; see
 [architecture.md](architecture.md#several-servers). Give each a distinct
 `LOCKLENS_SERVER_ID` if you want stable names in Settings → Data and storage.
+
+For many instances, split the roles (`LOCKLENS_ROLES`, see
+[configuration.md](configuration.md#several-servers)):
+
+| Servers | `LOCKLENS_ROLES` | Exposed | Scale with |
+| --- | --- | --- | --- |
+| API (behind the frontend / load balancer) | `api` | `/api/`, `/metrics/targets` | users and pages |
+| Collectors | `collector` | `/healthz`, `/readyz`, `/metrics` only (internal) | instances: add one when collector lag grows |
+| Jobs (one or two) | `jobs`, or `collector,jobs` | as above | — |
+
+Collectors connect to every monitored instance they collect and send the
+notifications of the incidents they record (Slack, webhooks, email), so they
+need outbound access to those. Scrape `/metrics/targets` from the API servers
+only. During a rolling upgrade from a version without roles, older servers
+count every server as a collector; collectors take the instances left
+without a collector after two syncs, so nothing stays unmonitored.
 The monitoring store itself is a single PostgreSQL; make it highly available
-with your usual PostgreSQL tooling. Each server keeps up to
+with your usual PostgreSQL tooling. One table, `live_state` (the live views
+servers publish for each other), is unlogged: it is not replicated, and after
+a failover of the store it is empty for about 5 seconds, until the collectors
+publish again. Each server keeps up to
 `LOCKLENS_STORE_MAX_CONNS` (default 8) connections to it, one of them for
 the message bus: size the store's `max_connections` for every server plus
 its own background workers.

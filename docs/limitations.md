@@ -132,7 +132,13 @@ the detailed explanation.
   can collect the same target. Login rate limiting is per server, and a
   running workspace statement can be cancelled only on the server that runs
   it (use sticky sessions in the load balancer). Messages between servers
-  (browser events) larger than about 8 KB are not forwarded.
+  (browser events) larger than about 8 KB are not forwarded (they are logged
+  and counted). Servers without the collector role answer from views
+  published every 5 seconds, so their live pages are up to 5 seconds behind;
+  the published views are unlogged, so they are empty for about 5 seconds
+  after a crash or failover of the store. While no server with the jobs role
+  is alive, retention, rollups, baselines, the optimizer and reminders do not
+  run.
 
 ## Unsupported behaviour
 

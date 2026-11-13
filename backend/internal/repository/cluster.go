@@ -32,6 +32,12 @@ type ClusterRepository interface {
 	Leases(ctx context.Context, prefix string) ([]Lease, error)
 	// SaveLiveState publishes a target's live view for the other servers.
 	SaveLiveState(ctx context.Context, targetID int64, serverID string, at time.Time, view []byte) error
+	// SaveLiveStates publishes the live views of many targets in one
+	// statement (views[i] belongs to targetIDs[i]).
+	SaveLiveStates(ctx context.Context, serverID string, at time.Time, targetIDs []int64, views [][]byte) error
+	// TouchLiveStates marks this server's published views of targets whose
+	// view did not change as current, without rewriting them.
+	TouchLiveStates(ctx context.Context, serverID string, at time.Time, targetIDs []int64) error
 	// LiveState returns a target's published live view.
 	LiveState(ctx context.Context, targetID int64) (serverID string, at time.Time, view []byte, err error)
 	// LiveStates returns the published live views of many targets in one
@@ -55,7 +61,23 @@ type Server struct {
 	StartedAt   time.Time `json:"started_at"`
 	HeartbeatAt time.Time `json:"heartbeat_at"`
 	Alive       bool      `json:"alive"`
+	// Roles are what the server does: api, collector, jobs (all three for
+	// servers that predate roles).
+	Roles []string `json:"roles"`
 }
+
+// Server roles.
+const (
+	RoleAPI       = "api"
+	RoleCollector = "collector"
+	RoleJobs      = "jobs"
+)
+
+// AllRoles are the roles of a server that does everything (the default).
+var AllRoles = []string{RoleAPI, RoleCollector, RoleJobs}
+
+// Has reports whether the server has a role.
+func (s Server) Has(role string) bool { return slices.Contains(s.Roles, role) }
 
 // LiveState is a target's live view as published by the server collecting it.
 type LiveState struct {
@@ -76,7 +98,11 @@ type Lease struct {
 
 // Heartbeat registers a server or renews its heartbeat.
 func (s *Store) Heartbeat(ctx context.Context, sv Server) error {
-	_, err := s.pool.Exec(ctx, queries.Heartbeat, sv.ID, sv.Hostname, sv.Version, sv.StartedAt.UTC())
+	roles := sv.Roles
+	if len(roles) == 0 {
+		roles = AllRoles
+	}
+	_, err := s.pool.Exec(ctx, queries.Heartbeat, sv.ID, sv.Hostname, sv.Version, sv.StartedAt.UTC(), roles)
 	return s.red.Error(err)
 }
 
@@ -88,7 +114,7 @@ func (s *Store) Servers(ctx context.Context, ttl time.Duration) ([]Server, error
 	}
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Server, error) {
 		var x Server
-		err := r.Scan(&x.ID, &x.Hostname, &x.Version, &x.StartedAt, &x.HeartbeatAt, &x.Alive)
+		err := r.Scan(&x.ID, &x.Hostname, &x.Version, &x.StartedAt, &x.HeartbeatAt, &x.Alive, &x.Roles)
 		return x, err
 	})
 	return out, s.red.Error(err)
@@ -154,6 +180,28 @@ func (s *Store) Leases(ctx context.Context, prefix string) ([]Lease, error) {
 // SaveLiveState publishes a target's live view for the other servers.
 func (s *Store) SaveLiveState(ctx context.Context, targetID int64, serverID string, at time.Time, view []byte) error {
 	_, err := s.pool.Exec(ctx, queries.SaveLiveState, targetID, serverID, at.UTC(), view)
+	return s.red.Error(err)
+}
+
+// SaveLiveStates publishes the live views of many targets in one statement.
+func (s *Store) SaveLiveStates(ctx context.Context, serverID string, at time.Time, targetIDs []int64, views [][]byte) error {
+	if len(targetIDs) == 0 {
+		return nil
+	}
+	texts := make([]string, len(views))
+	for i, v := range views {
+		texts[i] = string(v)
+	}
+	_, err := s.pool.Exec(ctx, queries.SaveLiveStates, targetIDs, serverID, at.UTC(), texts)
+	return s.red.Error(err)
+}
+
+// TouchLiveStates marks this server's unchanged published views as current.
+func (s *Store) TouchLiveStates(ctx context.Context, serverID string, at time.Time, targetIDs []int64) error {
+	if len(targetIDs) == 0 {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, queries.TouchLiveStates, targetIDs, serverID, at.UTC())
 	return s.red.Error(err)
 }
 

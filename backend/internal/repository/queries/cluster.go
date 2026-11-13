@@ -26,6 +26,12 @@ var ListLeases string
 //go:embed cluster/save_live_state.sql
 var SaveLiveState string
 
+//go:embed cluster/save_live_states.sql
+var SaveLiveStates string
+
+//go:embed cluster/touch_live_states.sql
+var TouchLiveStates string
+
 //go:embed cluster/live_state.sql
 var LiveState string
 

@@ -41,6 +41,8 @@ type Metrics struct {
 	ClusterAssign     *Histogram
 	ClusterAssignErr  *Counter
 	LeaseChanges      *Counter
+	ClusterServers    *Gauge
+	JobsMissing       *Gauge
 	LivePublish       *Histogram
 	LivePublishBytes  *Counter
 	LiveViewBytes     *Histogram
@@ -106,6 +108,9 @@ func NewMetrics() *Metrics {
 		ManagerSync:       r.NewHistogram("locklens_manager_sync_seconds", "Duration of one synchronisation of collector workers with the stored targets.", latencyBuckets),
 		ClusterAssign:     r.NewHistogram("locklens_cluster_assign_seconds", "Duration of renewing and taking target leases on one sync.", latencyBuckets),
 		ClusterAssignErr:  r.NewCounter("locklens_cluster_assign_errors_total", "Failed target lease assignments (workers are kept, leases not renewed)."),
+		ClusterServers:    r.NewGauge("locklens_cluster_servers", "Live servers sharing the store, by role.", "role"),
+		JobsMissing: r.NewGauge("locklens_cluster_jobs_missing",
+			"1 while no live server has the jobs role: retention, rollups, baselines, the optimizer and reminders do not run."),
 		LeaseChanges: r.NewCounter("locklens_cluster_lease_changes_total",
 			"Target leases this server took, released (rebalance, target removed) or lost (taken by another server). Steady clusters keep these flat.", "change"),
 		LivePublish:       r.NewHistogram("locklens_live_publish_seconds", "Duration of publishing the live views of this server's targets (one tick).", latencyBuckets),

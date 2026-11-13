@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/locklens/locklens/internal/lib/obs"
 	"github.com/locklens/locklens/internal/repository"
 )
 
@@ -19,6 +20,7 @@ type memStore struct {
 	mu      sync.Mutex
 	now     time.Time
 	beats   map[string]time.Time
+	servers map[string]repository.Server
 	leases  map[string]repository.Lease
 	notices []string
 	// batchCalls counts HoldLeases and ReleaseLeases statements.
@@ -26,13 +28,14 @@ type memStore struct {
 }
 
 func newMem() *memStore {
-	return &memStore{now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC), beats: map[string]time.Time{}, leases: map[string]repository.Lease{}}
+	return &memStore{now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC), beats: map[string]time.Time{}, servers: map[string]repository.Server{}, leases: map[string]repository.Lease{}}
 }
 
 func (m *memStore) Heartbeat(_ context.Context, sv repository.Server) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.beats[sv.ID] = m.now
+	m.servers[sv.ID] = sv
 	return nil
 }
 
@@ -41,7 +44,11 @@ func (m *memStore) Servers(_ context.Context, ttl time.Duration) ([]repository.S
 	defer m.mu.Unlock()
 	var out []repository.Server
 	for id, at := range m.beats {
-		out = append(out, repository.Server{ID: id, HeartbeatAt: at, Alive: !at.Before(m.now.Add(-ttl))})
+		roles := m.servers[id].Roles
+		if len(roles) == 0 {
+			roles = repository.AllRoles // a server that predates roles
+		}
+		out = append(out, repository.Server{ID: id, HeartbeatAt: at, Alive: !at.Before(m.now.Add(-ttl)), Roles: roles})
 	}
 	return out, nil
 }
@@ -126,7 +133,7 @@ func TestTargetsAreSplitAndTakenOver(t *testing.T) {
 	ctx := context.Background()
 	st := newMem()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a, b := New(Repositories{ClusterRepository: st}, "a", "h", "v", log).(*node), New(Repositories{ClusterRepository: st}, "b", "h", "v", log).(*node)
+	a, b := New(Repositories{ClusterRepository: st}, Self{ID: "a", Hostname: "h", Version: "v"}, log, nil).(*node), New(Repositories{ClusterRepository: st}, Self{ID: "b", Hostname: "h", Version: "v"}, log, nil).(*node)
 	targets := []int64{1, 2, 3, 4, 5}
 
 	// Alone, a server collects everything.
@@ -167,7 +174,7 @@ func TestAssignCostsAConstantNumberOfStatements(t *testing.T) {
 	ctx := context.Background()
 	st := newMem()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a, b := New(Repositories{ClusterRepository: st}, "a", "h", "v", log).(*node), New(Repositories{ClusterRepository: st}, "b", "h", "v", log).(*node)
+	a, b := New(Repositories{ClusterRepository: st}, Self{ID: "a", Hostname: "h", Version: "v"}, log, nil).(*node), New(Repositories{ClusterRepository: st}, Self{ID: "b", Hostname: "h", Version: "v"}, log, nil).(*node)
 	targets := make([]int64, 300)
 	for i := range targets {
 		targets[i] = int64(i + 1)
@@ -202,7 +209,7 @@ func TestSingletonRunsOnOneServer(t *testing.T) {
 	var mu sync.Mutex
 	running := map[string]bool{}
 	for _, id := range []string{"a", "b"} {
-		n := New(Repositories{ClusterRepository: st}, id, "h", "v", log)
+		n := New(Repositories{ClusterRepository: st}, Self{ID: id, Hostname: "h", Version: "v"}, log, nil)
 		go n.Singleton(ctx, "retention", func(ctx context.Context) {
 			mu.Lock()
 			running[id] = true
@@ -231,7 +238,7 @@ func TestSingletonRunsOnOneServer(t *testing.T) {
 func TestBusSkipsItsOwnMessagesAndRoutesByKind(t *testing.T) {
 	st := newMem()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a := New(Repositories{ClusterRepository: st}, "a", "h", "v", log)
+	a := New(Repositories{ClusterRepository: st}, Self{ID: "a", Hostname: "h", Version: "v"}, log, nil)
 	var got []string
 	bus := NewBus(a, Repositories{ClusterRepository: st}, publishFunc(func(kind string, _ any) { got = append(got, "local:"+kind) }), nil, log).(*bus)
 	bus.Handle("collector.run_soon", func(json.RawMessage) { got = append(got, "handled") })
@@ -257,7 +264,7 @@ func TestCollectedEventsAreCoalescedPerTarget(t *testing.T) {
 	ctx := context.Background()
 	st := newMem()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	a, b := New(Repositories{ClusterRepository: st}, "a", "h", "v", log).(*node), New(Repositories{ClusterRepository: st}, "b", "h", "v", log).(*node)
+	a, b := New(Repositories{ClusterRepository: st}, Self{ID: "a", Hostname: "h", Version: "v"}, log, nil).(*node), New(Repositories{ClusterRepository: st}, Self{ID: "b", Hostname: "h", Version: "v"}, log, nil).(*node)
 	b.beat(ctx)
 	a.beat(ctx) // a is not alone: it sends
 	bs := NewBus(a, Repositories{ClusterRepository: st}, publishFunc(func(string, any) {}), nil, log).(*bus)
@@ -310,5 +317,68 @@ func TestCollectedEventsAreCoalescedPerTarget(t *testing.T) {
 	bs.Send("incident.updated", map[string]any{"id": 1})
 	if len(bs.queue) != 2 {
 		t.Fatalf("incident events: %d queued", len(bs.queue))
+	}
+}
+
+func TestTargetsAreSharedAmongCollectorsOnly(t *testing.T) {
+	ctx := context.Background()
+	st := newMem()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a := New(Repositories{ClusterRepository: st}, Self{ID: "a", Roles: []string{repository.RoleCollector}}, log, nil).(*node)
+	b := New(Repositories{ClusterRepository: st}, Self{ID: "b", Roles: []string{repository.RoleCollector, repository.RoleJobs}}, log, nil).(*node)
+	api := New(Repositories{ClusterRepository: st}, Self{ID: "api", Roles: []string{repository.RoleAPI}}, log, nil).(*node)
+	targets := []int64{1, 2, 3, 4, 5, 6}
+	for _, n := range []*node{api, a, b, a, b, api} {
+		n.beat(ctx)
+	}
+	// Two collectors share six targets 3/3: the API server does not count.
+	ga, _ := a.Assign(ctx, targets)
+	gb, _ := b.Assign(ctx, targets)
+	if len(ga) != 3 || len(gb) != 3 {
+		t.Fatalf("share among collectors: a %d b %d", len(ga), len(gb))
+	}
+	if api.Alone() {
+		t.Fatal("the API server is not alone: collectors publish live views for it")
+	}
+}
+
+func TestOrphanedTargetsAreRescued(t *testing.T) {
+	ctx := context.Background()
+	st := newMem()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// An old server (no roles: counted as a collector) never collects, as an
+	// API-only server would look to it; b alone thinks it must leave half the
+	// targets to it.
+	a := New(Repositories{ClusterRepository: st}, Self{ID: "a"}, log, nil).(*node)
+	b := New(Repositories{ClusterRepository: st}, Self{ID: "b"}, log, nil).(*node)
+	targets := []int64{1, 2, 3, 4}
+	a.beat(ctx)
+	b.beat(ctx)
+	for sync := 1; sync <= orphanSyncs; sync++ {
+		if got, _ := b.Assign(ctx, targets); len(got) != 2 {
+			t.Fatalf("sync %d: b holds %d, want its share of 2", sync, len(got))
+		}
+	}
+	// After orphanSyncs syncs without a collector, b takes the rest too.
+	if got, _ := b.Assign(ctx, targets); len(got) != 4 {
+		t.Fatalf("orphans not rescued: b holds %d", len(got))
+	}
+}
+
+func TestNoJobsServerIsReported(t *testing.T) {
+	ctx := context.Background()
+	st := newMem()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := obs.NewMetrics()
+	c := New(Repositories{ClusterRepository: st}, Self{ID: "c", Roles: []string{repository.RoleCollector}}, log, m).(*node)
+	c.beat(ctx)
+	if m.JobsMissing.Total() != 1 {
+		t.Fatal("no jobs server: locklens_cluster_jobs_missing must be 1")
+	}
+	j := New(Repositories{ClusterRepository: st}, Self{ID: "j", Roles: []string{repository.RoleJobs}}, log, nil).(*node)
+	j.beat(ctx)
+	c.beat(ctx)
+	if m.JobsMissing.Total() != 0 {
+		t.Fatal("a jobs server is alive")
 	}
 }

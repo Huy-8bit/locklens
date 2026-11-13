@@ -67,25 +67,49 @@ var _ Node = (*node)(nil)
 
 // node is this server's membership.
 type node struct {
-	store    Repositories
-	log      *slog.Logger
-	metrics  *obs.Metrics
-	self     repository.Server
-	mu       sync.RWMutex
-	servers  []repository.Server
-	alive    int
-	assigned map[int64]bool
+	store   Repositories
+	log     *slog.Logger
+	metrics *obs.Metrics
+	self    repository.Server
+	mu      sync.RWMutex
+	servers []repository.Server
+	alive   int
+	// collectors is the number of live servers with the collector role (at
+	// least 1): targets are shared among them only.
+	collectors int
+	noJobs     bool
+	assigned   map[int64]bool
+	// freeFor counts the consecutive syncs a target was seen without a live
+	// lease (orphan rescue).
+	freeFor map[int64]int
 }
 
-// New returns the node of server id (unique per running server).
+// Self describes this server.
+type Self struct {
+	ID       string
+	Hostname string
+	Version  string
+	// Roles are this server's roles; empty means every role.
+	Roles []string
+}
+
+// orphanSyncs is how many syncs a target may stay without a collector before
+// a server takes it beyond its share (for example while older servers, which
+// do not know roles, share the targets among too many servers).
+const orphanSyncs = 2
+
+// New returns the node of a server (its ID is unique per running server).
 // metrics may be nil.
-func New(store Repositories, id, hostname, version string, log *slog.Logger, metrics ...*obs.Metrics) Node {
-	m := obs.NewMetrics()
-	if len(metrics) > 0 && metrics[0] != nil {
-		m = metrics[0]
+func New(store Repositories, self Self, log *slog.Logger, metrics *obs.Metrics) Node {
+	if metrics == nil {
+		metrics = obs.NewMetrics()
 	}
-	return &node{store: store, log: log, metrics: m, alive: 1, assigned: map[int64]bool{},
-		self: repository.Server{ID: id, Hostname: hostname, Version: version, StartedAt: time.Now().UTC()}}
+	roles := self.Roles
+	if len(roles) == 0 {
+		roles = repository.AllRoles
+	}
+	return &node{store: store, log: log, metrics: metrics, alive: 1, collectors: 1, assigned: map[int64]bool{}, freeFor: map[int64]int{},
+		self: repository.Server{ID: self.ID, Hostname: self.Hostname, Version: self.Version, StartedAt: time.Now().UTC(), Roles: roles}}
 }
 
 // ID is the server's ID.
@@ -142,14 +166,37 @@ func (n *node) beat(ctx context.Context) {
 		return
 	}
 	alive := 0
+	byRole := map[string]int{}
 	for _, s := range servers {
-		if s.Alive {
-			alive++
+		if !s.Alive {
+			continue
+		}
+		alive++
+		for _, r := range s.Roles {
+			byRole[r]++
 		}
 	}
+	for _, r := range repository.AllRoles {
+		n.metrics.ClusterServers.Set(float64(byRole[r]), r)
+	}
+	noJobs := byRole[repository.RoleJobs] == 0
 	n.mu.Lock()
 	n.servers, n.alive = servers, max(alive, 1)
+	n.collectors = max(byRole[repository.RoleCollector], 1)
+	was := n.noJobs
+	n.noJobs = noJobs
 	n.mu.Unlock()
+	if noJobs {
+		n.metrics.JobsMissing.Set(1)
+		if !was {
+			n.log.Warn("cluster: no live server has the jobs role; retention, rollups, baselines, the optimizer and notification reminders are not running")
+		}
+	} else {
+		n.metrics.JobsMissing.Set(0)
+		if was {
+			n.log.Info("cluster: a server with the jobs role is back")
+		}
+	}
 }
 
 func (n *node) releaseAll() {
@@ -177,9 +224,9 @@ func (n *node) Assign(ctx context.Context, wanted []int64) (map[int64]bool, erro
 		return nil, err
 	}
 	n.mu.RLock()
-	alive := n.alive
+	collectors := n.collectors
 	n.mu.RUnlock()
-	share := (len(wanted) + alive - 1) / alive
+	share := (len(wanted) + collectors - 1) / collectors
 	held := map[int64]repository.Lease{}
 	for _, l := range leases {
 		if id, ok := leaseTarget(l.Name); ok {
@@ -205,7 +252,29 @@ func (n *node) Assign(ctx context.Context, wanted []int64) (map[int64]bool, erro
 
 	keep := mine[:min(len(mine), share)]
 	release := slices.Clone(mine[len(keep):]) // rebalance: another server takes them
-	take := free[:min(len(free), share-len(keep))]
+	take := slices.Clone(free[:min(len(free), share-len(keep))])
+	// Orphan rescue: a target no server took for more than orphanSyncs syncs
+	// is taken even beyond the share.
+	isFree := make(map[int64]bool, len(free))
+	for _, id := range free {
+		isFree[id] = true
+	}
+	n.mu.Lock()
+	for id := range n.freeFor {
+		if !isFree[id] {
+			delete(n.freeFor, id)
+		}
+	}
+	for _, id := range free[len(take):] {
+		n.freeFor[id]++
+		if n.freeFor[id] > orphanSyncs {
+			take = append(take, id)
+		}
+	}
+	for _, id := range take {
+		delete(n.freeFor, id)
+	}
+	n.mu.Unlock()
 	// Leases of targets that are no longer collected (disabled, deleted).
 	for id, l := range held {
 		if l.Holder == n.self.ID && !want[id] {

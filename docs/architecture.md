@@ -293,7 +293,29 @@ not relayed; it is logged and counted (`locklens_bus_dropped_total{reason="overs
 The collecting server publishes each
 target's live view to `live_state` every 5 seconds while it is not alone, so
 any server answers API requests for any target; fleet pages read the views
-of all their targets in one statement.
+of all their targets in one statement. The published view is what other
+servers read: the latest two points of each series (latest value and trend),
+the totals, and the busiest statements of the latest collection
+(`LOCKLENS_EXPORT_TOP_STATEMENTS`, for the Prometheus export); the point
+history, active session samples, and older statement collections stay in the
+collector's memory. Changed views are written in one statement per tick,
+unchanged ones only marked current. `live_state` is an unlogged table: it
+costs no WAL, is not replicated to standbys of the store, and is empty after a
+crash or failover of the store until the next publish (about 5 seconds).
+
+**Roles.** `LOCKLENS_ROLES` splits the work: `collector` servers hold the
+target leases (the even share counts live collectors only), record incidents
+and write collected data; `api` servers run no workers and answer from
+`live_state`, including `/metrics/targets` for every instance; `jobs`
+servers run the once-per-cluster jobs (`job:<name>` leases are taken only by
+them; while none is alive the others warn and set
+`locklens_cluster_jobs_missing`). A server without the `api` role serves only
+`/healthz`, `/readyz`, and `/metrics`. Every role is the default, which
+behaves as before roles existed. Roles are stored with the heartbeat
+(`servers.roles`); a server that predates them counts as having every role.
+A target no collector took for more than two syncs is taken by a collector
+even beyond its share (orphan rescue), for example while servers of an older
+version, which do not know roles, are still part of the cluster.
 
 Collector statuses (`target_status`) are gathered in memory and written in
 one batch every 5 seconds, at once when a target's state changes, and not at

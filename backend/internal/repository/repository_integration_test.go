@@ -1224,3 +1224,64 @@ func TestClusterBatchStatements(t *testing.T) {
 		t.Fatalf("batch: %v %v", failed, err)
 	}
 }
+
+// Roles in heartbeats (with a server that predates them) and batched live
+// view publishing.
+func TestServerRolesAndBatchedLiveStates(t *testing.T) {
+	s, dsn := freshStore(t)
+	ctx := context.Background()
+	if _, err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Heartbeat(ctx, repository.Server{ID: "api", Hostname: "h", Version: "v", StartedAt: time.Now(), Roles: []string{repository.RoleAPI}}); err != nil {
+		t.Fatal(err)
+	}
+	// An older server writes its heartbeat without roles: it gets every role.
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, `INSERT INTO servers (id, hostname, version, started_at, heartbeat_at) VALUES ('old', 'h', 'v', now(), now())`); err != nil {
+		t.Fatal(err)
+	}
+	sv, err := s.Servers(ctx, time.Minute)
+	if err != nil || len(sv) != 2 {
+		t.Fatalf("servers %+v %v", sv, err)
+	}
+	for _, x := range sv {
+		switch x.ID {
+		case "api":
+			if !x.Has(repository.RoleAPI) || x.Has(repository.RoleCollector) {
+				t.Fatalf("api roles %v", x.Roles)
+			}
+		case "old":
+			if len(x.Roles) != 3 {
+				t.Fatalf("a server that predates roles must have all: %v", x.Roles)
+			}
+		}
+	}
+
+	t1, t2 := target(t, s, "lv1"), target(t, s, "lv2")
+	at := time.Now().Add(-30 * time.Second).UTC().Truncate(time.Millisecond)
+	if err := s.SaveLiveStates(ctx, "a", at, []int64{t1.ID, t2.ID}, [][]byte{[]byte(`{"Connected":true}`), []byte(`{"Connected":false}`)}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.LiveStates(ctx, []int64{t1.ID, t2.ID})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("live states %d %v", len(rows), err)
+	}
+	// Touching marks unchanged views current; another server's rows stay as they are.
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if err := s.TouchLiveStates(ctx, "b", now, []int64{t1.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TouchLiveStates(ctx, "a", now, []int64{t2.ID}); err != nil {
+		t.Fatal(err)
+	}
+	_, a1, _, _ := s.LiveState(ctx, t1.ID)
+	_, a2, v2, _ := s.LiveState(ctx, t2.ID)
+	if !a1.Equal(at) || !a2.Equal(now) || !strings.Contains(string(v2), `"Connected": false`) && !strings.Contains(string(v2), `"Connected":false`) {
+		t.Fatalf("touch: t1 at %v (want %v), t2 at %v (want %v) %s", a1, at, a2, now, v2)
+	}
+}
