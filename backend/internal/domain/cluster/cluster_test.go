@@ -177,7 +177,7 @@ func TestBusSkipsItsOwnMessagesAndRoutesByKind(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	a := New(Repositories{ClusterRepository: st}, "a", "h", "v", log)
 	var got []string
-	bus := NewBus(a, Repositories{ClusterRepository: st}, publishFunc(func(kind string, _ any) { got = append(got, "local:"+kind) }), log).(*bus)
+	bus := NewBus(a, Repositories{ClusterRepository: st}, publishFunc(func(kind string, _ any) { got = append(got, "local:"+kind) }), nil, log).(*bus)
 	bus.Handle("collector.run_soon", func(json.RawMessage) { got = append(got, "handled") })
 	bus.dispatch(`{"from":"a","kind":"incident.opened","payload":{}}`)
 	bus.dispatch(`{"from":"b","kind":"incident.opened","payload":{}}`)

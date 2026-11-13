@@ -220,7 +220,10 @@ func (m *manager) View(ctx context.Context, id int64) (live.View, bool) {
 		return s.Snapshot(), true
 	}
 	if m.cluster != nil && !m.cluster.Alone() {
-		if v, ok := m.remote.get(ctx, m.store, id); ok {
+		from := time.Now()
+		v, ok := m.remote.get(ctx, m.store, id)
+		m.metrics.LiveRemoteRead.Observe(time.Since(from).Seconds())
+		if ok {
 			return v, true
 		}
 	}
@@ -252,6 +255,7 @@ func (m *manager) Run(ctx context.Context) {
 }
 
 func (m *manager) sync(ctx context.Context) {
+	defer func(from time.Time) { m.metrics.ManagerSync.Observe(time.Since(from).Seconds()) }(time.Now())
 	lctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	targets, err := m.store.ListTargets(lctx)
 	cancel()
@@ -271,9 +275,12 @@ func (m *manager) sync(ctx context.Context) {
 			ids = append(ids, id)
 		}
 		actx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		assignFrom := time.Now()
 		owned, err := m.cluster.Assign(actx, ids)
+		m.metrics.ClusterAssign.Observe(time.Since(assignFrom).Seconds())
 		cancel()
 		if err != nil {
+			m.metrics.ClusterAssignErr.Inc()
 			m.log.Warn("cluster assignment failed; keeping current workers", "error", err.Error())
 			return
 		}
@@ -387,6 +394,7 @@ func (m *manager) publishLive(ctx context.Context) {
 			}
 		}
 		m.mu.Unlock()
+		tickFrom := time.Now()
 		for id, v := range views {
 			// Statement collections and load buckets are not read from the
 			// live view by the API; they are large.
@@ -395,11 +403,18 @@ func (m *manager) publishLive(ctx context.Context) {
 			if err != nil {
 				continue
 			}
+			m.metrics.LiveViewBytes.Observe(float64(len(raw)))
 			pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			if err := m.store.SaveLiveState(pctx, id, m.cluster.ID(), time.Now(), raw); err != nil && ctx.Err() == nil {
+				m.metrics.LivePublishErrors.Inc()
 				m.log.Warn("publishing live view failed", "target_id", id, "error", err.Error())
+			} else if err == nil {
+				m.metrics.LivePublishBytes.Add(float64(len(raw)))
 			}
 			cancel()
+		}
+		if len(views) > 0 {
+			m.metrics.LivePublish.Observe(time.Since(tickFrom).Seconds())
 		}
 	}
 }

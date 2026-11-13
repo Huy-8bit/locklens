@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/events"
+	"github.com/locklens/locklens/internal/lib/obs"
 )
 
 // channel is the NOTIFY channel of the bus.
@@ -45,10 +46,11 @@ var _ Bus = (*bus)(nil)
 // the server that observed them, delivered to every server's browsers) and
 // requests (for example "collect this target now", handled by its owner).
 type bus struct {
-	node  Node
-	store Repositories
-	log   *slog.Logger
-	queue chan envelope
+	node    Node
+	store   Repositories
+	log     *slog.Logger
+	metrics *obs.Metrics
+	queue   chan envelope
 	// local receives the events published here and the events other
 	// servers published (the browsers' event hub of this server).
 	local events.Publisher
@@ -58,9 +60,12 @@ type bus struct {
 }
 
 // NewBus returns the bus of a node; local receives the events for this
-// server's browsers.
-func NewBus(node Node, store Repositories, local events.Publisher, log *slog.Logger) Bus {
-	return &bus{node: node, store: store, local: local, log: log, queue: make(chan envelope, 256), handlers: map[string]func(json.RawMessage){}}
+// server's browsers. metrics may be nil.
+func NewBus(node Node, store Repositories, local events.Publisher, metrics *obs.Metrics, log *slog.Logger) Bus {
+	if metrics == nil {
+		metrics = obs.NewMetrics()
+	}
+	return &bus{node: node, store: store, local: local, metrics: metrics, log: log, queue: make(chan envelope, 256), handlers: map[string]func(json.RawMessage){}}
 }
 
 // Publish delivers an event to this server's browsers and sends it to the
@@ -91,7 +96,9 @@ func (b *bus) Send(kind string, payload any) {
 	}
 	select {
 	case b.queue <- envelope{From: b.node.ID(), Kind: kind, Payload: raw}:
+		b.metrics.BusQueueLength.Set(float64(len(b.queue)))
 	default:
+		b.metrics.BusDropped.Inc("queue_full")
 		b.log.Warn("cluster bus: queue full, message dropped", "kind", kind)
 	}
 }
@@ -104,13 +111,18 @@ func (b *bus) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case e := <-b.queue:
+			b.metrics.BusQueueLength.Set(float64(len(b.queue)))
 			raw, err := json.Marshal(e)
 			if err != nil || len(raw) > maxMessage {
+				b.metrics.BusDropped.Inc("oversized")
 				continue
 			}
 			nctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			if err := b.store.Notify(nctx, channel, string(raw)); err != nil && ctx.Err() == nil {
+				b.metrics.BusDropped.Inc("send_error")
 				b.log.Warn("cluster bus: send failed", "kind", e.Kind, "error", err.Error())
+			} else if err == nil {
+				b.metrics.BusSent.Inc(e.Kind)
 			}
 			cancel()
 		}
@@ -139,6 +151,7 @@ func (b *bus) dispatch(payload string) {
 	if json.Unmarshal([]byte(payload), &e) != nil || e.From == b.node.ID() {
 		return
 	}
+	b.metrics.BusReceived.Inc()
 	b.mu.RLock()
 	h := b.handlers[e.Kind]
 	b.mu.RUnlock()

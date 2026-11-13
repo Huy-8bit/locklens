@@ -73,7 +73,8 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	hub := events.NewHub(100, func(n int) { metrics.SSEClients.Set(float64(n)) })
 	clusterRepos := checked(&wiring, cluster.Repositories{ClusterRepository: store})
 	node := cluster.New(clusterRepos, serverID(cfg), hostname(), version, log)
-	bus := cluster.NewBus(node, clusterRepos, hub, log)
+	bus := cluster.NewBus(node, clusterRepos, hub, metrics, log)
+	observePool(metrics, store)
 
 	st, err := settings.Load(ctx, checked(&wiring, settings.Repositories{SettingRepository: store}), cfg.DemoMode,
 		func() { bus.Send(messageSettingsChanged, nil) })

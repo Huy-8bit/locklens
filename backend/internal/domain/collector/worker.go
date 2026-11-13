@@ -218,7 +218,7 @@ func (w *worker) run(ctx context.Context) {
 			w.saveStatus(ctx)
 			continue
 		}
-		w.runJob(ctx, j)
+		w.runJob(ctx, j, j.next)
 	}
 }
 
@@ -229,7 +229,9 @@ func (w *worker) jobEnabled(j *job) (bool, string) {
 	return j.enabled()
 }
 
-func (w *worker) runJob(ctx context.Context, j *job) {
+// runJob runs one collector; scheduled is when it was due (for the lag metrics).
+func (w *worker) runJob(ctx context.Context, j *job, scheduled time.Time) {
+	waitFrom := time.Now()
 	select {
 	case w.m.sem <- struct{}{}:
 	case <-ctx.Done():
@@ -238,6 +240,14 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 	w.m.slotsBusy.Add(1)
 	w.m.metrics.CollectSlotsBusy.Set(float64(w.m.slotsBusy.Load()))
 	start := time.Now()
+	w.m.metrics.CollectSlotWait.Observe(start.Sub(waitFrom).Seconds(), j.name)
+	if lag := start.Sub(scheduled); !scheduled.IsZero() {
+		lag = max(lag, 0)
+		w.m.metrics.CollectLag.Observe(lag.Seconds(), j.name)
+		if j.every > 0 {
+			w.m.metrics.CollectLagRatio.Observe(lag.Seconds()/j.every.Seconds(), j.name)
+		}
+	}
 	jctx, cancel := context.WithTimeout(ctx, j.timeout)
 	err := j.run(jctx)
 	cancel()
@@ -312,7 +322,9 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 		w.m.metrics.CollectFreshness.Set(float64(now.Unix()), strconv.FormatInt(w.target.ID, 10))
 		if w.m.recorder != nil {
 			actx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			analyzeFrom := time.Now()
 			a := w.m.recorder.Analyze(actx, w.target, w.state.Snapshot())
+			w.m.metrics.RecorderAnalyze.Observe(time.Since(analyzeFrom).Seconds())
 			cancel()
 			// An open incident or an active problem: collect faster for
 			// denser evidence.
@@ -345,6 +357,7 @@ func (w *worker) pace(j *job, took time.Duration) {
 	}
 	if j.over >= 3 && j.slow < maxSlow {
 		j.slow *= 2
+		w.m.metrics.CollectThrottle.Inc(j.name, "up")
 		j.over = 0
 		j.status.ThrottleReason = fmt.Sprintf("runs %d× less often: collections took %d ms, more than %.0f%% of the interval",
 			j.slow, took.Milliseconds(), w.m.budget*100)
@@ -352,6 +365,7 @@ func (w *worker) pace(j *job, took time.Duration) {
 	}
 	if j.under >= 20 && j.slow > 1 {
 		j.slow /= 2
+		w.m.metrics.CollectThrottle.Inc(j.name, "down")
 		j.under = 0
 		if j.slow == 1 {
 			j.status.ThrottleReason = ""
@@ -413,7 +427,10 @@ func (w *worker) saveStatus(ctx context.Context) {
 	}
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err := w.m.store.SaveTargetStatus(sctx, st); err != nil {
+	from := time.Now()
+	err := w.m.store.SaveTargetStatus(sctx, st)
+	w.m.metrics.StatusWrite.Observe(time.Since(from).Seconds())
+	if err != nil {
 		w.m.log.Warn("save target status failed", "target_id", w.target.ID, "error", err.Error())
 	}
 }
