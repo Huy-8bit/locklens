@@ -9,6 +9,54 @@ What was run, on what, and with which result. Test design:
 - **Scope:** phase 2 (monitoring server, UI, lab) in the first part; the
   earlier phase 1 CLI QA run is kept as an appendix.
 
+## Scaling measurements (2026-11-14)
+
+Before LockLens' write path, cluster, and roles change to support hundreds of
+targets, the current version is measured to find the real bottleneck.
+Harness: `scripts/bench/scale.sh` (compose file `deploy/compose.bench.yaml`,
+measurement tool `tests/e2e/cmd/scalebench`).
+
+### Success criteria (set before measuring)
+
+The goal configuration is **300 targets on 3 servers** sharing one store,
+with default settings (activity interval 10 s, load sampling every 2 s,
+`LOCKLENS_MAX_CONCURRENT_COLLECTIONS=4`, write queue 2048). It passes when,
+in the measured window after the warm-up (steady state):
+
+1. **Collector lag p99 < 1 interval** for every collector. Lag is the time
+   between a run's scheduled start and its actual start, including the wait
+   for a collection slot, divided by the interval in effect for that run
+   (`locklens_collect_lag_ratio`).
+2. **0 write operations dropped** (`locklens_store_dropped_ops_total`, every
+   reason).
+3. **The store's WAL rate and CPU are reported** (no threshold yet; they are
+   the baseline for later phases).
+
+A collector that exceeds its time budget is slowed down by LockLens itself
+(`LOCKLENS_COLLECTOR_BUDGET_PERCENT`), which lengthens its interval and so
+hides lag. Every run therefore also reports these slow-downs
+(`locklens_collect_throttle_total{direction="up"}`); a pass with slow-downs
+is reported as such, not as a clean pass.
+
+### Method
+
+- **Matrix:** N = 20 / 100 / 300 targets × 1 / 2 / 3 servers × two network
+  profiles: `local` (the servers reach the store directly) and `rtt` (through
+  toxiproxy, +1 ms each way, as with a store on another host).
+- **Each run:** empty volumes; 10 PostgreSQL 18 instances carry the targets
+  (N/10 each, light `pgbench` traffic on every instance); targets created
+  through the API; 3 minutes of warm-up, 10 minutes measured.
+- **Measured:** every server's `/metrics` at the start and end of the window
+  (counters and histograms as differences; percentiles interpolated within
+  histogram buckets), gauges every 5 seconds, the store's `pg_stat_database`
+  and WAL position, store connections by application, `live_state` size,
+  and CPU and memory of the containers (`docker stats`, every 15 seconds).
+- **Limits:** one machine runs the store, the servers, and the monitored
+  instances, so they compete for CPU; each instance carries up to 30 targets,
+  so collector durations include contention on the monitored side, which a
+  fleet of separate servers would not have. The numbers describe this harness
+  and are used to compare versions, not as capacity guarantees.
+
 ## Separate backend and frontend images (2026-10-25)
 
 The single image (Go server with the UI embedded) was split into

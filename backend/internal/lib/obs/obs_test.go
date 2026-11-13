@@ -54,3 +54,25 @@ func TestTotals(t *testing.T) {
 		t.Fatalf("totals = %v, %v", c.Total(), g.Total())
 	}
 }
+
+func TestOnCollectRunsBeforeExposition(t *testing.T) {
+	r := NewRegistry()
+	g := r.NewGauge("pool_conns", "Connections.")
+	n := 0
+	r.OnCollect(func() {
+		n++
+		g.Set(float64(n * 10))
+	})
+	var b strings.Builder
+	if err := r.WriteText(&b); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "pool_conns 10\n") {
+		t.Fatalf("hook value not exposed:\n%s", b.String())
+	}
+	b.Reset()
+	_ = r.WriteText(&b)
+	if n != 2 || !strings.Contains(b.String(), "pool_conns 20\n") {
+		t.Fatalf("hook not run on every exposition (runs %d)", n)
+	}
+}
