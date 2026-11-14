@@ -30,7 +30,22 @@ type Config struct {
 	// this long, beyond the history retention.
 	BaselineRetention time.Duration
 	MaxConcurrent     int
-	WriteQueue        int
+	// MaxConcurrentLoad caps active session samples running at once; they
+	// have their own slots so the frequent, short samples never wait for
+	// (or delay) the other collectors.
+	MaxConcurrentLoad int
+	// StoreMaxConns is LOCKLENS_STORE_MAX_CONNS; 0 when unset (then
+	// pool_max_conns in the store DSN applies, else 8).
+	StoreMaxConns int
+	WriteQueue    int
+	// Roles is what this server does (LOCKLENS_ROLES); every role by default.
+	Roles Roles
+	// CollectorCapacity is this collector's share weight
+	// (LOCKLENS_COLLECTOR_CAPACITY; default MaxConcurrent): its share of the
+	// cluster's collection cost is proportional. MaxTargets caps the targets
+	// it collects (LOCKLENS_MAX_TARGETS; 0: no limit).
+	CollectorCapacity int
+	MaxTargets        int
 	MetricsEnabled    bool
 	BootstrapTargets  string
 	DemoMode          bool
@@ -144,6 +159,20 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	c.BaselineRetention = dur("LOCKLENS_BASELINE_RETENTION", 15*24*time.Hour, 24*time.Hour)
 	c.ShutdownTimeout = dur("LOCKLENS_SHUTDOWN_TIMEOUT", 10*time.Second, time.Second)
 	c.MaxConcurrent = num("LOCKLENS_MAX_CONCURRENT_COLLECTIONS", 4, 1, 64)
+	c.MaxConcurrentLoad = num("LOCKLENS_MAX_CONCURRENT_LOAD_SAMPLES", 4, 1, 64)
+	if r, err := ParseRoles(getenv("LOCKLENS_ROLES")); err != nil {
+		errs = append(errs, err)
+	} else {
+		c.Roles = r
+	}
+	c.CollectorCapacity = num("LOCKLENS_COLLECTOR_CAPACITY", 0, 0, 1000)
+	if c.CollectorCapacity == 0 {
+		c.CollectorCapacity = c.MaxConcurrent
+	}
+	c.MaxTargets = num("LOCKLENS_MAX_TARGETS", 0, 0, 100000)
+	if strings.TrimSpace(getenv("LOCKLENS_STORE_MAX_CONNS")) != "" {
+		c.StoreMaxConns = num("LOCKLENS_STORE_MAX_CONNS", 8, 2, 1000)
+	}
 	c.WriteQueue = num("LOCKLENS_WRITE_QUEUE", 2048, 16, 100000)
 	c.MetricsEnabled = boolean("LOCKLENS_METRICS_ENABLED", true)
 	c.MetricsRequireToken = boolean("LOCKLENS_METRICS_REQUIRE_TOKEN", false)

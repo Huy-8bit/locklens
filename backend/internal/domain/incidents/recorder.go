@@ -16,10 +16,12 @@ package incidents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/baseline"
@@ -108,6 +110,12 @@ type openIncident struct {
 }
 
 type targetState struct {
+	// mu serialises the analyses of one target (targets are analysed
+	// concurrently).
+	mu sync.Mutex
+	// stale: a write failed after the in-memory incidents changed; they are
+	// read back from the store before the next analysis.
+	stale       bool
 	history     []rules.ActivitySample
 	pre         []preSample
 	lastAnalyze time.Time
@@ -148,23 +156,135 @@ type recorder struct {
 	// baselines gives statement rules each target's query baselines; nil
 	// leaves them to compare with the previous window only.
 	baselines baseline.Service
+	// fences gives the lease fence of each target: a server writes incidents
+	// and findings of a target only while it holds the target's lease. Nil:
+	// writes are not fenced.
+	fences Fences
 
+	// mu guards the targets map only; each target has its own lock, so a
+	// slow analysis (store writes) of one target does not hold up the others.
 	mu      sync.Mutex
 	targets map[int64]*targetState
+	// open counts the open incidents of all targets (the gauge).
+	open atomic.Int64
 }
 
-// NewRecorder returns a recorder. baselines may be nil.
-func NewRecorder(store Repositories, cfg Config, th settings.Service, baselines baseline.Service, metrics *obs.Metrics, events events.Publisher, log *slog.Logger) Recorder {
-	return &recorder{store: store, cfg: cfg, th: th, baselines: baselines, metrics: metrics, events: events, log: log, targets: map[int64]*targetState{}}
+// txn is the write in progress for one target: the store (the fenced
+// transaction) and the events to publish once it committed. It travels in
+// the context of the analysis (see write).
+type txn struct {
+	w       repository.FencedWrites
+	pending []pendingEvent
 }
 
-func (r *recorder) target(id int64) *targetState {
-	ts, ok := r.targets[id]
-	if !ok {
-		ts = &targetState{open: map[string]*openIncident{}}
-		r.targets[id] = ts
+type txnKey struct{}
+
+// tx returns the store of the write in progress.
+func tx(ctx context.Context) repository.FencedWrites { return ctx.Value(txnKey{}).(*txn).w }
+
+// Fences gives the lease fence to write about a target under; false when
+// this server does not hold (or may have lost) the target's lease.
+type Fences interface {
+	Fence(targetID int64) (repository.Fence, bool)
+}
+
+type pendingEvent struct {
+	targetID, incidentID int64
+	kind                 string
+}
+
+// NewRecorder returns a recorder. baselines and fences may be nil.
+func NewRecorder(store Repositories, cfg Config, th settings.Service, baselines baseline.Service, fences Fences, metrics *obs.Metrics, events events.Publisher, log *slog.Logger) Recorder {
+	return &recorder{store: store, cfg: cfg, th: th, baselines: baselines, fences: fences, metrics: metrics, events: events, log: log, targets: map[int64]*targetState{}}
+}
+
+// write runs fn with the store of the write in the context (see tx), in
+// one transaction under the target's lease fence (when the recorder has
+// fences): everything fn writes is committed together, and nothing when the
+// lease was lost (repository.ErrLeaseLost). Incident events are published
+// after the commit. Called with ts.mu held.
+func (r *recorder) write(ctx context.Context, ts *targetState, targetID int64, fn func(ctx context.Context) error) error {
+	x := &txn{}
+	run := func(w repository.FencedWrites) error {
+		x.w, x.pending = w, x.pending[:0]
+		return fn(context.WithValue(ctx, txnKey{}, x))
 	}
-	return ts
+	before := len(ts.open)
+	var err error
+	if r.fences == nil {
+		err = run(r.store)
+	} else if f, ok := r.fences.Fence(targetID); !ok {
+		err = repository.ErrLeaseLost
+	} else {
+		err = r.store.Fenced(ctx, f, run)
+	}
+	r.countOpen(before, ts)
+	if err != nil {
+		if errors.Is(err, repository.ErrLeaseLost) {
+			r.metrics.FencedWrites.Inc("incidents")
+		}
+		ts.stale = true
+		return err
+	}
+	if r.events != nil {
+		for _, e := range x.pending {
+			r.events.Publish(e.kind, map[string]any{"target_id": e.targetID, "incident_id": e.incidentID})
+		}
+	}
+	return nil
+}
+
+// countOpen updates the open incidents gauge after a target's open
+// incidents changed from before.
+func (r *recorder) countOpen(before int, ts *targetState) {
+	if d := len(ts.open) - before; d != 0 {
+		r.metrics.IncidentsOpen.Set(float64(r.open.Add(int64(d))))
+	}
+}
+
+// resync reads a target's open incidents back from the store after a failed
+// write left the in-memory ones uncertain.
+func (r *recorder) resync(ctx context.Context, targetID int64, ts *targetState) error {
+	open, err := r.store.OpenIncidents(ctx)
+	if err != nil {
+		return err
+	}
+	before := len(ts.open)
+	ts.open = map[string]*openIncident{}
+	for _, in := range open {
+		if in.TargetID != nil && *in.TargetID == targetID {
+			ts.open[in.RuleID] = adopted(in)
+		}
+	}
+	r.countOpen(before, ts)
+	ts.stale = false
+	return nil
+}
+
+func adopted(in repository.Incident) *openIncident {
+	return &openIncident{id: in.ID, ruleID: in.RuleID, openedAt: in.OpenedAt, severity: in.Severity,
+		title: in.Title, events: in.EventCount, bytes: in.SizeBytes, truncated: in.Truncated, findingKeys: map[string]bool{}}
+}
+
+// lock returns a target's state, locked; the caller unlocks ts.mu.
+func (r *recorder) lock(id int64) *targetState {
+	for {
+		r.mu.Lock()
+		ts, ok := r.targets[id]
+		if !ok {
+			ts = &targetState{open: map[string]*openIncident{}}
+			r.targets[id] = ts
+		}
+		r.mu.Unlock()
+		ts.mu.Lock()
+		r.mu.Lock()
+		current := r.targets[id] == ts
+		r.mu.Unlock()
+		if current {
+			return ts
+		}
+		ts.mu.Unlock() // forgotten meanwhile
+	}
 }
 
 // Adopt attaches the open incidents of a target this server starts
@@ -176,46 +296,45 @@ func (r *recorder) Adopt(ctx context.Context, targetID int64) error {
 	if err != nil {
 		return err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	ts := r.lock(targetID)
+	defer ts.mu.Unlock()
 	now := time.Now().UTC()
-	for _, in := range open {
-		if in.TargetID == nil || *in.TargetID != targetID {
-			continue
+	return r.write(ctx, ts, targetID, func(ctx context.Context) error {
+		for _, in := range open {
+			if in.TargetID == nil || *in.TargetID != targetID {
+				continue
+			}
+			if _, ok := ts.open[in.RuleID]; ok {
+				continue
+			}
+			ts.open[in.RuleID] = adopted(in)
+			payload, _ := json.Marshal(map[string]any{"previous_last_seen": in.LastSeenAt, "restarted_at": now})
+			ev := repository.IncidentEvent{At: now, Kind: KindRestarted, Payload: payload,
+				Summary: fmt.Sprintf("LockLens restarted or another LockLens server took over collecting this instance; nothing was recorded between %s and %s, and in-memory buffers were lost.",
+					in.LastSeenAt.UTC().Format(time.RFC3339), now.Format(time.RFC3339))}
+			if err := tx(ctx).AppendIncidentEvents(ctx, in.ID, nil, []repository.IncidentEvent{ev}); err != nil {
+				return err
+			}
 		}
-		ts := r.target(targetID)
-		if _, ok := ts.open[in.RuleID]; ok {
-			continue
-		}
-		ts.open[in.RuleID] = &openIncident{id: in.ID, ruleID: in.RuleID, openedAt: in.OpenedAt, severity: in.Severity,
-			title: in.Title, events: in.EventCount, bytes: in.SizeBytes, truncated: in.Truncated, findingKeys: map[string]bool{}}
-		payload, _ := json.Marshal(map[string]any{"previous_last_seen": in.LastSeenAt, "restarted_at": now})
-		ev := repository.IncidentEvent{At: now, Kind: KindRestarted, Payload: payload,
-			Summary: fmt.Sprintf("LockLens restarted or another LockLens server took over collecting this instance; nothing was recorded between %s and %s, and in-memory buffers were lost.",
-				in.LastSeenAt.UTC().Format(time.RFC3339), now.Format(time.RFC3339))}
-		if err := r.store.AppendIncidentEvents(ctx, in.ID, nil, []repository.IncidentEvent{ev}); err != nil {
-			return err
-		}
-	}
-	r.updateOpenGauge()
-	return nil
+		return nil
+	})
 }
 
 // Forget drops the in-memory state of a target another server now
 // collects; its incidents stay open and that server adopts them.
 func (r *recorder) Forget(targetID int64) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	ts, ok := r.targets[targetID]
 	delete(r.targets, targetID)
-	r.updateOpenGauge()
-}
-
-func (r *recorder) updateOpenGauge() {
-	n := 0
-	for _, t := range r.targets {
-		n += len(t.open)
+	r.mu.Unlock()
+	if !ok {
+		return
 	}
-	r.metrics.IncidentsOpen.Set(float64(n))
+	ts.mu.Lock()
+	before := len(ts.open)
+	ts.open = map[string]*openIncident{}
+	r.countOpen(before, ts)
+	ts.mu.Unlock()
 }
 
 // Analysis is the outcome of one analysis that the collector acts on.
@@ -223,6 +342,9 @@ type Analysis struct {
 	// Burst says why the target should be collected faster now (an open
 	// incident or an active problem); empty when it need not be.
 	Burst string
+	// LeaseLost: nothing of this analysis was recorded because this server
+	// no longer holds the target's lease (fencing).
+	LeaseLost bool
 }
 
 // Analyze evaluates rules for one target and advances incident lifecycles.
@@ -230,17 +352,29 @@ func (r *recorder) Analyze(ctx context.Context, t repository.Target, v live.View
 	if v.Activity == nil {
 		return Analysis{}
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	a, err := r.analyze(ctx, t, v)
-	if err != nil {
+	ts := r.lock(t.ID)
+	defer ts.mu.Unlock()
+	if ts.stale {
+		if err := r.resync(ctx, t.ID, ts); err != nil {
+			r.log.Warn("incident analysis skipped: reading open incidents failed", "target_id", t.ID, "error", err.Error())
+			return Analysis{}
+		}
+	}
+	var a Analysis
+	err := r.write(ctx, ts, t.ID, func(ctx context.Context) (err error) {
+		a, err = r.analyze(ctx, t, ts, v)
+		return err
+	})
+	switch {
+	case errors.Is(err, repository.ErrLeaseLost):
+		return Analysis{LeaseLost: true}
+	case err != nil:
 		r.log.Warn("incident analysis failed", "target_id", t.ID, "error", err.Error())
 	}
 	return a
 }
 
-func (r *recorder) analyze(ctx context.Context, t repository.Target, v live.View) (Analysis, error) {
-	ts := r.target(t.ID)
+func (r *recorder) analyze(ctx context.Context, t repository.Target, ts *targetState, v live.View) (Analysis, error) {
 	now := v.Activity.At.UTC()
 	interval := time.Duration(t.IntervalSeconds) * time.Second
 	pol := r.th.Policy(t)
@@ -261,7 +395,7 @@ func (r *recorder) analyze(ctx context.Context, t repository.Target, v live.View
 	ts.lastAnalyze = now
 
 	findings := pol.Filter(rules.Evaluate(rules.Input{Now: now, Interval: interval, View: v, History: ts.history, Baselines: r.baselinesOf(t.ID)}, th))
-	ids, err := r.store.SyncFindings(ctx, t.ID, now, findings)
+	ids, err := tx(ctx).SyncFindings(ctx, t.ID, now, findings)
 	if err != nil {
 		return Analysis{}, err
 	}
@@ -315,7 +449,6 @@ func (r *recorder) analyze(ctx context.Context, t repository.Target, v live.View
 			}
 		}
 	}
-	r.updateOpenGauge()
 	return Analysis{Burst: burstReason(ts, findings)}, nil
 }
 
@@ -337,27 +470,31 @@ func (r *recorder) Unreachable(ctx context.Context, t repository.Target, rc rule
 	if len(fs) == 0 {
 		return
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := r.unreachable(ctx, t, pol, fs, now); err != nil {
+	ts := r.lock(t.ID)
+	defer ts.mu.Unlock()
+	if ts.stale {
+		if err := r.resync(ctx, t.ID, ts); err != nil {
+			r.log.Warn("recording an unreachable instance skipped: reading open incidents failed", "target_id", t.ID, "error", err.Error())
+			return
+		}
+	}
+	err := r.write(ctx, ts, t.ID, func(ctx context.Context) error { return r.unreachable(ctx, t, ts, pol, fs, now) })
+	if err != nil {
 		r.log.Warn("recording an unreachable instance failed", "target_id", t.ID, "error", err.Error())
 	}
 }
 
-func (r *recorder) unreachable(ctx context.Context, t repository.Target, pol rules.Policy, fs []rules.Finding, now time.Time) error {
-	ids, err := r.store.SyncRuleFindings(ctx, t.ID, now, rules.RuleTargetUnreachable, fs)
+func (r *recorder) unreachable(ctx context.Context, t repository.Target, ts *targetState, pol rules.Policy, fs []rules.Finding, now time.Time) error {
+	ids, err := tx(ctx).SyncRuleFindings(ctx, t.ID, now, rules.RuleTargetUnreachable, fs)
 	if err != nil {
 		return err
 	}
 	if !pol.Fires(fs[0]) {
 		return nil
 	}
-	ts := r.target(t.ID)
 	oi := ts.open[rules.RuleTargetUnreachable]
 	if oi == nil {
-		err := r.startIncident(ctx, t, live.View{}, ts, rules.RuleTargetUnreachable, fs, ids, now, pol.Thresholds, nil)
-		r.updateOpenGauge()
-		return err
+		return r.startIncident(ctx, t, live.View{}, ts, rules.RuleTargetUnreachable, fs, ids, now, pol.Thresholds, nil)
 	}
 	if now.Sub(oi.lastSampleAt) < downNoteEvery {
 		// Still down: the incident was seen now (its duration grows).
@@ -365,7 +502,7 @@ func (r *recorder) unreachable(ctx context.Context, t repository.Target, pol rul
 	}
 	oi.lastSampleAt = now
 	oi.title = fs[0].Title
-	if err := r.store.UpdateIncidentState(ctx, oi.id, "open", nil, nil, oi.severity, oi.title, oi.truncated); err != nil {
+	if err := tx(ctx).UpdateIncidentState(ctx, oi.id, "open", nil, nil, oi.severity, oi.title, oi.truncated); err != nil {
 		return err
 	}
 	ev := repository.IncidentEvent{At: now, Kind: KindSample, Summary: fs[0].Title + ". " + fs[0].Observed[0]}
@@ -395,10 +532,16 @@ func burstReason(ts *targetState, findings []rules.Finding) string {
 	return ""
 }
 
-func (r *recorder) publish(targetID, incidentID int64, kind string) {
-	if r.events != nil {
-		r.events.Publish(kind, map[string]any{"target_id": targetID, "incident_id": incidentID})
+// publish records an incident change: in the notification outbox, in the
+// transaction of the change, and as an event for the browsers once it
+// committed.
+func (r *recorder) publish(ctx context.Context, targetID, incidentID int64, kind string) error {
+	if err := tx(ctx).EnqueueNotification(ctx, incidentID, kind); err != nil {
+		return err
 	}
+	x := ctx.Value(txnKey{}).(*txn)
+	x.pending = append(x.pending, pendingEvent{targetID: targetID, incidentID: incidentID, kind: kind})
+	return nil
 }
 
 func (r *recorder) baselinesOf(targetID int64) map[observe.QueryKey]baseline.Baseline {

@@ -41,7 +41,7 @@ type ChangeFilter struct {
 
 // InsertChanges stores change events and sets their IDs.
 func (s *Store) InsertChanges(ctx context.Context, events []observe.ChangeEvent) error {
-	return s.red.Error(pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return s.red.Error(s.inTx(ctx, func(tx pgx.Tx) error {
 		for i := range events {
 			e := &events[i]
 			details := e.Details
@@ -71,7 +71,7 @@ func (s *Store) ListChanges(ctx context.Context, f ChangeFilter) ([]observe.Chan
 	if f.Kinds == nil {
 		f.Kinds = []string{}
 	}
-	rows, err := s.pool.Query(ctx, queries.ListChanges, f.From.UTC(), f.To.UTC(), f.TargetIDs, f.Kinds, f.Limit)
+	rows, err := s.db.Query(ctx, queries.ListChanges, f.From.UTC(), f.To.UTC(), f.TargetIDs, f.Kinds, f.Limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -84,7 +84,7 @@ func (s *Store) ListChanges(ctx context.Context, f ChangeFilter) ([]observe.Chan
 
 // DeleteChange deletes a reported change event (detected ones stay).
 func (s *Store) DeleteChange(ctx context.Context, id int64) (observe.ChangeEvent, error) {
-	rows, err := s.pool.Query(ctx, queries.DeleteChange, id)
+	rows, err := s.db.Query(ctx, queries.DeleteChange, id)
 	if err != nil {
 		return observe.ChangeEvent{}, s.red.Error(err)
 	}
@@ -108,7 +108,7 @@ func scanChange(r pgx.CollectableRow) (observe.ChangeEvent, error) {
 // ChangeState returns the last reading a change detection compares against.
 func (s *Store) ChangeState(ctx context.Context, targetID int64, kind string) ([]byte, error) {
 	var raw []byte
-	err := s.pool.QueryRow(ctx, queries.ChangeState, targetID, kind).Scan(&raw)
+	err := s.db.QueryRow(ctx, queries.ChangeState, targetID, kind).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -117,6 +117,6 @@ func (s *Store) ChangeState(ctx context.Context, targetID int64, kind string) ([
 
 // SaveChangeState keeps a reading for the next comparison.
 func (s *Store) SaveChangeState(ctx context.Context, targetID int64, kind string, at time.Time, state []byte) error {
-	_, err := s.pool.Exec(ctx, queries.SaveChangeState, targetID, kind, at.UTC(), state)
+	_, err := s.db.Exec(ctx, queries.SaveChangeState, targetID, kind, at.UTC(), state)
 	return s.red.Error(err)
 }

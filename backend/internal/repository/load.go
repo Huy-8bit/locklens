@@ -53,7 +53,7 @@ func (s *Store) InsertLoadBucket(ctx context.Context, targetID int64, b observe.
 		}
 		samples[i] = int32(g.Samples)
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return s.red.Error(err)
 	}
@@ -125,7 +125,7 @@ func (s *Store) LoadRows(ctx context.Context, targetID int64, from, to time.Time
 	if f.WaitClass != "" {
 		class = &f.WaitClass
 	}
-	rows, err := s.pool.Query(ctx, sql, targetID, from.UTC(), to.UTC(), step, class, f.QueryID)
+	rows, err := s.db.Query(ctx, sql, targetID, from.UTC(), to.UTC(), step, class, f.QueryID)
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}
@@ -138,7 +138,7 @@ func (s *Store) LoadRows(ctx context.Context, targetID int64, from, to time.Time
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}
-	trows, err := s.pool.Query(ctx, queries.LoadTicks, targetID, from.UTC(), to.UTC(), step)
+	trows, err := s.db.Query(ctx, queries.LoadTicks, targetID, from.UTC(), to.UTC(), step)
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}
@@ -169,7 +169,7 @@ func (s *Store) QueryRefsByActivity(ctx context.Context, targetID int64, refs []
 	for i, r := range refs {
 		dbids[i], userids[i], qids[i] = int64(r.DBID), int64(r.UserID), r.QueryID
 	}
-	rows, err := s.pool.Query(ctx, queries.QueryRefsByActivity, targetID, dbids, userids, qids, includeText)
+	rows, err := s.db.Query(ctx, queries.QueryRefsByActivity, targetID, dbids, userids, qids, includeText)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}

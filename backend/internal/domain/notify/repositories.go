@@ -9,5 +9,6 @@ type Repositories struct {
 	repository.IncidentRepository
 	repository.MaintenanceRepository
 	repository.NotificationRepository
+	repository.OutboxRepository
 	repository.TargetRepository
 }

@@ -6,6 +6,8 @@
 package observe
 
 import (
+	"cmp"
+	"slices"
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/model"
@@ -107,6 +109,15 @@ type StatementsCollection struct {
 	Deltas   []QueryDelta `json:"deltas"`
 	// Truncated counts changed entries not stored because of the per-collection cap.
 	Truncated int `json:"truncated"`
+}
+
+// TopByTime returns the n statements with the most execution time in the
+// collection (ties keep their order). It is what the Prometheus export shows,
+// and what a server publishes for the others to export.
+func (c StatementsCollection) TopByTime(n int) []QueryDelta {
+	ds := slices.Clone(c.Deltas)
+	slices.SortStableFunc(ds, func(a, b QueryDelta) int { return cmp.Compare(b.TotalMS, a.TotalMS) })
+	return ds[:min(max(n, 0), len(ds))]
 }
 
 // TableStat is one row of table statistics. Tuple counts are estimates.

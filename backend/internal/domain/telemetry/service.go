@@ -9,7 +9,8 @@ import (
 	"github.com/locklens/locklens/internal/repository"
 )
 
-// Service builds the export of the instances this server collects.
+// Service builds the export of the instances this server collects (all of
+// them, from the published live views, on a server without the collector role).
 type Service interface {
 	// Collect returns the metric families of the instances this server
 	// collects, or of one of them (targetID > 0).
@@ -32,11 +33,19 @@ func New(store Repositories, collectors collector.Manager, top int) Service {
 }
 
 func (s *service) Collect(ctx context.Context, targetID int64) ([]Family, error) {
-	views := s.collectors.Collecting()
 	targets, err := s.store.ListTargets(ctx)
 	if err != nil {
 		return nil, err
 	}
+	var wanted []int64
+	for _, t := range targets {
+		if t.Enabled && (targetID <= 0 || t.ID == targetID) {
+			wanted = append(wanted, t.ID)
+		}
+	}
+	// The instances this server collects; on a server without the collector
+	// role, every instance as its collector published it.
+	views := s.collectors.ExportViews(ctx, wanted)
 	in := Input{Now: time.Now(), TopStatements: s.top}
 	var ids []int64
 	for _, t := range targets {

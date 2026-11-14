@@ -34,3 +34,8 @@ node_modules/
 
 # Unversioned developer workload sandbox
 /local-lab/
+
+/video/
+
+package-lock.json
+package.json

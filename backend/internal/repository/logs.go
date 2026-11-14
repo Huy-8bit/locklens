@@ -80,7 +80,7 @@ type LogStatement struct {
 // new.
 func (s *Store) InsertLogEvents(ctx context.Context, targetID, tokenID int64, hostname, version string, sources []string, events []observe.LogEvent) (int64, error) {
 	var inserted int64
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		batch := &pgx.Batch{}
 		var last *time.Time
 		for _, e := range events {
@@ -127,7 +127,7 @@ func (s *Store) InsertLogEvents(ctx context.Context, targetID, tokenID int64, ho
 
 // LogAgents returns the live log agents of a target.
 func (s *Store) LogAgents(ctx context.Context, targetID int64) ([]LogAgent, error) {
-	rows, err := s.pool.Query(ctx, queries.ListLogAgents, targetID)
+	rows, err := s.db.Query(ctx, queries.ListLogAgents, targetID)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -153,7 +153,7 @@ func (s *Store) LogEvents(ctx context.Context, f LogEventFilter) ([]observe.LogE
 	if f.Kinds == nil {
 		f.Kinds = []string{}
 	}
-	rows, err := s.pool.Query(ctx, queries.ListLogEvents, f.TargetID, f.From.UTC(), f.To.UTC(), f.Kinds, f.Fingerprint, f.Limit)
+	rows, err := s.db.Query(ctx, queries.ListLogEvents, f.TargetID, f.From.UTC(), f.To.UTC(), f.Kinds, f.Fingerprint, f.Limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -181,7 +181,7 @@ func (s *Store) LogEvents(ctx context.Context, f LogEventFilter) ([]observe.LogE
 
 // LogCounts returns the events per kind in buckets of step.
 func (s *Store) LogCounts(ctx context.Context, targetID int64, from, to time.Time, step time.Duration) ([]LogCount, error) {
-	rows, err := s.pool.Query(ctx, queries.LogCounts, targetID, from.UTC(), to.UTC(), step.Seconds())
+	rows, err := s.db.Query(ctx, queries.LogCounts, targetID, from.UTC(), to.UTC(), step.Seconds())
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -200,7 +200,7 @@ func (s *Store) LogCounts(ctx context.Context, targetID int64, from, to time.Tim
 // LogStatements returns the statements with the most logged execution
 // time.
 func (s *Store) LogStatements(ctx context.Context, targetID int64, from, to time.Time, limit int) ([]LogStatement, error) {
-	rows, err := s.pool.Query(ctx, queries.LogStatements, targetID, from.UTC(), to.UTC(), limit)
+	rows, err := s.db.Query(ctx, queries.LogStatements, targetID, from.UTC(), to.UTC(), limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}

@@ -132,7 +132,21 @@ the detailed explanation.
   can collect the same target. Login rate limiting is per server, and a
   running workspace statement can be cancelled only on the server that runs
   it (use sticky sessions in the load balancer). Messages between servers
-  (browser events) larger than about 8 KB are not forwarded.
+  (browser events) larger than about 8 KB are not forwarded (they are logged
+  and counted). Servers without the collector role answer from views
+  published every 5 seconds, so their live pages are up to 5 seconds behind;
+  the published views are unlogged, so they are empty for about 5 seconds
+  after a crash or failover of the store. While no server with the jobs role
+  is alive, retention, rollups, baselines, the optimizer and notifications do
+  not run (notifications are sent once one is back). A collector that loses
+  contact with the store for more than 35 seconds while other servers are
+  alive stops collecting its instances until it renews their leases (another
+  server may have taken them over); the skipped runs are recorded as gaps
+  ("lease lost"). Instances move between collectors gradually: after a
+  collector joins, the cluster can stay up to 15% out of balance, and an
+  instance stays 10 minutes with a collector before it moves (unless a
+  collector carries more than 1.5 times its share). An instance's cost can be
+  overridden only with SQL (`target_weights.weight_override`).
 
 ## Unsupported behaviour
 

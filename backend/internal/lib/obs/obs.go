@@ -23,6 +23,17 @@ type Registry struct {
 	mu       sync.Mutex
 	families map[string]*family
 	start    time.Time
+	// hooks run before each exposition (for values read on demand, such as
+	// connection pool statistics).
+	hooks []func()
+}
+
+// OnCollect registers fn to run before each exposition, outside the
+// registry's lock, so it can set gauges and add to counters.
+func (r *Registry) OnCollect(fn func()) {
+	r.mu.Lock()
+	r.hooks = append(r.hooks, fn)
+	r.mu.Unlock()
 }
 
 type kind int
@@ -186,6 +197,12 @@ func (h *Histogram) Observe(v float64, labels ...string) {
 // WriteText writes the Prometheus text exposition format (version 0.0.4),
 // including Go process metrics.
 func (r *Registry) WriteText(w io.Writer) error {
+	r.mu.Lock()
+	hooks := slices.Clone(r.hooks)
+	r.mu.Unlock()
+	for _, fn := range hooks {
+		fn()
+	}
 	r.mu.Lock()
 	names := make([]string, 0, len(r.families))
 	for n := range r.families {

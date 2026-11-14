@@ -85,7 +85,7 @@ func scanChannel(row pgx.Row) (NotificationChannel, error) {
 
 // ListNotificationChannels returns every channel by name.
 func (s *Store) ListNotificationChannels(ctx context.Context) ([]NotificationChannel, error) {
-	rows, err := s.pool.Query(ctx, queries.ListNotificationChannels)
+	rows, err := s.db.Query(ctx, queries.ListNotificationChannels)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -98,7 +98,7 @@ func (s *Store) ListNotificationChannels(ctx context.Context) ([]NotificationCha
 
 // GetNotificationChannel returns one channel.
 func (s *Store) GetNotificationChannel(ctx context.Context, id int64) (NotificationChannel, error) {
-	c, err := scanChannel(s.pool.QueryRow(ctx, queries.GetNotificationChannel, id))
+	c, err := scanChannel(s.db.QueryRow(ctx, queries.GetNotificationChannel, id))
 	if errors.Is(err, ErrNotFound) {
 		return c, err
 	}
@@ -121,9 +121,9 @@ func (s *Store) SaveNotificationChannel(ctx context.Context, c NotificationChann
 	}
 	var row pgx.Row
 	if c.ID == 0 {
-		row = s.pool.QueryRow(ctx, queries.InsertNotificationChannel, c.Name, c.Kind, c.Enabled, c.MinSeverity, c.Environments, c.OnOpen, c.OnEscalate, c.OnResolve, c.ReminderSeconds, c.ConfigCiphertext, c.Display, rules, targets, c.DelaySeconds)
+		row = s.db.QueryRow(ctx, queries.InsertNotificationChannel, c.Name, c.Kind, c.Enabled, c.MinSeverity, c.Environments, c.OnOpen, c.OnEscalate, c.OnResolve, c.ReminderSeconds, c.ConfigCiphertext, c.Display, rules, targets, c.DelaySeconds)
 	} else {
-		row = s.pool.QueryRow(ctx, queries.UpdateNotificationChannel, c.ID, c.Name, c.Enabled, c.MinSeverity, c.Environments, c.OnOpen, c.OnEscalate, c.OnResolve, c.ReminderSeconds, c.ConfigCiphertext, c.Display, rules, targets, c.DelaySeconds)
+		row = s.db.QueryRow(ctx, queries.UpdateNotificationChannel, c.ID, c.Name, c.Enabled, c.MinSeverity, c.Environments, c.OnOpen, c.OnEscalate, c.OnResolve, c.ReminderSeconds, c.ConfigCiphertext, c.Display, rules, targets, c.DelaySeconds)
 	}
 	out, err := scanChannel(row)
 	switch {
@@ -137,7 +137,7 @@ func (s *Store) SaveNotificationChannel(ctx context.Context, c NotificationChann
 
 // DeleteNotificationChannel removes a channel and its delivery history.
 func (s *Store) DeleteNotificationChannel(ctx context.Context, id int64) error {
-	tag, err := s.pool.Exec(ctx, queries.DeleteNotificationChannel, id)
+	tag, err := s.db.Exec(ctx, queries.DeleteNotificationChannel, id)
 	if err != nil {
 		return s.red.Error(err)
 	}
@@ -170,7 +170,7 @@ func scanSilence(r pgx.CollectableRow) (Silence, error) {
 // ListSilences returns silences that have not ended (all of them when
 // includeEnded), the latest ending first.
 func (s *Store) ListSilences(ctx context.Context, includeEnded bool, limit int) ([]Silence, error) {
-	rows, err := s.pool.Query(ctx, queries.ListSilences, includeEnded, limit)
+	rows, err := s.db.Query(ctx, queries.ListSilences, includeEnded, limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -186,10 +186,10 @@ func (s *Store) ListSilences(ctx context.Context, includeEnded bool, limit int) 
 // LockLens and its store never keeps an ended silence active.
 func (s *Store) CreateSilence(ctx context.Context, x Silence) (Silence, error) {
 	var id int64
-	if err := s.pool.QueryRow(ctx, queries.CreateSilence, x.TargetID, x.RuleID, x.EndsAt.UTC(), x.Reason, x.CreatedBy).Scan(&id); err != nil {
+	if err := s.db.QueryRow(ctx, queries.CreateSilence, x.TargetID, x.RuleID, x.EndsAt.UTC(), x.Reason, x.CreatedBy).Scan(&id); err != nil {
 		return x, s.red.Error(err)
 	}
-	rows, err := s.pool.Query(ctx, queries.GetSilence, id)
+	rows, err := s.db.Query(ctx, queries.GetSilence, id)
 	if err != nil {
 		return x, s.red.Error(err)
 	}
@@ -202,7 +202,7 @@ func (s *Store) EndSilence(ctx context.Context, id int64) error {
 	// A silence ended right after it was created (or whose start is ahead of
 	// the database clock) gets its start moved back, so it ends now and the
 	// ends_at > starts_at constraint holds.
-	tag, err := s.pool.Exec(ctx, queries.EndSilence, id)
+	tag, err := s.db.Exec(ctx, queries.EndSilence, id)
 	if err != nil {
 		return s.red.Error(err)
 	}
@@ -215,7 +215,7 @@ func (s *Store) EndSilence(ctx context.Context, id int64) error {
 // ActiveSilence returns a silence that covers the target and rule now (by
 // the database clock).
 func (s *Store) ActiveSilence(ctx context.Context, targetID *int64, ruleID string) (*Silence, error) {
-	rows, err := s.pool.Query(ctx, queries.ActiveSilence, targetID, ruleID)
+	rows, err := s.db.Query(ctx, queries.ActiveSilence, targetID, ruleID)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -242,14 +242,14 @@ type Delivery struct {
 
 // InsertDelivery records a notification attempt.
 func (s *Store) InsertDelivery(ctx context.Context, d Delivery) error {
-	_, err := s.pool.Exec(ctx, queries.InsertDelivery, d.ChannelID, d.IncidentID, d.Event, d.Severity, d.Status, d.Attempts, d.Error, d.At.UTC())
+	_, err := s.db.Exec(ctx, queries.InsertDelivery, d.ChannelID, d.IncidentID, d.Event, d.Severity, d.Status, d.Attempts, d.Error, d.At.UTC())
 	return s.red.Error(err)
 }
 
 // ListDeliveries returns the latest deliveries, of one incident when
 // incidentID is set.
 func (s *Store) ListDeliveries(ctx context.Context, incidentID *int64, limit int) ([]Delivery, error) {
-	rows, err := s.pool.Query(ctx, queries.ListDeliveries, incidentID, limit)
+	rows, err := s.db.Query(ctx, queries.ListDeliveries, incidentID, limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}

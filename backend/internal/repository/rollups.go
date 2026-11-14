@@ -37,7 +37,7 @@ const RollupBucket = 5 * time.Minute
 // from raw statement samples and collections. from must be a bucket start;
 // buckets are replaced, so running it again over the same range is harmless.
 func (s *Store) RollupStatements(ctx context.Context, targetID int64, from, to time.Time) error {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return s.red.Error(err)
 	}
@@ -58,7 +58,7 @@ func (s *Store) RollupStatements(ctx context.Context, targetID int64, from, to t
 // or ok = false when nothing was rolled yet.
 func (s *Store) RollupWatermark(ctx context.Context, targetID int64) (time.Time, bool, error) {
 	var t *time.Time
-	if err := s.pool.QueryRow(ctx, queries.RollupWatermark, targetID).Scan(&t); err != nil {
+	if err := s.db.QueryRow(ctx, queries.RollupWatermark, targetID).Scan(&t); err != nil {
 		return time.Time{}, false, s.red.Error(err)
 	}
 	if t == nil {
@@ -77,7 +77,7 @@ type ActiveStatement struct {
 // ActiveStatements returns the statements with the most execution time since
 // a time, at most limit.
 func (s *Store) ActiveStatements(ctx context.Context, targetID int64, since time.Time, limit int) ([]ActiveStatement, error) {
-	rows, err := s.pool.Query(ctx, queries.ActiveStatements, targetID, since.UTC(), limit)
+	rows, err := s.db.Query(ctx, queries.ActiveStatements, targetID, since.UTC(), limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -116,7 +116,7 @@ func (s *Store) BaselinePoints(ctx context.Context, targetID int64, ids []int64,
 	if point < RollupBucket {
 		return nil, nil, errors.New("baseline points cannot be smaller than rollup buckets")
 	}
-	rows, err := s.pool.Query(ctx, queries.BaselineRollupPoints, targetID, from.UTC(), to.UTC(), point, ids)
+	rows, err := s.db.Query(ctx, queries.BaselineRollupPoints, targetID, from.UTC(), to.UTC(), point, ids)
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}
@@ -129,7 +129,7 @@ func (s *Store) BaselinePoints(ctx context.Context, targetID int64, ids []int64,
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}
-	crow, err := s.pool.Query(ctx, queries.BaselineCoveragePoints, targetID, from.UTC(), to.UTC(), point)
+	crow, err := s.db.Query(ctx, queries.BaselineCoveragePoints, targetID, from.UTC(), to.UTC(), point)
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}

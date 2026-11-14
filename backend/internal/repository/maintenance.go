@@ -65,7 +65,7 @@ func scanWindow(r pgx.CollectableRow) (MaintenanceWindow, error) {
 
 // MaintenanceWindows returns every maintenance window by name.
 func (s *Store) MaintenanceWindows(ctx context.Context) ([]MaintenanceWindow, error) {
-	rows, err := s.pool.Query(ctx, queries.ListMaintenanceWindows)
+	rows, err := s.db.Query(ctx, queries.ListMaintenanceWindows)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -82,10 +82,10 @@ func (s *Store) SaveMaintenanceWindow(ctx context.Context, w MaintenanceWindow) 
 	var rows pgx.Rows
 	var err error
 	if w.ID == 0 {
-		rows, err = s.pool.Query(ctx, queries.InsertMaintenanceWindow, w.Name, w.Enabled, w.Kind, w.Environments, w.TargetIDs, w.RuleIDs,
+		rows, err = s.db.Query(ctx, queries.InsertMaintenanceWindow, w.Name, w.Enabled, w.Kind, w.Environments, w.TargetIDs, w.RuleIDs,
 			w.StartsAt, w.EndsAt, w.Weekdays, w.StartTime, w.DurationMinutes, w.Timezone, w.CreatedBy)
 	} else {
-		rows, err = s.pool.Query(ctx, queries.UpdateMaintenanceWindow, w.ID, w.Name, w.Enabled, w.Kind, w.Environments, w.TargetIDs, w.RuleIDs,
+		rows, err = s.db.Query(ctx, queries.UpdateMaintenanceWindow, w.ID, w.Name, w.Enabled, w.Kind, w.Environments, w.TargetIDs, w.RuleIDs,
 			w.StartsAt, w.EndsAt, w.Weekdays, w.StartTime, w.DurationMinutes, w.Timezone)
 	}
 	if err != nil {
@@ -100,7 +100,7 @@ func (s *Store) SaveMaintenanceWindow(ctx context.Context, w MaintenanceWindow) 
 
 // DeleteMaintenanceWindow deletes a window; ErrNotFound when unknown.
 func (s *Store) DeleteMaintenanceWindow(ctx context.Context, id int64) error {
-	tag, err := s.pool.Exec(ctx, queries.DeleteMaintenanceWindow, id)
+	tag, err := s.db.Exec(ctx, queries.DeleteMaintenanceWindow, id)
 	if err != nil {
 		return s.red.Error(err)
 	}

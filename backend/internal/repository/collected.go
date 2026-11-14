@@ -48,7 +48,7 @@ func (s *Store) InsertPoints(ctx context.Context, targetID int64, ts time.Time, 
 	for i, p := range points {
 		metrics[i], labels[i], values[i], intervals[i] = p.Metric, p.Label, p.Value, p.IntervalSeconds
 	}
-	_, err := s.pool.Exec(ctx, queries.InsertPoints, targetID, ts.UTC(), metrics, labels, values, intervals)
+	_, err := s.db.Exec(ctx, queries.InsertPoints, targetID, ts.UTC(), metrics, labels, values, intervals)
 	return s.red.Error(err)
 }
 
@@ -60,7 +60,7 @@ type IdentityCache map[int64]map[observe.QueryKey]int64
 // upserted (text only when includeText), deltas inserted as samples, and a
 // statement_collections row records coverage and resets.
 func (s *Store) InsertStatements(ctx context.Context, targetID int64, c observe.StatementsCollection, includeText bool, cache IdentityCache) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
 		ids := cache[targetID]
 		if ids == nil {
 			ids = map[observe.QueryKey]int64{}
@@ -144,19 +144,19 @@ func (s *Store) InsertStatements(ctx context.Context, targetID int64, c observe.
 // ClearQueryTexts removes stored statement texts of a target, used when the
 // target's query-text collection is switched off.
 func (s *Store) ClearQueryTexts(ctx context.Context, targetID int64) error {
-	_, err := s.pool.Exec(ctx, queries.ClearQueryTexts, targetID)
+	_, err := s.db.Exec(ctx, queries.ClearQueryTexts, targetID)
 	return s.red.Error(err)
 }
 
 // InsertActivitySnapshot stores a blocking snapshot.
 func (s *Store) InsertActivitySnapshot(ctx context.Context, targetID int64, ts time.Time, blocked, roots, longTx int, snapshot []byte) error {
-	_, err := s.pool.Exec(ctx, queries.InsertActivitySnapshot, targetID, ts.UTC(), blocked, roots, longTx, snapshot)
+	_, err := s.db.Exec(ctx, queries.InsertActivitySnapshot, targetID, ts.UTC(), blocked, roots, longTx, snapshot)
 	return s.red.Error(err)
 }
 
 // InsertTableHealth stores table and index statistics.
 func (s *Store) InsertTableHealth(ctx context.Context, targetID int64, h observe.TableHealth) error {
-	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
 		ts := h.At.UTC()
 		batch := &pgx.Batch{}
 		for _, t := range h.Tables {
@@ -186,12 +186,12 @@ func (s *Store) InsertTableHealth(ctx context.Context, targetID int64, h observe
 
 // InsertStateSnapshot stores a JSON document of the given kind.
 func (s *Store) InsertStateSnapshot(ctx context.Context, targetID int64, kind string, ts time.Time, payload []byte) error {
-	_, err := s.pool.Exec(ctx, queries.InsertStateSnapshot, targetID, kind, ts.UTC(), payload)
+	_, err := s.db.Exec(ctx, queries.InsertStateSnapshot, targetID, kind, ts.UTC(), payload)
 	return s.red.Error(err)
 }
 
 // InsertGap records a period without data for a collector.
 func (s *Store) InsertGap(ctx context.Context, targetID int64, collector string, from, to time.Time, reason string) error {
-	_, err := s.pool.Exec(ctx, queries.InsertGap, targetID, collector, from.UTC(), to.UTC(), reason)
+	_, err := s.db.Exec(ctx, queries.InsertGap, targetID, collector, from.UTC(), to.UTC(), reason)
 	return s.red.Error(err)
 }

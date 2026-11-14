@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/rules"
+	"github.com/locklens/locklens/internal/lib/obs"
 	"github.com/locklens/locklens/internal/lib/secret"
 	"github.com/locklens/locklens/internal/repository"
 )
@@ -111,17 +112,15 @@ var envPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
 // Service sends incident notifications to channels, with reminders and silences.
 type Service interface {
 	// Publish receives the recorder's incident events (incident.opened,
-	// incident.updated, incident.resolved) and queues the incident. It never
-	// blocks: an incident already queued is not queued twice, and when the queue
-	// is full the event is dropped (the next update or the reminder sweep
-	// catches up, because decisions use the incident's state).
+	// incident.updated, incident.resolved): the changes are in the
+	// notification outbox; this wakes the sender if it runs here. It never
+	// blocks.
 	Publish(kind string, payload any)
-	// Run processes queued incidents until ctx ends. Incidents are queued by
-	// the server that records them, so each change is sent once.
-	Run(ctx context.Context)
-	// RunReminders queues the open unacknowledged incidents every minute, so
-	// due reminders are sent, until ctx ends. With several servers, one runs it.
-	RunReminders(ctx context.Context)
+	// Run sends notifications until ctx ends: the incident changes in the
+	// outbox as they arrive, and every minute the open incidents (reminders,
+	// escalation tiers, Alertmanager refreshes). With several servers one
+	// runs it; holder (the server ID) names it in outbox claims.
+	Run(ctx context.Context, holder string)
 	// Test sends a test message through a channel now, enabled or not.
 	Test(ctx context.Context, id int64) (repository.Delivery, error)
 	// Deliveries returns recent deliveries, of one incident when incidentID is set.
@@ -158,19 +157,19 @@ type service struct {
 	send      sender
 	now       func() time.Time
 
-	queue   chan int64
+	metrics *obs.Metrics
+	wake    chan struct{}
 	mu      sync.Mutex
-	pending map[int64]bool
 	// refreshed is when each open incident was last posted to each
 	// Alertmanager channel (by channel and incident).
 	refreshed map[[2]int64]time.Time
 }
 
 // New returns a service. publicURL is LockLens' address as users reach it
-// (for links in messages); it may be empty.
-func New(store Repositories, box *secret.Box, log *slog.Logger, publicURL, version string) Service {
-	return &service{store: store, box: box, log: log, publicURL: strings.TrimRight(publicURL, "/"), version: version,
-		send: newSender(version), now: time.Now, queue: make(chan int64, 256), pending: map[int64]bool{}, refreshed: map[[2]int64]time.Time{}}
+// (for links in messages); it may be empty. metrics may be nil.
+func New(store Repositories, box *secret.Box, metrics *obs.Metrics, log *slog.Logger, publicURL, version string) Service {
+	return &service{store: store, box: box, metrics: metrics, log: log, publicURL: strings.TrimRight(publicURL, "/"), version: version,
+		send: newSender(version), now: time.Now, wake: make(chan struct{}, 1), refreshed: map[[2]int64]time.Time{}}
 }
 
 // Channels returns every channel.

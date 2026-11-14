@@ -35,7 +35,7 @@ const (
 // buckets fall in. from must be a minute boundary; recomputing a range is
 // harmless.
 func (s *Store) RollupMetrics(ctx context.Context, targetID int64, from, to time.Time) error {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return s.red.Error(err)
 	}
@@ -56,7 +56,7 @@ func (s *Store) RollupMetrics(ctx context.Context, targetID int64, from, to time
 // target, or ok = false when nothing was rolled up yet.
 func (s *Store) MetricRollupWatermark(ctx context.Context, targetID int64) (time.Time, bool, error) {
 	var t *time.Time
-	if err := s.pool.QueryRow(ctx, queries.MetricRollupWatermark, targetID).Scan(&t); err != nil {
+	if err := s.db.QueryRow(ctx, queries.MetricRollupWatermark, targetID).Scan(&t); err != nil {
 		return time.Time{}, false, s.red.Error(err)
 	}
 	if t == nil {

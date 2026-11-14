@@ -28,7 +28,7 @@ type TopologyLink struct {
 
 // TopologyLinks returns the primary-standby links between targets.
 func (s *Store) TopologyLinks(ctx context.Context) ([]TopologyLink, error) {
-	rows, err := s.pool.Query(ctx, queries.TopologyLinks)
+	rows, err := s.db.Query(ctx, queries.TopologyLinks)
 	if err != nil {
 		return nil, err
 	}
@@ -46,12 +46,12 @@ func (s *Store) TopologyLinks(ctx context.Context) ([]TopologyLink, error) {
 
 // SetTopologyLink stores a primary-standby link.
 func (s *Store) SetTopologyLink(ctx context.Context, l TopologyLink) error {
-	_, err := s.pool.Exec(ctx, queries.SetTopologyLink, l.PrimaryID, l.StandbyID, l.Application, l.Provenance)
+	_, err := s.db.Exec(ctx, queries.SetTopologyLink, l.PrimaryID, l.StandbyID, l.Application, l.Provenance)
 	return err
 }
 
 // DeleteTopologyLink deletes the link of a standby.
 func (s *Store) DeleteTopologyLink(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx, queries.DeleteTopologyLink, id)
+	_, err := s.db.Exec(ctx, queries.DeleteTopologyLink, id)
 	return err
 }

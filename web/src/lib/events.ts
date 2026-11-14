@@ -44,9 +44,12 @@ export function useEventStream(enabled: boolean): StreamState {
     const onTarget = (e: MessageEvent) => {
       if (!liveState.on) return
       try {
-        const { target_id, collector } = JSON.parse(e.data) as { target_id?: number; collector?: string }
+        // Events relayed from another server are merged per target (at most
+        // one a second) and list every collector that ran in `collectors`.
+        const { target_id, collector, collectors } = JSON.parse(e.data) as { target_id?: number; collector?: string; collectors?: string[] }
         const now = Date.now()
-        const tail = collector !== undefined && TAIL_COLLECTORS.has(collector)
+        const ran = collectors ?? (collector !== undefined ? [collector] : [])
+        const tail = ran.some((c) => TAIL_COLLECTORS.has(c))
         const targetTail = tail && due(`t${target_id}`, now)
         const fleetTail = tail && due('fleet', now)
         void qc.invalidateQueries({

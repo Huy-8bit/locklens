@@ -57,7 +57,7 @@ func (s *Store) ApplyRetention(ctx context.Context, p RetentionPolicy, now time.
 			// delete, no bloat. Rows of the chunk that straddles the cutoff
 			// stay until that chunk ends (at most one chunk interval longer).
 			var n int64
-			if err := s.pool.QueryRow(ctx, queries.DropChunksOlderThan, t, cutoff).Scan(&n); err != nil {
+			if err := s.db.QueryRow(ctx, queries.DropChunksOlderThan, t, cutoff).Scan(&n); err != nil {
 				return res, s.red.Error(err)
 			}
 			res[t+" (chunks)"] += n
@@ -72,7 +72,7 @@ func (s *Store) ApplyRetention(ctx context.Context, p RetentionPolicy, now time.
 	prune := func(t string, cutoff time.Time) error {
 		if s.isHypertable(t) {
 			var n int64
-			if err := s.pool.QueryRow(ctx, queries.DropChunksOlderThan, t, cutoff).Scan(&n); err != nil {
+			if err := s.db.QueryRow(ctx, queries.DropChunksOlderThan, t, cutoff).Scan(&n); err != nil {
 				return s.red.Error(err)
 			}
 			res[t+" (chunks)"] += n
@@ -143,7 +143,7 @@ func (s *Store) ApplyRetention(ctx context.Context, p RetentionPolicy, now time.
 func (s *Store) deleteInBatchesPaced(ctx context.Context, sql string, args ...any) (int64, error) {
 	var total int64
 	for {
-		tag, err := s.pool.Exec(ctx, sql, args...)
+		tag, err := s.db.Exec(ctx, sql, args...)
 		if err != nil {
 			return total, s.red.Error(err)
 		}
@@ -177,7 +177,7 @@ func (s *Store) TableSizes(ctx context.Context) ([]StorageStats, error) {
 	if s.timescale.Enabled {
 		q = queries.TableSizesTimescale
 	}
-	rows, err := s.pool.Query(ctx, q)
+	rows, err := s.db.Query(ctx, q)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}

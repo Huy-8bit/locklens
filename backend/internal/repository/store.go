@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/locklens/locklens/internal/config"
@@ -53,19 +55,37 @@ var ErrNotFound = errors.New("not found")
 // Store wraps the connection pool of the monitoring store.
 type Store struct {
 	pool *pgxpool.Pool
-	red  *config.Redactor
+	// db runs the statements: the pool, or the transaction of a fenced
+	// write (see Fenced).
+	db  dbtx
+	red *config.Redactor
 	// timescale is set once by SetupTimescale, before the store is shared.
 	timescale TimescaleStatus
 	// rawRetention is how long raw metric points are kept (see
 	// SetRawRetention); 0 means unknown.
-	rawRetention atomic.Int64
+	rawRetention *atomic.Int64
+}
+
+// dbtx is what runs statements: *pgxpool.Pool or pgx.Tx.
+type dbtx interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
 // Options configure the store pool.
 type Options struct {
+	// MaxConns caps the pool (LOCKLENS_STORE_MAX_CONNS). 0: pool_max_conns of
+	// the DSN when it sets one, else DefaultMaxConns.
 	MaxConns       int32
 	ConnectTimeout time.Duration
 }
+
+// DefaultMaxConns is the store pool size when neither LOCKLENS_STORE_MAX_CONNS
+// nor pool_max_conns in the DSN sets one.
+const DefaultMaxConns = 8
 
 // Open connects to the store. It does not run migrations.
 func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
@@ -75,10 +95,13 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 		return nil, &config.InvalidDSNError{}
 	}
 	red.Add(cfg.ConnConfig.Password)
-	if opts.MaxConns > 0 {
+	switch {
+	case opts.MaxConns > 0:
 		cfg.MaxConns = opts.MaxConns
-	} else {
-		cfg.MaxConns = 8
+	case dsnSetsPoolMaxConns(dsn):
+		// keep pool_max_conns as pgxpool parsed it
+	default:
+		cfg.MaxConns = DefaultMaxConns
 	}
 	if opts.ConnectTimeout > 0 {
 		cfg.ConnConfig.ConnectTimeout = opts.ConnectTimeout
@@ -88,7 +111,7 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 	if err != nil {
 		return nil, red.Error(err)
 	}
-	s := &Store{pool: pool, red: red}
+	s := &Store{pool: pool, db: pool, red: red, rawRetention: new(atomic.Int64)}
 	if err := s.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, err
@@ -103,6 +126,21 @@ func Open(ctx context.Context, dsn string, opts Options) (*Store, error) {
 		return nil, fmt.Errorf("monitoring store runs PostgreSQL %d; 14 or later is required", num/10000)
 	}
 	return s, nil
+}
+
+// dsnSetsPoolMaxConns reports whether a DSN (URL or keyword/value form) sets
+// pgxpool's pool_max_conns.
+func dsnSetsPoolMaxConns(dsn string) bool {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		return err == nil && u.Query().Has("pool_max_conns")
+	}
+	for _, f := range strings.Fields(dsn) {
+		if k, _, ok := strings.Cut(f, "="); ok && strings.TrimSpace(k) == "pool_max_conns" {
+			return true
+		}
+	}
+	return false
 }
 
 // Close releases the pool.
@@ -228,7 +266,7 @@ func (s *Store) Migrate(ctx context.Context) ([]int, error) {
 // SchemaVersion returns the highest applied migration, or 0.
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 	var v *int
-	err := s.pool.QueryRow(ctx, queries.SchemaVersion).Scan(&v)
+	err := s.db.QueryRow(ctx, queries.SchemaVersion).Scan(&v)
 	if err != nil {
 		return 0, s.red.Error(err)
 	}

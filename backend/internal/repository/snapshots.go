@@ -43,7 +43,7 @@ type SnapshotMeta struct {
 
 // ListActivitySnapshots returns snapshot metadata in (from, to], newest first.
 func (s *Store) ListActivitySnapshots(ctx context.Context, targetID int64, from, to time.Time, onlyBlocking bool, limit int) ([]SnapshotMeta, error) {
-	rows, err := s.pool.Query(ctx, queries.ListActivitySnapshots, targetID, from.UTC(), to.UTC(), onlyBlocking, limit)
+	rows, err := s.db.Query(ctx, queries.ListActivitySnapshots, targetID, from.UTC(), to.UTC(), onlyBlocking, limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -62,7 +62,7 @@ func (s *Store) ListActivitySnapshots(ctx context.Context, targetID int64, from,
 func (s *Store) GetActivitySnapshot(ctx context.Context, targetID, id int64) (SnapshotMeta, json.RawMessage, error) {
 	var m SnapshotMeta
 	var raw json.RawMessage
-	err := s.pool.QueryRow(ctx, queries.GetActivitySnapshot, targetID, id).Scan(&m.ID, &m.At, &m.BlockedSessions, &m.RootBlockers, &m.LongTransactions, &raw)
+	err := s.db.QueryRow(ctx, queries.GetActivitySnapshot, targetID, id).Scan(&m.ID, &m.At, &m.BlockedSessions, &m.RootBlockers, &m.LongTransactions, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return m, nil, ErrNotFound
 	}
@@ -73,7 +73,7 @@ func (s *Store) GetActivitySnapshot(ctx context.Context, targetID, id int64) (Sn
 func (s *Store) LatestActivitySnapshot(ctx context.Context, targetID int64) (SnapshotMeta, json.RawMessage, error) {
 	var m SnapshotMeta
 	var raw json.RawMessage
-	err := s.pool.QueryRow(ctx, queries.LatestActivitySnapshot, targetID).Scan(&m.ID, &m.At, &m.BlockedSessions, &m.RootBlockers, &m.LongTransactions, &raw)
+	err := s.db.QueryRow(ctx, queries.LatestActivitySnapshot, targetID).Scan(&m.ID, &m.At, &m.BlockedSessions, &m.RootBlockers, &m.LongTransactions, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return m, nil, ErrNotFound
 	}
@@ -84,7 +84,7 @@ func (s *Store) LatestActivitySnapshot(ctx context.Context, targetID int64) (Sna
 func (s *Store) LatestState(ctx context.Context, targetID int64, kind string) (time.Time, json.RawMessage, error) {
 	var ts time.Time
 	var raw json.RawMessage
-	err := s.pool.QueryRow(ctx, queries.LatestState,
+	err := s.db.QueryRow(ctx, queries.LatestState,
 		targetID, kind).Scan(&ts, &raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ts, nil, ErrNotFound
@@ -96,7 +96,7 @@ func (s *Store) LatestState(ctx context.Context, targetID int64, kind string) (t
 // database from rows: the tables and indexes of all of them, with the
 // cluster-wide data (database ages, settings) of the main database.
 func (s *Store) LatestTableHealth(ctx context.Context, targetID int64) (*observe.TableHealth, error) {
-	rows, err := s.pool.Query(ctx, queries.LatestTableHealthStates, targetID)
+	rows, err := s.db.Query(ctx, queries.LatestTableHealthStates, targetID)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -161,7 +161,7 @@ type tableHealthMeta struct {
 
 // tableHealthRows returns the table and index rows of one collection.
 func (s *Store) tableHealthRows(ctx context.Context, targetID int64, ts time.Time) ([]observe.TableStat, []observe.IndexStat, error) {
-	rows, err := s.pool.Query(ctx, queries.LatestTableStats, targetID, ts)
+	rows, err := s.db.Query(ctx, queries.LatestTableStats, targetID, ts)
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}
@@ -175,7 +175,7 @@ func (s *Store) tableHealthRows(ctx context.Context, targetID int64, ts time.Tim
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}
-	rows, err = s.pool.Query(ctx, queries.LatestIndexStats, targetID, ts)
+	rows, err = s.db.Query(ctx, queries.LatestIndexStats, targetID, ts)
 	if err != nil {
 		return nil, nil, s.red.Error(err)
 	}

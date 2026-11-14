@@ -56,7 +56,7 @@ func scanToken(r pgx.CollectableRow) (APIToken, error) {
 
 // CreateToken stores a token by the hash of its secret.
 func (s *Store) CreateToken(ctx context.Context, name, scope string, targetID *int64, hash []byte, prefix, by string) (APIToken, error) {
-	rows, err := s.pool.Query(ctx, queries.InsertToken, name, scope, targetID, hash, prefix, by)
+	rows, err := s.db.Query(ctx, queries.InsertToken, name, scope, targetID, hash, prefix, by)
 	if err != nil {
 		return APIToken{}, s.red.Error(err)
 	}
@@ -66,7 +66,7 @@ func (s *Store) CreateToken(ctx context.Context, name, scope string, targetID *i
 
 // ListTokens returns every token, live ones first.
 func (s *Store) ListTokens(ctx context.Context) ([]APIToken, error) {
-	rows, err := s.pool.Query(ctx, queries.ListTokens)
+	rows, err := s.db.Query(ctx, queries.ListTokens)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -79,7 +79,7 @@ func (s *Store) ListTokens(ctx context.Context) ([]APIToken, error) {
 
 // TokenByHash returns the live token with a secret hash and records its use.
 func (s *Store) TokenByHash(ctx context.Context, hash []byte) (APIToken, error) {
-	rows, err := s.pool.Query(ctx, queries.GetTokenByHash, hash)
+	rows, err := s.db.Query(ctx, queries.GetTokenByHash, hash)
 	if err != nil {
 		return APIToken{}, s.red.Error(err)
 	}
@@ -90,13 +90,13 @@ func (s *Store) TokenByHash(ctx context.Context, hash []byte) (APIToken, error) 
 	if err != nil {
 		return t, s.red.Error(err)
 	}
-	_, err = s.pool.Exec(ctx, queries.TouchToken, t.ID)
+	_, err = s.db.Exec(ctx, queries.TouchToken, t.ID)
 	return t, s.red.Error(err)
 }
 
 // RevokeToken revokes a token; ErrNotFound when it is unknown or revoked.
 func (s *Store) RevokeToken(ctx context.Context, id int64) error {
-	tag, err := s.pool.Exec(ctx, queries.RevokeToken, id)
+	tag, err := s.db.Exec(ctx, queries.RevokeToken, id)
 	if err != nil {
 		return s.red.Error(err)
 	}

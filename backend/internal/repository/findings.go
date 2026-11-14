@@ -60,7 +60,7 @@ func (s *Store) SyncRuleFindings(ctx context.Context, targetID int64, now time.T
 // rule, or of ruleID only.
 func (s *Store) syncFindings(ctx context.Context, targetID int64, now time.Time, ruleID string, fs []rules.Finding) (map[[2]string]int64, error) {
 	ids := map[[2]string]int64{}
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var keepRules, keepKeys []string
 		for _, f := range fs {
 			observed, _ := json.Marshal(f.Observed)
@@ -103,7 +103,7 @@ func (s *Store) LinkFindingsToIncident(ctx context.Context, incidentID int64, fi
 	if len(findingIDs) == 0 {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, queries.LinkFindingsToIncident, incidentID, findingIDs)
+	_, err := s.db.Exec(ctx, queries.LinkFindingsToIncident, incidentID, findingIDs)
 	return s.red.Error(err)
 }
 
@@ -121,7 +121,7 @@ func (s *Store) ListFindings(ctx context.Context, f FindingFilter) ([]FindingRow
 	if f.Limit <= 0 || f.Limit > 500 {
 		f.Limit = 200
 	}
-	rows, err := s.pool.Query(ctx, queries.ListFindings, f.TargetID, f.IncidentID, f.Status, f.Limit)
+	rows, err := s.db.Query(ctx, queries.ListFindings, f.TargetID, f.IncidentID, f.Status, f.Limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -181,7 +181,7 @@ func scanRuleCounts(rows pgx.Rows) ([]RuleCount, error) {
 // ActiveFindingCounts counts the active findings of targets by rule and
 // severity.
 func (s *Store) ActiveFindingCounts(ctx context.Context, targetIDs []int64) ([]RuleCount, error) {
-	rows, err := s.pool.Query(ctx, queries.ActiveFindingCounts, targetIDs)
+	rows, err := s.db.Query(ctx, queries.ActiveFindingCounts, targetIDs)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}

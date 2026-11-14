@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -291,5 +292,96 @@ func TestPrometheusExportAndAlertmanager(t *testing.T) {
 	})
 	if is := inst.incidents(t, down.ID); len(is) != 1 || is[0].RuleID != "target.unreachable" || is[0].State != "open" {
 		t.Fatalf("incidents %+v", is)
+	}
+}
+
+// TestNodeRoles: an API-only server answers for every instance from the views
+// the collectors publish, a collector-only server serves only the operational
+// endpoints, and only collectors hold leases. A single server with every role
+// publishes nothing (as before roles existed).
+func TestNodeRoles(t *testing.T) {
+	store := storeDSN(t)
+
+	// One server, every role: nothing is published to live_state.
+	solo := start(t, store, freePort(t))
+	id := solo.addTarget(t, "solo", observerDSN, nil).ID
+	waitFor(t, 60*time.Second, "the solo server collecting", func() bool {
+		var act struct {
+			Source string `json:"source"`
+		}
+		solo.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/activity", id), nil, 200, &act)
+		return act.Source == "live"
+	})
+	ctx := context.Background()
+	c, err := pgx.Connect(ctx, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(ctx)
+	time.Sleep(6 * time.Second) // one publish interval
+	var published int
+	_ = c.QueryRow(ctx, "SELECT count(*) FROM live_state").Scan(&published)
+	if published != 0 {
+		t.Fatalf("a server alone published %d live views", published)
+	}
+	var persistence string
+	_ = c.QueryRow(ctx, "SELECT relpersistence::text FROM pg_class WHERE relname = 'live_state'").Scan(&persistence)
+	if persistence != "u" {
+		t.Fatalf("live_state persistence %q, want unlogged", persistence)
+	}
+	solo.stop(t)
+
+	api := startWith(t, store, freePort(t), map[string]string{"LOCKLENS_ROLES": "api"})
+	col := startWith(t, store, freePort(t), map[string]string{"LOCKLENS_ROLES": "collector"})
+	jobs := startWith(t, store, freePort(t), map[string]string{"LOCKLENS_ROLES": "collector,jobs"})
+	id2 := api.addTarget(t, "roles2", limitedDSN, nil).ID
+
+	// Only collectors hold leases.
+	waitFor(t, 90*time.Second, "both instances collected by the collectors", func() bool {
+		rows, _ := c.Query(ctx, "SELECT l.holder, s.roles FROM leases l JOIN servers s ON s.id = l.holder WHERE l.name LIKE 'target:%' AND l.expires_at > now()")
+		n := 0
+		for rows.Next() {
+			var holder string
+			var roles []string
+			_ = rows.Scan(&holder, &roles)
+			if !slices.Contains(roles, "collector") {
+				t.Fatalf("server %s with roles %v holds a lease", holder, roles)
+			}
+			n++
+		}
+		return n == 2
+	})
+	// The API server answers with live data for both instances.
+	for _, tid := range []int64{id, id2} {
+		waitFor(t, 60*time.Second, "live activity on the API server", func() bool {
+			var act struct {
+				Source string `json:"source"`
+			}
+			api.do(t, "GET", fmt.Sprintf("/api/v1/targets/%d/activity", tid), nil, 200, &act)
+			return act.Source == "live"
+		})
+	}
+	// It exports both instances from the published views.
+	var tok struct {
+		Secret string `json:"secret"`
+	}
+	api.do(t, "POST", "/api/v1/tokens", map[string]any{"name": "prometheus", "scope": "metrics"}, 201, &tok)
+	waitFor(t, 60*time.Second, "both instances in the API server's export", func() bool {
+		code, out := api.scrape(t, tok.Secret)
+		return code == 200 && strings.Contains(out, `locklens_target_up{target="solo",environment="default"} 1`) &&
+			strings.Contains(out, `locklens_target_up{target="roles2",environment="default"} 1`)
+	})
+	// Collector-only servers serve the operational endpoints only.
+	for _, inst := range []*instance{col, jobs} {
+		for path, want := range map[string]int{"/healthz": 200, "/readyz": 200, "/metrics": 200, "/api/v1/session": 404, "/api/v1/targets": 404} {
+			resp, err := http.Get(inst.base + path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != want {
+				t.Errorf("%s %s: %d, want %d", inst.base, path, resp.StatusCode, want)
+			}
+		}
 	}
 }

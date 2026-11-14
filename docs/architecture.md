@@ -180,14 +180,14 @@ back into it, so no package depends on another in both directions.
 | `internal/domain/optimizer` | Recommendations per database from its catalog and workload, life cycle, HypoPG what-if |
 | `internal/domain/changes` | The change timeline: diffs of settings, restarts, promotions, upgrades, and schema; reported deploys |
 | `internal/domain/logs` | Classification of server log records into events, redaction, ingest validation, summaries |
-| `internal/domain/cluster` | Several servers sharing a store: heartbeats, target leases, singleton jobs, LISTEN/NOTIFY bus |
+| `internal/domain/cluster` | Several servers sharing a store: heartbeats, cost-based target assignment (plan), lease fencing, singleton jobs, LISTEN/NOTIFY bus |
 | `internal/domain/tokens` | API tokens (hashed) with a scope (events, ingest, metrics, read) and an optional instance |
 | `internal/domain/telemetry` | Exports of the instances' metrics: Prometheus text format and OTLP push, from the live views of the instances this server collects |
 | `internal/domain/incidents` | Incident recorder: pre-trigger buffer, lifecycle, limits, adoption of a target's open incidents |
 | `internal/domain/auth` | bcrypt passwords, server-side sessions, CSRF and Origin checks, login rate limiting |
 | `internal/domain/targets`, `internal/domain/onboard` | Target validation and encryption; adding an instance from one connection string |
 | `internal/domain/workspace` | Policy and connection handling of the investigation workspace |
-| `internal/domain/notify` | Notification channels, deliveries, reminders |
+| `internal/domain/notify` | Notification channels, deliveries, reminders, the outbox sender |
 | `internal/domain/rollup`, `internal/domain/retention` | Metric rollups; periodic cleanup |
 | `internal/domain/settings`, `internal/domain/export`, `internal/domain/plans` | Thresholds; incident exports; saved EXPLAIN parsing and comparison |
 | `internal/agent` | The log agent: follows log files (rotation, positions), batches, spools, ships |
@@ -212,13 +212,18 @@ Settings (targets, thresholds, store size), Lab guide (demo mode).
 
 - One worker per target; collectors of a target never overlap.
 - `LOCKLENS_MAX_CONCURRENT_COLLECTIONS` (default 4) caps runs across all
-  targets; per-target pools hold 1–5 connections.
+  targets; active session samples, which run every few seconds per target,
+  have their own cap (`LOCKLENS_MAX_CONCURRENT_LOAD_SAMPLES`, default 4), so
+  they neither wait behind nor delay the other collectors. Per-target pools
+  hold 1–5 connections.
 - Every collector run has a timeout; a failing or slow target affects only its
   own worker.
 - The writer is the only component writing collected data to the store; its
   queue is bounded.
-- The recorder serialises rule evaluation and incident updates with a mutex,
-  so incidents of one target are updated in order.
+- The recorder serialises rule evaluation and incident updates per target
+  (one lock per target), so incidents of one target are updated in order
+  while targets are analysed concurrently; each analysis is written in one
+  transaction fenced by the target's lease.
 - With several servers on one store, each target is collected by exactly one
   server at a time (a lease), and each once-per-cluster job runs on one
   server (see [Several servers](#several-servers)).
@@ -228,7 +233,7 @@ Settings (targets, thresholds, store size), Lab guide (demo mode).
 Startup: load and validate configuration → open the store → apply
 migrations → bootstrap the administrator → create bootstrap targets → join
 the cluster (heartbeat, bus) → start manager, writer, singleton jobs
-(retention, rollups, baselines, optimizer, notification reminders), HTTP
+(retention, rollups, baselines, optimizer, notifications), HTTP
 server. When the manager starts collecting a target (at startup or after
 taking it over), the recorder reattaches its open incidents
 (`recorder_restarted`). `/readyz` reports ready once the store answers.
@@ -268,16 +273,108 @@ never as confirmed causes.
 Several `locklens server` processes can share one monitoring store, for
 availability. Each registers in `servers` with a heartbeat. On every sync
 (15 s) the manager asks the cluster which targets it collects: a server
-renews its leases (`leases`, `target:<id>`, 45 s) up to an even share,
-releases the rest, and takes free or expired ones. A stopped server releases
-its leases; a crashed one loses them when they expire, so its targets move
-within about a minute. Once-per-cluster jobs hold a `job:<name>` lease.
+renews the leases (`leases`, `target:<id>`, 45 s) the plan keeps with it,
+releases those the plan moves, and takes free or expired ones the plan gives
+it. A stopped server releases its leases; a crashed one loses them when they
+expire, so its targets move within about a minute. Once-per-cluster jobs hold
+a `job:<name>` lease.
+
+**Cost-based assignment.** A target's cost is the collector time it takes
+per minute, averaged (exponentially, a fifth of each new minute), measured
+by the server collecting it and stored in `target_weights` once a minute;
+`target_weights.weight_override`, when set, is used instead. A target not yet
+measured costs the average. Each collector publishes its capacity
+(`LOCKLENS_COLLECTOR_CAPACITY`, default `LOCKLENS_MAX_CONCURRENT_COLLECTIONS`),
+its current cost (`servers.load`) and its target limit
+(`LOCKLENS_MAX_TARGETS`) with its heartbeat. Every server computes the same
+plan from the leases, weights, and live collectors (a pure function, so they
+agree): its share of the total cost is proportional to its capacity; free
+targets go, heaviest first, to the collector relatively least busy; a held
+target moves only when its collector is more than 15% over its share or
+another is more than 15% under (hysteresis), to a collector below its share,
+after it was held 10 minutes (unless its collector carries more than 1.5
+times its share, as one that collected alone before others joined), and
+only if the receiver does not end up relatively busier than the giver, so
+targets do not come back. At most 5% of the targets move per sync. A
+collector over its target limit gives up its newest targets; targets every
+collector is too full to take are counted
+(`locklens_cluster_unassigned_targets`). `locklens_collector_load` and
+`locklens_collector_share` show each collector's cost and share.
+
+**Fencing.** Each holding of a lease has an epoch (`leases.epoch`, from one
+sequence, so never reused), new whenever the lease changes holder. Incidents,
+findings, collector statuses, and live views of a target are written only
+while the writer still holds the lease with its epoch, checked in the same
+transaction (the lease row is share locked until the commit, so it cannot
+change holder in between): an incident's analysis, with its findings,
+events, and notification outbox row, is one transaction. A server also
+fences itself: when its last successful renewal, on its own monotonic clock,
+is older than the lease minus 10 seconds, it stops collecting its targets
+until it renews (not while it is alone: nobody can take its targets, and the
+store still checks the fence). A rejected or skipped write is never dropped
+silently: it is counted (`locklens_fenced_writes_total`), logged, and, for
+collected data, recorded as a gap with the reason "lease lost". Collected
+metrics themselves are not fenced: two servers collecting a target during a
+takeover write duplicate samples at most.
+
+**Notification outbox.** The recorder writes each incident change to
+`notification_outbox` in the transaction of the change. The server running
+the notification job (`job:notification-reminders`, servers with the jobs
+role) claims the rows of a few incidents at a time, processes those incidents
+(decisions use the incident's state and delivery history), and removes the
+rows; with them it processes the open incidents every minute (reminders,
+escalation tiers, Alertmanager refreshes). All rows of an incident are
+claimed together and an incident another sender holds is skipped, so even
+two senders briefly overlapping during a handover never notify twice; a row
+whose sender stopped is claimed again after 2 minutes, so a change is not
+lost with a server. `locklens_notification_outbox_pending` and
+`locklens_notification_outbox_oldest_seconds` are reported by the sender.
+
+The cost of a sync does not grow with the number of targets in round trips:
+the leases and the weights are read in one query each, leases taken and
+renewed in one statement (lease names sorted, so servers taking overlapping
+sets lock rows in the same order), and released in one; the measured weights
+are stored in one statement a minute. Stopping workers and adopting the open incidents of
+targets taken over happen outside the manager's lock, so API reads never wait
+for a takeover.
 
 Browser events are published on the server that observed them and carried
 to the others over PostgreSQL `LISTEN/NOTIFY`, as are requests (collect a
-target now) and settings changes. The collecting server publishes each
+target now) and settings changes. Collection events (`target.collected`)
+are relayed at most once a second per target: the first is sent at once,
+the next ones within the second are merged into one message that lists every
+collector that ran. A message larger than the NOTIFY limit (8000 bytes) is
+not relayed; it is logged and counted (`locklens_bus_dropped_total{reason="oversized"}`).
+The collecting server publishes each
 target's live view to `live_state` every 5 seconds while it is not alone, so
-any server answers API requests for any target.
+any server answers API requests for any target; fleet pages read the views
+of all their targets in one statement. The published view is what other
+servers read: the latest two points of each series (latest value and trend),
+the totals, and the busiest statements of the latest collection
+(`LOCKLENS_EXPORT_TOP_STATEMENTS`, for the Prometheus export); the point
+history, active session samples, and older statement collections stay in the
+collector's memory. Changed views are written in one statement per tick,
+unchanged ones only marked current. `live_state` is an unlogged table: it
+costs no WAL, is not replicated to standbys of the store, and is empty after a
+crash or failover of the store until the next publish (about 5 seconds).
+
+**Roles.** `LOCKLENS_ROLES` splits the work: `collector` servers hold the
+target leases (the even share counts live collectors only), record incidents
+and write collected data; `api` servers run no workers and answer from
+`live_state`, including `/metrics/targets` for every instance; `jobs`
+servers run the once-per-cluster jobs, notifications included (`job:<name>`
+leases are taken only by them; while none is alive the others warn and set
+`locklens_cluster_jobs_missing`). A server without the `api` role serves only
+`/healthz`, `/readyz`, and `/metrics`. Every role is the default, which
+behaves as before roles existed. Roles are stored with the heartbeat
+(`servers.roles`); a server that predates them counts as having every role.
+A target no collector took for more than two syncs is taken by a collector
+even beyond the plan (orphan rescue), for example while servers of an older
+version, which do not plan, are still part of the cluster.
+
+Collector statuses (`target_status`) are gathered in memory and written in
+one batch every 5 seconds, at once when a target's state changes, and not at
+all when nothing changed.
 
 ## Log agent
 

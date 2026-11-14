@@ -25,7 +25,7 @@ var _ SettingRepository = (*Store)(nil)
 // key has never been set.
 func (s *Store) GetSetting(ctx context.Context, key string, dst any) error {
 	var raw []byte
-	err := s.pool.QueryRow(ctx, queries.GetSetting, key).Scan(&raw)
+	err := s.db.QueryRow(ctx, queries.GetSetting, key).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -41,6 +41,6 @@ func (s *Store) PutSetting(ctx context.Context, key string, value any) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, queries.PutSetting, key, raw)
+	_, err = s.db.Exec(ctx, queries.PutSetting, key, raw)
 	return s.red.Error(err)
 }

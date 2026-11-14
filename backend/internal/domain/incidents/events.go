@@ -126,7 +126,7 @@ func (r *recorder) appendEvents(ctx context.Context, oi *openIncident, now time.
 		evs, trunc = r.capEvents(evs, oi.events, oi.bytes)
 		if trunc {
 			oi.truncated = true
-			if err := r.store.UpdateIncidentState(ctx, oi.id, "open", nil, nil, oi.severity, oi.title, true); err != nil {
+			if err := tx(ctx).UpdateIncidentState(ctx, oi.id, "open", nil, nil, oi.severity, oi.title, true); err != nil {
 				return err
 			}
 		}
@@ -138,7 +138,7 @@ func (r *recorder) appendEvents(ctx context.Context, oi *openIncident, now time.
 	if len(evs) == 0 && last == nil {
 		return nil
 	}
-	if err := r.store.AppendIncidentEvents(ctx, oi.id, last, evs); err != nil {
+	if err := tx(ctx).AppendIncidentEvents(ctx, oi.id, last, evs); err != nil {
 		return err
 	}
 	oi.events += len(evs)
