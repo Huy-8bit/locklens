@@ -108,8 +108,8 @@ func newHarness(t *testing.T, cfg incidents.Config) *harness {
 
 func (h *harness) newRecorder() incidents.Recorder {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return incidents.NewRecorder(incidents.Repositories{IncidentRepository: h.store, FindingRepository: h.store}, h.cfg,
-		thresholds{t: rules.Defaults()}, nil, obs.NewMetrics(), nopSink{}, log)
+	return incidents.NewRecorder(incidents.Repositories{IncidentRepository: h.store, FindingRepository: h.store, OutboxRepository: h.store,
+		FenceRepository: h.store}, h.cfg, thresholds{t: rules.Defaults()}, nil, nil, obs.NewMetrics(), nopSink{}, log)
 }
 
 func ptr[T any](v T) *T { return &v }

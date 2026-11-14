@@ -91,7 +91,7 @@ func scanIncident(row pgx.Row) (Incident, error) {
 // CreateIncident inserts an incident and its first events atomically.
 func (s *Store) CreateIncident(ctx context.Context, in Incident, events []IncidentEvent) (int64, error) {
 	var id int64
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		cfg := in.TriggerConfig
 		if cfg == nil {
 			cfg = json.RawMessage("{}")
@@ -132,7 +132,7 @@ func appendEvents(ctx context.Context, tx pgx.Tx, id int64, events []IncidentEve
 // AppendIncidentEvents adds timeline entries and optionally updates the
 // incident's last-seen time.
 func (s *Store) AppendIncidentEvents(ctx context.Context, id int64, lastSeen *time.Time, events []IncidentEvent) error {
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		if lastSeen != nil {
 			if _, err := tx.Exec(ctx, queries.AppendIncidentEvents, id, lastSeen.UTC()); err != nil {
 				return err
@@ -146,13 +146,13 @@ func (s *Store) AppendIncidentEvents(ctx context.Context, id int64, lastSeen *ti
 // UpdateIncidentState changes lifecycle fields: resolve (resolvedAt set) or
 // reopen (resolvedAt nil). Severity and title may escalate while open.
 func (s *Store) UpdateIncidentState(ctx context.Context, id int64, state string, resolvedAt *time.Time, resolution *string, severity, title string, truncated bool) error {
-	_, err := s.pool.Exec(ctx, queries.UpdateIncidentState, id, state, resolvedAt, resolution, severity, title, truncated)
+	_, err := s.db.Exec(ctx, queries.UpdateIncidentState, id, state, resolvedAt, resolution, severity, title, truncated)
 	return s.red.Error(err)
 }
 
 // AcknowledgeIncident stores user metadata; it never touches evidence.
 func (s *Store) AcknowledgeIncident(ctx context.Context, id int64, by, note string) (Incident, error) {
-	i, err := scanIncident(s.pool.QueryRow(ctx, queries.AcknowledgeIncident, id, by, note))
+	i, err := scanIncident(s.db.QueryRow(ctx, queries.AcknowledgeIncident, id, by, note))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return i, ErrNotFound
 	}
@@ -161,7 +161,7 @@ func (s *Store) AcknowledgeIncident(ctx context.Context, id int64, by, note stri
 
 // GetIncident returns one incident.
 func (s *Store) GetIncident(ctx context.Context, id int64) (Incident, error) {
-	i, err := scanIncident(s.pool.QueryRow(ctx, queries.GetIncident, id))
+	i, err := scanIncident(s.db.QueryRow(ctx, queries.GetIncident, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return i, ErrNotFound
 	}
@@ -180,7 +180,7 @@ type IncidentFilter struct {
 
 // ListIncidents returns a page of incidents (newest first) and the total.
 func (s *Store) ListIncidents(ctx context.Context, f IncidentFilter) ([]Incident, int, error) {
-	rows, err := s.pool.Query(ctx, queries.ListIncidents, f.TargetID, f.State, f.RuleID, f.From, f.To, f.Limit, f.Offset)
+	rows, err := s.db.Query(ctx, queries.ListIncidents, f.TargetID, f.State, f.RuleID, f.From, f.To, f.Limit, f.Offset)
 	if err != nil {
 		return nil, 0, s.red.Error(err)
 	}
@@ -204,7 +204,7 @@ func (s *Store) ListIncidentEvents(ctx context.Context, id int64, afterID int64,
 	if limit <= 0 || limit > 2000 {
 		limit = 2000
 	}
-	rows, err := s.pool.Query(ctx, queries.ListIncidentEvents, id, afterID, limit)
+	rows, err := s.db.Query(ctx, queries.ListIncidentEvents, id, afterID, limit)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -221,7 +221,7 @@ func (s *Store) ListIncidentEvents(ctx context.Context, id int64, afterID int64,
 
 // OpenIncidents returns every open incident (restart recovery).
 func (s *Store) OpenIncidents(ctx context.Context) ([]Incident, error) {
-	rows, err := s.pool.Query(ctx, queries.OpenIncidents)
+	rows, err := s.db.Query(ctx, queries.OpenIncidents)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -232,7 +232,7 @@ func (s *Store) OpenIncidents(ctx context.Context) ([]Incident, error) {
 // LatestResolvedIncident returns the most recent resolved incident of a rule
 // on a target resolved after since, for regrouping flapping conditions.
 func (s *Store) LatestResolvedIncident(ctx context.Context, targetID int64, ruleID string, since time.Time) (Incident, error) {
-	i, err := scanIncident(s.pool.QueryRow(ctx, queries.LatestResolvedIncident, targetID, ruleID, since.UTC()))
+	i, err := scanIncident(s.db.QueryRow(ctx, queries.LatestResolvedIncident, targetID, ruleID, since.UTC()))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return i, ErrNotFound
 	}
@@ -242,14 +242,14 @@ func (s *Store) LatestResolvedIncident(ctx context.Context, targetID int64, rule
 // CountOpenIncidents returns the number of open incidents.
 func (s *Store) CountOpenIncidents(ctx context.Context) (int, error) {
 	var n int
-	err := s.pool.QueryRow(ctx, queries.CountOpenIncidents).Scan(&n)
+	err := s.db.QueryRow(ctx, queries.CountOpenIncidents).Scan(&n)
 	return n, s.red.Error(err)
 }
 
 // OpenUnacknowledgedIncidents returns open incidents nobody acknowledged
 // (candidates for reminders).
 func (s *Store) OpenUnacknowledgedIncidents(ctx context.Context) ([]Incident, error) {
-	rows, err := s.pool.Query(ctx, queries.OpenUnacknowledgedIncidents)
+	rows, err := s.db.Query(ctx, queries.OpenUnacknowledgedIncidents)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -268,7 +268,7 @@ func (s *Store) OpenUnacknowledgedIncidents(ctx context.Context) ([]Incident, er
 // OpenIncidentCounts counts the open incidents of targets by rule and
 // severity.
 func (s *Store) OpenIncidentCounts(ctx context.Context, targetIDs []int64) ([]RuleCount, error) {
-	rows, err := s.pool.Query(ctx, queries.OpenIncidentCounts, targetIDs)
+	rows, err := s.db.Query(ctx, queries.OpenIncidentCounts, targetIDs)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}

@@ -218,7 +218,7 @@ func (w *worker) run(ctx context.Context) {
 			w.saveStatus(ctx)
 			continue
 		}
-		w.runJob(ctx, j)
+		w.runJob(ctx, j, j.next)
 	}
 }
 
@@ -229,27 +229,43 @@ func (w *worker) jobEnabled(j *job) (bool, string) {
 	return j.enabled()
 }
 
-func (w *worker) runJob(ctx context.Context, j *job) {
+// runJob runs one collector; scheduled is when it was due (for the lag metrics).
+func (w *worker) runJob(ctx context.Context, j *job, scheduled time.Time) {
+	if w.selfFenced(j) {
+		return
+	}
+	sem, busy, gauge := w.m.sem, &w.m.slotsBusy, w.m.metrics.CollectSlotsBusy
+	if j.name == CollectorLoad {
+		sem, busy, gauge = w.m.loadSem, &w.m.loadBusy, w.m.metrics.LoadSlotsBusy
+	}
+	waitFrom := time.Now()
 	select {
-	case w.m.sem <- struct{}{}:
+	case sem <- struct{}{}:
 	case <-ctx.Done():
 		return
 	}
-	w.m.slotsBusy.Add(1)
-	w.m.metrics.CollectSlotsBusy.Set(float64(w.m.slotsBusy.Load()))
+	gauge.Set(float64(busy.Add(1)))
 	start := time.Now()
+	w.m.metrics.CollectSlotWait.Observe(start.Sub(waitFrom).Seconds(), j.name)
+	if lag := start.Sub(scheduled); !scheduled.IsZero() {
+		lag = max(lag, 0)
+		w.m.metrics.CollectLag.Observe(lag.Seconds(), j.name)
+		if j.every > 0 {
+			w.m.metrics.CollectLagRatio.Observe(lag.Seconds()/j.every.Seconds(), j.name)
+		}
+	}
 	jctx, cancel := context.WithTimeout(ctx, j.timeout)
 	err := j.run(jctx)
 	cancel()
-	<-w.m.sem
-	w.m.slotsBusy.Add(-1)
-	w.m.metrics.CollectSlotsBusy.Set(float64(w.m.slotsBusy.Load()))
+	<-sem
+	gauge.Set(float64(busy.Add(-1)))
 	if ctx.Err() != nil {
 		return
 	}
 	dur := time.Since(start)
 	now := start.UTC()
 	ms := dur.Milliseconds()
+	w.m.cluster.Busy(w.target.ID, dur)
 
 	// A late or failed collector leaves a hole in the history: record it.
 	// Load sampling records its own coverage (ticks per bucket) instead.
@@ -312,8 +328,14 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 		w.m.metrics.CollectFreshness.Set(float64(now.Unix()), strconv.FormatInt(w.target.ID, 10))
 		if w.m.recorder != nil {
 			actx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			analyzeFrom := time.Now()
 			a := w.m.recorder.Analyze(actx, w.target, w.state.Snapshot())
+			w.m.metrics.RecorderAnalyze.Observe(time.Since(analyzeFrom).Seconds())
 			cancel()
+			if a.LeaseLost {
+				w.m.leaseLost("incidents", w.target.ID)
+				w.leaseGap(j, now, "the incident analysis of this collection was not recorded")
+			}
 			// An open incident or an active problem: collect faster for
 			// denser evidence.
 			if a.Burst != "" {
@@ -323,6 +345,34 @@ func (w *worker) runJob(ctx context.Context, j *job) {
 	}
 	w.saveStatus(ctx)
 	w.m.events.Publish("target.collected", map[string]any{"target_id": w.target.ID, "collector": j.name, "at": now, "ok": err == nil})
+}
+
+// selfFenced skips a job while this server still has the target but may
+// have lost its lease: its last renewal is too old (the store is unreachable
+// or this server stalled), so another server may be collecting it. The
+// skipped run is recorded as a gap; once the lease is renewed, collection
+// resumes, and if it was lost the worker stops at the next sync.
+func (w *worker) selfFenced(j *job) bool {
+	if _, ok := w.m.cluster.Fence(w.target.ID); ok || !w.m.cluster.Owns(w.target.ID) {
+		return false // fenced writes are fine, or the worker is about to stop
+	}
+	now := time.Now().UTC()
+	w.m.leaseLost("collection", w.target.ID)
+	w.leaseGap(j, now, "collection skipped")
+	j.next = now.Add(j.every)
+	return true
+}
+
+// leaseGap records a collector run lost to fencing as a gap: what this
+// server collected (or would have) is not recorded, and another server may
+// be collecting the target.
+func (w *worker) leaseGap(j *job, at time.Time, what string) {
+	id, name, to := w.target.ID, j.name, at.Add(j.every)
+	reason := "lease lost: " + what
+	w.m.writer.Enqueue(WriteOp{TargetID: id, Collector: name, At: at,
+		Write: func(ctx context.Context, s Repositories, _ repository.IdentityCache) error {
+			return s.InsertGap(ctx, id, name, at, to, reason)
+		}})
 }
 
 // maxSlow bounds how much a collector over its budget is slowed down.
@@ -345,6 +395,7 @@ func (w *worker) pace(j *job, took time.Duration) {
 	}
 	if j.over >= 3 && j.slow < maxSlow {
 		j.slow *= 2
+		w.m.metrics.CollectThrottle.Inc(j.name, "up")
 		j.over = 0
 		j.status.ThrottleReason = fmt.Sprintf("runs %d× less often: collections took %d ms, more than %.0f%% of the interval",
 			j.slow, took.Milliseconds(), w.m.budget*100)
@@ -352,6 +403,7 @@ func (w *worker) pace(j *job, took time.Duration) {
 	}
 	if j.under >= 20 && j.slow > 1 {
 		j.slow /= 2
+		w.m.metrics.CollectThrottle.Inc(j.name, "down")
 		j.under = 0
 		if j.slow == 1 {
 			j.status.ThrottleReason = ""
@@ -411,11 +463,8 @@ func (w *worker) saveStatus(ctx context.Context) {
 		st.LastError, st.LastErrorAt = v.ConnectError, v.ConnectAt
 		st.LastAttemptAt = v.ConnectAt
 	}
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	if err := w.m.store.SaveTargetStatus(sctx, st); err != nil {
-		w.m.log.Warn("save target status failed", "target_id", w.target.ID, "error", err.Error())
-	}
+	// Written in a batch with the other targets' statuses (statusWriter).
+	w.m.status.put(st)
 }
 
 func (w *worker) jobByName(name string) *job {

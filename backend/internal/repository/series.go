@@ -117,7 +117,7 @@ func (s *Store) QuerySeries(ctx context.Context, targetID int64, metrics []strin
 			sql = queries.RollupSeries(table, agg)
 			args = append(args, res)
 		}
-		rows, err := s.pool.Query(ctx, sql, args...)
+		rows, err := s.db.Query(ctx, sql, args...)
 		if err != nil {
 			return nil, s.red.Error(err)
 		}
@@ -174,7 +174,7 @@ type Gap struct {
 
 // ListGaps returns gaps overlapping (from, to].
 func (s *Store) ListGaps(ctx context.Context, targetID int64, from, to time.Time, limit int) ([]Gap, error) {
-	rows, err := s.pool.Query(ctx, queries.ListGaps,
+	rows, err := s.db.Query(ctx, queries.ListGaps,
 		targetID, from.UTC(), to.UTC(), limit)
 	if err != nil {
 		return nil, s.red.Error(err)
@@ -211,6 +211,6 @@ type CoverageBucket struct {
 // target.
 func (s *Store) HistoryBounds(ctx context.Context, id int64) (map[string]any, error) {
 	var a, b *time.Time
-	err := s.pool.QueryRow(ctx, queries.HistoryBounds, id).Scan(&a, &b)
+	err := s.db.QueryRow(ctx, queries.HistoryBounds, id).Scan(&a, &b)
 	return map[string]any{"from": a, "to": b}, err
 }

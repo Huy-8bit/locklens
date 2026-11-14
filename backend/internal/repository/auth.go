@@ -86,7 +86,7 @@ func isUniqueViolation(err error) bool {
 // stays the single source of truth for that account. Other users are kept.
 // It reports whether the stored password hash changed.
 func (s *Store) UpsertManagedAdmin(ctx context.Context, username, passwordHash string) (id int64, changed bool, err error) {
-	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		var prev *string
 		if err := tx.QueryRow(ctx, queries.ManagedAdminPasswordHash, username).Scan(&prev); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -103,12 +103,12 @@ func (s *Store) UpsertManagedAdmin(ctx context.Context, username, passwordHash s
 
 // UserByUsername looks up a user (case-insensitive).
 func (s *Store) UserByUsername(ctx context.Context, username string) (User, error) {
-	return s.oneUser(scanUser(s.pool.QueryRow(ctx, queries.UserByUsername, username)))
+	return s.oneUser(scanUser(s.db.QueryRow(ctx, queries.UserByUsername, username)))
 }
 
 // UserByID looks up a user.
 func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
-	return s.oneUser(scanUser(s.pool.QueryRow(ctx, queries.UserByID, id)))
+	return s.oneUser(scanUser(s.db.QueryRow(ctx, queries.UserByID, id)))
 }
 
 // oneUser keeps ErrNotFound comparable and redacts other errors.
@@ -121,7 +121,7 @@ func (s *Store) oneUser(u User, err error) (User, error) {
 
 // ListUsers returns every user, the environment administrator first.
 func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := s.pool.Query(ctx, queries.ListUsers)
+	rows, err := s.db.Query(ctx, queries.ListUsers)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -139,7 +139,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 
 // CreateUser adds a user. ErrConflict means the name is taken.
 func (s *Store) CreateUser(ctx context.Context, username, passwordHash, role string) (User, error) {
-	u, err := scanUser(s.pool.QueryRow(ctx, queries.CreateUser,
+	u, err := scanUser(s.db.QueryRow(ctx, queries.CreateUser,
 		strings.TrimSpace(username), passwordHash, role))
 	if isUniqueViolation(err) {
 		return u, ErrConflict
@@ -158,7 +158,7 @@ type UserChanges struct {
 // ends their sessions; a role change applies to their next request.
 func (s *Store) UpdateUser(ctx context.Context, id int64, c UserChanges) (User, error) {
 	var u User
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
 		u, err = scanUser(tx.QueryRow(ctx, queries.UpdateUser, id, c.Role, c.Disabled, c.PasswordHash))
 		if err != nil {
@@ -174,7 +174,7 @@ func (s *Store) UpdateUser(ctx context.Context, id int64, c UserChanges) (User, 
 
 // DeleteUser removes a user and their sessions.
 func (s *Store) DeleteUser(ctx context.Context, id int64) error {
-	tag, err := s.pool.Exec(ctx, queries.DeleteUser, id)
+	tag, err := s.db.Exec(ctx, queries.DeleteUser, id)
 	if err == nil && tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
@@ -183,7 +183,7 @@ func (s *Store) DeleteUser(ctx context.Context, id int64) error {
 
 // TouchLogin records a successful login.
 func (s *Store) TouchLogin(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx, queries.TouchLogin, id)
+	_, err := s.db.Exec(ctx, queries.TouchLogin, id)
 	return s.red.Error(err)
 }
 
@@ -199,7 +199,7 @@ type AuthSession struct {
 
 // CreateSession stores a session identified by the hash of its token.
 func (s *Store) CreateSession(ctx context.Context, tokenHash []byte, userID int64, csrf string, expires time.Time) error {
-	_, err := s.pool.Exec(ctx, queries.CreateSession,
+	_, err := s.db.Exec(ctx, queries.CreateSession,
 		tokenHash, userID, csrf, expires.UTC())
 	return s.red.Error(err)
 }
@@ -209,7 +209,7 @@ func (s *Store) CreateSession(ctx context.Context, tokenHash []byte, userID int6
 // immediately.
 func (s *Store) SessionByHash(ctx context.Context, tokenHash []byte, idle time.Duration) (AuthSession, error) {
 	var sess AuthSession
-	err := s.pool.QueryRow(ctx, queries.SessionByHash, tokenHash, idle).
+	err := s.db.QueryRow(ctx, queries.SessionByHash, tokenHash, idle).
 		Scan(&sess.UserID, &sess.Username, &sess.Role, &sess.Managed, &sess.CSRFToken, &sess.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return sess, ErrNotFound
@@ -219,12 +219,12 @@ func (s *Store) SessionByHash(ctx context.Context, tokenHash []byte, idle time.D
 
 // DeleteSession ends a session.
 func (s *Store) DeleteSession(ctx context.Context, tokenHash []byte) error {
-	_, err := s.pool.Exec(ctx, queries.DeleteSession, tokenHash)
+	_, err := s.db.Exec(ctx, queries.DeleteSession, tokenHash)
 	return s.red.Error(err)
 }
 
 // DeleteUserSessions logs one user out everywhere.
 func (s *Store) DeleteUserSessions(ctx context.Context, userID int64) error {
-	_, err := s.pool.Exec(ctx, queries.DeleteSessionsOfUser, userID)
+	_, err := s.db.Exec(ctx, queries.DeleteSessionsOfUser, userID)
 	return s.red.Error(err)
 }

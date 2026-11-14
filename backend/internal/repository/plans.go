@@ -46,7 +46,7 @@ type PlanRow struct {
 
 // SavePlan stores a plan of an identity of the target.
 func (s *Store) SavePlan(ctx context.Context, targetID int64, p PlanRow) (PlanRow, error) {
-	err := s.pool.QueryRow(ctx, queries.SavePlan, targetID, p.IdentityID, p.CapturedBy, p.Source, p.Format, p.Plan, p.Fingerprint, p.TotalCost, p.Note).
+	err := s.db.QueryRow(ctx, queries.SavePlan, targetID, p.IdentityID, p.CapturedBy, p.Source, p.Format, p.Plan, p.Fingerprint, p.TotalCost, p.Note).
 		Scan(&p.ID, &p.CapturedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrNotFound
@@ -58,7 +58,7 @@ func (s *Store) SavePlan(ctx context.Context, targetID int64, p PlanRow) (PlanRo
 // ListPlans returns the saved plans of an identity, newest first, without
 // their bodies.
 func (s *Store) ListPlans(ctx context.Context, targetID, identityID int64) ([]PlanRow, error) {
-	rows, err := s.pool.Query(ctx, queries.ListPlans, targetID, identityID)
+	rows, err := s.db.Query(ctx, queries.ListPlans, targetID, identityID)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -71,7 +71,7 @@ func (s *Store) ListPlans(ctx context.Context, targetID, identityID int64) ([]Pl
 
 // GetPlan returns one saved plan of the target with its body.
 func (s *Store) GetPlan(ctx context.Context, targetID, id int64) (PlanRow, error) {
-	rows, err := s.pool.Query(ctx, queries.GetPlan, targetID, id)
+	rows, err := s.db.Query(ctx, queries.GetPlan, targetID, id)
 	if err != nil {
 		return PlanRow{}, s.red.Error(err)
 	}
@@ -84,7 +84,7 @@ func (s *Store) GetPlan(ctx context.Context, targetID, id int64) (PlanRow, error
 
 // DeletePlan removes a saved plan of the target.
 func (s *Store) DeletePlan(ctx context.Context, targetID, id int64) error {
-	tag, err := s.pool.Exec(ctx, queries.DeletePlan, targetID, id)
+	tag, err := s.db.Exec(ctx, queries.DeletePlan, targetID, id)
 	if err != nil {
 		return s.red.Error(err)
 	}
@@ -97,7 +97,7 @@ func (s *Store) DeletePlan(ctx context.Context, targetID, id int64) error {
 // CountPlans counts the saved plans of the target's identities with a queryid.
 func (s *Store) CountPlans(ctx context.Context, targetID, queryID int64) (int, error) {
 	var n int
-	err := s.pool.QueryRow(ctx, queries.CountPlans, targetID, queryID).Scan(&n)
+	err := s.db.QueryRow(ctx, queries.CountPlans, targetID, queryID).Scan(&n)
 	return n, s.red.Error(err)
 }
 
@@ -110,7 +110,7 @@ func scanPlan(r pgx.CollectableRow) (PlanRow, error) {
 
 // LatestPlans returns the newest saved plan of each identity, with its body.
 func (s *Store) LatestPlans(ctx context.Context, targetID int64, identityIDs []int64) (map[int64]PlanRow, error) {
-	rows, err := s.pool.Query(ctx, queries.LatestPlans, targetID, identityIDs)
+	rows, err := s.db.Query(ctx, queries.LatestPlans, targetID, identityIDs)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}

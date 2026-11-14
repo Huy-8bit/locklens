@@ -54,7 +54,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	if err != nil {
 		return err
 	}
-	store, err := OpenStore(ctx, cfg.StoreDSN, &cfg.StoreTimescale, log)
+	store, err := OpenStore(ctx, cfg.StoreDSN, cfg.StoreMaxConns, &cfg.StoreTimescale, log)
 	if err != nil {
 		return err
 	}
@@ -72,8 +72,10 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	// cluster bus, the browsers of the other servers sharing the store.
 	hub := events.NewHub(100, func(n int) { metrics.SSEClients.Set(float64(n)) })
 	clusterRepos := checked(&wiring, cluster.Repositories{ClusterRepository: store})
-	node := cluster.New(clusterRepos, serverID(cfg), hostname(), version, log)
-	bus := cluster.NewBus(node, clusterRepos, hub, log)
+	node := cluster.New(clusterRepos, cluster.Self{ID: serverID(cfg), Hostname: hostname(), Version: version, Roles: cfg.Roles.List(),
+		Capacity: float64(cfg.CollectorCapacity), MaxTargets: cfg.MaxTargets}, log, metrics)
+	bus := cluster.NewBus(node, clusterRepos, hub, metrics, log)
+	observePool(metrics, store)
 
 	st, err := settings.Load(ctx, checked(&wiring, settings.Repositories{SettingRepository: store}), cfg.DemoMode,
 		func() { bus.Send(messageSettingsChanged, nil) })
@@ -81,20 +83,23 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 		return fmt.Errorf("load settings: %w", err)
 	}
 	notifier := notify.New(checked(&wiring, notify.Repositories{NotificationRepository: store, IncidentRepository: store, TargetRepository: store, FindingRepository: store,
-		ChangeRepository: store, MaintenanceRepository: store}),
-		box, log, cfg.PublicURL, version)
+		ChangeRepository: store, MaintenanceRepository: store, OutboxRepository: store}),
+		box, metrics, log, cfg.PublicURL, version)
 	baselines := baseline.New(checked(&wiring, baseline.Repositories{RollupRepository: store, TargetRepository: store}),
 		func() baseline.Params { return insight.BaselineParams(st.Thresholds()) }, log)
-	// Incident events go to the browsers and to notifications (sent by the
-	// server that records the incident).
-	recorder := incidents.NewRecorder(checked(&wiring, incidents.Repositories{IncidentRepository: store, FindingRepository: store}),
-		incidents.DefaultConfig(), st, baselines, metrics, events.Fanout{bus, notifier}, log)
+	// Incident changes go to the notification outbox with the change (sent
+	// by the server running the notification job) and, as events, to the
+	// browsers and the local sender. Writes are fenced by the target leases.
+	recorder := incidents.NewRecorder(checked(&wiring, incidents.Repositories{IncidentRepository: store, FindingRepository: store,
+		OutboxRepository: store, FenceRepository: store}),
+		incidents.DefaultConfig(), st, baselines, node, metrics, events.Fanout{bus, notifier}, log)
 	collectorRepos := checked(&wiring, collector.Repositories{ChangeRepository: store, ClusterRepository: store, CollectionRepository: store,
 		LoadRepository: store, OptimizerRepository: store, TargetRepository: store})
 	writer := collector.NewWriter(collectorRepos, cfg.WriteQueue, metrics, log)
 	manager := collector.NewManager(collector.Deps{Store: collectorRepos, Box: box, Writer: writer, Recorder: recorder, Events: bus,
 		Settings: st, Cluster: node, Bus: bus, Metrics: metrics, Log: log},
-		collector.Config{MaxConcurrent: cfg.MaxConcurrent, Version: version, StatementsInterval: statementsInterval(cfg), LoadInterval: loadInterval(cfg),
+		collector.Config{ViewOnly: !cfg.Roles.Collector, ExportTopStatements: cfg.ExportTopStatements,
+			MaxConcurrent: cfg.MaxConcurrent, MaxConcurrentLoad: cfg.MaxConcurrentLoad, Version: version, StatementsInterval: statementsInterval(cfg), LoadInterval: loadInterval(cfg),
 			BurstDuration: burstDuration(cfg), BudgetPercent: cfg.CollectorBudgetPercent})
 	tsvc := targets.New(checked(&wiring, targets.Repositories{CollectionRepository: store, TargetRepository: store}), box, manager, version)
 	ws := workspace.New(checked(&wiring, workspace.Repositories{WorkspaceRepository: store, TargetRepository: store}), box)
@@ -161,6 +166,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 		Metrics:   metrics, Log: log, Tool: model.Tool{Name: "locklens", Version: version},
 		TrustedProxies: cfg.TrustedProxies, TrustedProxyHosts: cfg.TrustedProxyHosts,
 		MetricsEnabled: cfg.MetricsEnabled, MetricsRequireToken: cfg.MetricsRequireToken, DemoMode: cfg.DemoMode,
+		OpsOnly: !cfg.Roles.API,
 	})
 
 	if err := errors.Join(wiring...); err != nil {
@@ -175,13 +181,15 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 	}
 
 	bg, cancelBG := context.WithCancel(context.WithoutCancel(ctx))
-	// Every server runs these.
+	// Every server runs these; a server without the collector role runs no
+	// collector workers (its manager reads the published live views).
 	tasks := []func(context.Context){
 		node.Run,
 		bus.Run,
-		writer.Run,
-		notifier.Run,
 		manager.Run,
+	}
+	if cfg.Roles.Collector {
+		tasks = append(tasks, writer.Run)
 	}
 	// One server of a cluster runs each of these at a time.
 	singletons := map[string]func(context.Context){
@@ -195,16 +203,22 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 				Findings: cfg.FindingRetention, Rollups: cfg.BaselineRetention,
 				MetricMinute: cfg.MinuteRollupRetention, MetricHour: cfg.HourRollupRetention}, time.Hour, log)
 		},
-		"notification-reminders": notifier.RunReminders,
+		// Sends the notification outbox and reminders. The name predates the
+		// outbox: during a rolling upgrade a server of either version holds
+		// it, never both, so they do not send at the same time.
+		"notification-reminders": func(ctx context.Context) { notifier.Run(ctx, node.ID()) },
 	}
-	if cfg.OTLPEndpoint != "" {
+	if cfg.OTLPEndpoint != "" && cfg.Roles.Collector {
 		// Each server pushes the instances it collects.
 		p := &telemetry.Pusher{Service: exports, Endpoint: cfg.OTLPEndpoint, Headers: cfg.OTLPHeaders, Interval: cfg.OTLPInterval,
 			ServerID: node.ID(), Version: version, Log: log}
 		tasks = append(tasks, p.Run)
 	}
-	for name, run := range singletons {
-		tasks = append(tasks, func(ctx context.Context) { node.Singleton(ctx, name, run) })
+	// Once-per-cluster jobs run only on servers with the jobs role.
+	if cfg.Roles.Jobs {
+		for name, run := range singletons {
+			tasks = append(tasks, func(ctx context.Context) { node.Singleton(ctx, name, run) })
+		}
 	}
 	done := make(chan struct{}, len(tasks))
 	for _, run := range tasks {
@@ -213,7 +227,7 @@ func Run(ctx context.Context, cfg config.Config, version string, log *slog.Logge
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()
-	log.Info("LockLens server started", "listen", ln.Addr().String(), "version", version, "trusted_proxies", len(cfg.TrustedProxies)+len(cfg.TrustedProxyHosts),
+	log.Info("LockLens server started", "listen", ln.Addr().String(), "version", version, "roles", strings.Join(cfg.Roles.List(), ","), "trusted_proxies", len(cfg.TrustedProxies)+len(cfg.TrustedProxyHosts),
 		"cookie_secure", cfg.CookieSecure, "metrics", cfg.MetricsEnabled, "demo_mode", cfg.DemoMode)
 	if !cfg.CookieSecure && !strings.HasPrefix(cfg.Listen, "127.") && !strings.HasPrefix(cfg.Listen, "localhost") {
 		log.Warn("session cookies are not marked Secure; put LockLens behind TLS or set LOCKLENS_COOKIE_SECURE=true")

@@ -9,6 +9,101 @@ What was run, on what, and with which result. Test design:
 - **Scope:** phase 2 (monitoring server, UI, lab) in the first part; the
   earlier phase 1 CLI QA run is kept as an appendix.
 
+## Scaling measurements (2026-11-14)
+
+Before LockLens' write path, cluster, and roles change to support hundreds of
+targets, the current version is measured to find the real bottleneck.
+Harness: `scripts/bench/scale.sh` (compose file `deploy/compose.bench.yaml`,
+measurement tool `tests/e2e/cmd/scalebench`).
+
+### Success criteria (set before measuring)
+
+The goal configuration is **300 targets on 3 servers** sharing one store,
+with default settings (activity interval 10 s, load sampling every 2 s,
+`LOCKLENS_MAX_CONCURRENT_COLLECTIONS=4`, write queue 2048). It passes when,
+in the measured window after the warm-up (steady state):
+
+1. **Collector lag p99 < 1 interval** for every collector. Lag is the time
+   between a run's scheduled start and its actual start, including the wait
+   for a collection slot, divided by the interval in effect for that run
+   (`locklens_collect_lag_ratio`).
+2. **No target moves between servers in steady state**: no lease taken,
+   released, or lost during the measured window
+   (`locklens_cluster_lease_changes_total`).
+3. **The store's WAL rate and CPU are reported** (no threshold yet; they are
+   the baseline for later changes).
+
+Write operations dropped (`locklens_store_dropped_ops_total`) are reported
+too; the write path is not changed in this round.
+
+A collector that exceeds its time budget is slowed down by LockLens itself
+(`LOCKLENS_COLLECTOR_BUDGET_PERCENT`), which lengthens its interval and so
+hides lag. Every run therefore also reports these slow-downs
+(`locklens_collect_throttle_total{direction="up"}`); a pass with slow-downs
+is reported as such, not as a clean pass.
+
+### Method
+
+- **Before and after each change:** N = 20 / 100 targets × 1 / 3 servers ×
+  two network profiles: `local` (the servers reach the store directly) and
+  `rtt` (through toxiproxy, +1 ms each way, as with a store on another host);
+  2 minutes of warm-up, 5 minutes measured.
+- **Goal configuration:** 300 targets on 3 servers, both profiles, 3 minutes
+  of warm-up, 10 minutes measured.
+- **Each run:** empty volumes; 10 PostgreSQL 18 instances carry the targets
+  (N/10 each, light `pgbench` traffic on every instance); targets created
+  through the API.
+- **Measured:** every server's `/metrics` at the start and end of the window
+  (counters and histograms as differences; percentiles interpolated within
+  histogram buckets), gauges every 5 seconds, the store's `pg_stat_database`
+  and WAL position, store connections by application, `live_state` size,
+  and CPU and memory of the containers (`docker stats`, every 15 seconds).
+- **Limits:** one machine runs the store, the servers, and the monitored
+  instances, so they compete for CPU; each instance carries up to 30 targets,
+  so collector durations include contention on the monitored side, which a
+  fleet of separate servers would not have. The numbers describe this harness
+  and are used to compare versions, not as capacity guarantees.
+
+### Results: collector quick wins (PR A)
+
+Before: commit `8997fd7` (harness only); after: `17709ec`. Same machine
+(Apple M1 Pro, 8 CPUs, 32 GiB; Docker VM 8 CPUs, 16 GiB; store 2 CPUs,
+each server 2 CPUs, each instance 0.5 CPU), every server with every role.
+The `n100-nodes1-rtt` run before the change was measured again: the host
+slept during the first attempt.
+
+| Run | Lag p99 (worst, × interval) | Slot wait p99 (worst) | Status writes/s | Assign p99 | Store commits/s | Store CPU % | Store WAL MiB/s | Pool waits | Analysis p99 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| n20-nodes1-local | 0.02 (activity) → 0.04 (database) | 90 → 160 ms | 6.4 → 0.1 | 220 → 45 ms | 27 → 19 | 6 → 6 | 0.16 → 0.15 | 1.9% → 0.0% | 359 → 841 ms |
+| n20-nodes3-local | 0.01 (activity) → 0.01 (activity) | 10 → 22 ms | 6.2 → 0.4 | 350 → 85 ms | 44 → 35 | 3 → 4 | 0.22 → 0.22 | 0.7% → 0.8% | 748 → 411 ms |
+| n100-nodes1-local | 0.16 (load) → 0.01 (activity) | 638 → 48 ms | 31.6 → 0.1 | 492 → 24 ms | 109 → 72 | 42 → 15 | 0.82 → 0.76 | 5.2% → 0.0% | 1217 → 91 ms |
+| n100-nodes3-local | 0.05 (load) → 0.01 (activity) | 49 → 45 ms | 30.7 → 0.4 | 3500 → 70 ms | 168 → 123 | 25 → 22 | 1.14 → 1.09 | 2.6% → 0.2% | 1933 → 373 ms |
+| n20-nodes1-rtt | 0.09 (database) → 0.01 (activity) | 17 → 10 ms | 6.2 → 0.1 | 900 → 25 ms | 27 → 19 | 17 → 13 | 0.16 → 0.15 | 0.3% → 0.0% | 1785 → 500 ms |
+| n20-nodes3-rtt | 0.01 (activity) → 0.02 (load) | 2 → 9 ms | 6.2 → 0.4 | 205 → 425 ms | 44 → 35 | 7 → 9 | 0.23 → 0.22 | 0.2% → 0.7% | 440 → 852 ms |
+| n100-nodes1-rtt | 0.01 (activity) → 0.89 (load) | 1 → 100 ms | 30.5 → 0.2 | 2200 → 49 ms | 109 → 72 | 22 → 13 | 0.78 → 0.77 | 0.2% → 0.1% | 464 → 3629 ms |
+| n100-nodes3-rtt | 0.01 (activity) → 0.01 (activity) | 1 → 7 ms | 30.4 → 0.5 | 900 → 85 ms | 165 → 122 | 27 → 36 | 1.12 → 1.11 | 0.4% → 0.4% | 443 → 451 ms |
+
+- **Collector statuses** are written in batches when they change: from one
+  write per collector run (6 per second per 20 targets) to almost none.
+- **Assignment** of leases is three statements instead of one per target:
+  sync p99 from up to 3.5 s to under 0.1 s with 100 targets.
+- **Store**: 25–35% fewer commits; store CPU down where the store was the
+  busiest (100 targets, one server: 42% → 15%); WAL unchanged (collected
+  data dominates it).
+- **Pool**: with 8 connections (was 4) acquisitions no longer wait.
+- **Load sampling** has its own slots: the lag of 0.16 interval at 100
+  targets on one server, from samples waiting behind the other collectors,
+  is gone.
+- **Not fixed by this change, found by it:** the incident analysis after
+  each activity collection held one lock for all targets during its store
+  writes, so analyses queued (p99 0.1–3.6 s, varying between runs) and a
+  target's next collector waited for its own analysis. In
+  `n100-nodes1-rtt` this showed as load sampling lag of 0.89 interval
+  (lag, not slot wait: 0.5 ms). The analysis lock is per target since the
+  fencing change (PR C).
+- The writer's queue wait p99 (seconds at 100 targets) is unchanged: the
+  write path is changed in a later round.
+
 ## Separate backend and frontend images (2026-10-25)
 
 The single image (Go server with the UI embedded) was split into

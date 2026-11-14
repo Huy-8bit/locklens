@@ -92,7 +92,7 @@ func ValidQuerySort(s string) bool { _, ok := queries.QuerySorts[s]; return ok }
 func (s *Store) ListQueries(ctx context.Context, p QueryListParams) ([]QueryRow, int, error) {
 	window := p.To.Sub(p.From)
 	prevFrom := p.From.Add(-window)
-	rows, err := s.pool.Query(ctx, queries.ListQueries(p.Sort, p.Desc), p.TargetID, p.From.UTC(), p.To.UTC(), p.Compare, prevFrom.UTC(), p.IncludeText,
+	rows, err := s.db.Query(ctx, queries.ListQueries(p.Sort, p.Desc), p.TargetID, p.From.UTC(), p.To.UTC(), p.Compare, prevFrom.UTC(), p.IncludeText,
 		strings.TrimSpace(p.Filter), p.Limit, p.Offset, p.ExcludeUser, p.Command)
 	if err != nil {
 		return nil, 0, s.red.Error(err)
@@ -127,7 +127,7 @@ type CommandTotals struct {
 // excludeUser are left out.
 func (s *Store) CommandBreakdown(ctx context.Context, targetID int64, from, to time.Time, step time.Duration, excludeUser string) ([]CommandTotals, []CommandBucket, []CoverageBucket, error) {
 	totals := []CommandTotals{}
-	rows, err := s.pool.Query(ctx, queries.CommandTotals, targetID, from.UTC(), to.UTC(), excludeUser)
+	rows, err := s.db.Query(ctx, queries.CommandTotals, targetID, from.UTC(), to.UTC(), excludeUser)
 	if err != nil {
 		return nil, nil, nil, s.red.Error(err)
 	}
@@ -148,7 +148,7 @@ func (s *Store) CommandBreakdown(ctx context.Context, targetID int64, from, to t
 		return nil, nil, nil, s.red.Error(err)
 	}
 	buckets := []CommandBucket{}
-	rows, err = s.pool.Query(ctx, queries.CommandBuckets, targetID, from.UTC(), to.UTC(), excludeUser, step)
+	rows, err = s.db.Query(ctx, queries.CommandBuckets, targetID, from.UTC(), to.UTC(), excludeUser, step)
 	if err != nil {
 		return nil, nil, nil, s.red.Error(err)
 	}
@@ -165,7 +165,7 @@ func (s *Store) CommandBreakdown(ctx context.Context, targetID int64, from, to t
 		return nil, nil, nil, s.red.Error(err)
 	}
 	coverage := []CoverageBucket{}
-	rows, err = s.pool.Query(ctx, queries.CommandCoverageBuckets, targetID, from.UTC(), to.UTC(), step)
+	rows, err = s.db.Query(ctx, queries.CommandCoverageBuckets, targetID, from.UTC(), to.UTC(), step)
 	if err != nil {
 		return nil, nil, nil, s.red.Error(err)
 	}
@@ -193,7 +193,7 @@ type Coverage struct {
 // StatementCoverage returns coverage for (from, to].
 func (s *Store) StatementCoverage(ctx context.Context, targetID int64, from, to time.Time) (Coverage, error) {
 	c := Coverage{WindowSeconds: to.Sub(from).Seconds()}
-	err := s.pool.QueryRow(ctx, queries.StatementCoverage, targetID, from.UTC(), to.UTC()).
+	err := s.db.QueryRow(ctx, queries.StatementCoverage, targetID, from.UTC(), to.UTC()).
 		Scan(&c.CoveredSeconds, &c.Collections, &c.Resets, &c.Evicted, &c.Hidden)
 	c.CoveredSeconds = min(c.CoveredSeconds, c.WindowSeconds)
 	return c, s.red.Error(err)
@@ -203,7 +203,7 @@ func (s *Store) StatementCoverage(ctx context.Context, targetID int64, from, to 
 func (s *Store) QueryIdentity(ctx context.Context, targetID, id int64, includeText bool) (QueryRow, time.Time, time.Time, error) {
 	var q QueryRow
 	var first, last time.Time
-	err := s.pool.QueryRow(ctx, queries.QueryIdentity, targetID, id, includeText).
+	err := s.db.QueryRow(ctx, queries.QueryIdentity, targetID, id, includeText).
 		Scan(&q.IdentityID, &q.ServerMajor, &q.DatName, &q.UserName, &q.TopLevel, &q.QueryID, &q.Command, &q.Text, &first, &last)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return q, first, last, ErrNotFound
@@ -235,7 +235,7 @@ func (s *Store) QueryRefs(ctx context.Context, targetID int64, keys []observe.Qu
 	for i, k := range keys {
 		majors[i], dbids[i], userids[i], tops[i], qids[i] = int32(k.ServerMajor), int64(k.DBID), int64(k.UserID), k.TopLevel, k.QueryID
 	}
-	rows, err := s.pool.Query(ctx, queries.QueryRefs, targetID, majors, dbids, userids, tops, qids, includeText)
+	rows, err := s.db.Query(ctx, queries.QueryRefs, targetID, majors, dbids, userids, tops, qids, includeText)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -272,7 +272,7 @@ func (s *Store) QueryBuckets(ctx context.Context, targetID, id int64, from, to t
 	if step >= RollupBucket || (raw > 0 && from.Before(time.Now().Add(-raw))) {
 		return s.queryRollupBuckets(ctx, targetID, id, from, to, max(step, RollupBucket))
 	}
-	rows, err := s.pool.Query(ctx, queries.QueryBuckets, targetID, id, from.UTC(), to.UTC(), step)
+	rows, err := s.db.Query(ctx, queries.QueryBuckets, targetID, id, from.UTC(), to.UTC(), step)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -289,7 +289,7 @@ func (s *Store) QueryBuckets(ctx context.Context, targetID, id int64, from, to t
 }
 
 func (s *Store) queryRollupBuckets(ctx context.Context, targetID, id int64, from, to time.Time, step time.Duration) ([]QueryBucket, error) {
-	rows, err := s.pool.Query(ctx, queries.QueryRollupBuckets, targetID, id, from.UTC(), to.UTC(), step)
+	rows, err := s.db.Query(ctx, queries.QueryRollupBuckets, targetID, id, from.UTC(), to.UTC(), step)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -316,7 +316,7 @@ func (s *Store) QueryStep(from time.Time, step time.Duration) time.Duration {
 
 // WindowTotals aggregates one identity in a window.
 func (s *Store) WindowTotals(ctx context.Context, targetID, id int64, from, to time.Time) (calls int64, totalMS float64, rows int64, err error) {
-	err = s.pool.QueryRow(ctx, queries.WindowTotals, targetID, id, from.UTC(), to.UTC()).
+	err = s.db.QueryRow(ctx, queries.WindowTotals, targetID, id, from.UTC(), to.UTC()).
 		Scan(&calls, &totalMS, &rows)
 	return calls, totalMS, rows, s.red.Error(err)
 }
@@ -325,7 +325,7 @@ func (s *Store) WindowTotals(ctx context.Context, targetID, id int64, from, to t
 func (s *Store) IdentityKey(ctx context.Context, targetID, id int64) (observe.QueryKey, error) {
 	var k observe.QueryKey
 	var dbid, userid int64
-	err := s.pool.QueryRow(ctx, queries.IdentityKey,
+	err := s.db.QueryRow(ctx, queries.IdentityKey,
 		targetID, id).Scan(&k.ServerMajor, &dbid, &userid, &k.TopLevel, &k.QueryID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return k, ErrNotFound

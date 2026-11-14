@@ -49,3 +49,6 @@ var GetTargetStatus string
 
 //go:embed targets/list_target_statuses.sql
 var ListTargetStatuses string
+
+//go:embed targets/save_target_status_fenced.sql
+var SaveTargetStatusFenced string

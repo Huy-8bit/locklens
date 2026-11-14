@@ -84,6 +84,9 @@ type Deps struct {
 	MetricsEnabled bool
 	// DemoMode shows the lab guide in the UI.
 	DemoMode bool
+	// OpsOnly serves only /healthz, /readyz and /metrics: a server without
+	// the api role (LOCKLENS_ROLES).
+	OpsOnly bool
 }
 
 // Server is the HTTP handler.
@@ -111,6 +114,13 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /readyz", s.ready)
 	if s.d.MetricsEnabled {
 		m.HandleFunc("GET /metrics", s.selfMetrics)
+	}
+	if s.d.OpsOnly {
+		m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			writeError(w, r, http.StatusNotFound, "not_found",
+				"this LockLens server has no api role (LOCKLENS_ROLES); it serves only /healthz, /readyz and /metrics")
+		})
+		return
 	}
 	// The monitored instances' metrics, for Prometheus (always a token).
 	m.HandleFunc("GET /metrics/targets", s.exportTargets)

@@ -13,14 +13,12 @@
 package telemetry
 
 import (
-	"cmp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/locklens/locklens/internal/domain/live"
-	"github.com/locklens/locklens/internal/domain/observe"
 	"github.com/locklens/locklens/internal/repository"
 )
 
@@ -147,9 +145,7 @@ func statements(t Target, top int, with func(...Label) []Label, add func(string,
 	if last.Interval == nil || *last.Interval <= 0 {
 		return
 	}
-	ds := slices.Clone(last.Deltas)
-	slices.SortStableFunc(ds, func(a, b observe.QueryDelta) int { return cmp.Compare(b.TotalMS, a.TotalMS) })
-	for _, d := range ds[:min(top, len(ds))] {
+	for _, d := range last.TopByTime(top) {
 		if d.Calls <= 0 {
 			continue
 		}

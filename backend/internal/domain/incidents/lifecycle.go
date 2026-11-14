@@ -16,7 +16,7 @@ func (r *recorder) startIncident(ctx context.Context, t repository.Target, v liv
 	firing []rules.Finding, ids map[[2]string]int64, now time.Time, th rules.Thresholds, gap *repository.IncidentEvent) error {
 	// Regroup with a recently resolved incident of the same rule, unless it
 	// ended because of the duration limit (then wait for the cooldown).
-	prev, err := r.store.LatestResolvedIncident(ctx, t.ID, ruleID, now.Add(-r.cfg.Cooldown))
+	prev, err := tx(ctx).LatestResolvedIncident(ctx, t.ID, ruleID, now.Add(-r.cfg.Cooldown))
 	switch {
 	case err == nil && prev.Resolution != nil && *prev.Resolution == ResolutionDuration:
 		return nil
@@ -24,7 +24,7 @@ func (r *recorder) startIncident(ctx context.Context, t repository.Target, v liv
 		oi := &openIncident{id: prev.ID, ruleID: ruleID, openedAt: prev.OpenedAt, severity: prev.Severity, title: prev.Title,
 			events: prev.EventCount, bytes: prev.SizeBytes, truncated: prev.Truncated, findingKeys: map[string]bool{}}
 		ts.open[ruleID] = oi
-		if err := r.store.UpdateIncidentState(ctx, prev.ID, "open", nil, nil, prev.Severity, prev.Title, false); err != nil {
+		if err := tx(ctx).UpdateIncidentState(ctx, prev.ID, "open", nil, nil, prev.Severity, prev.Title, false); err != nil {
 			return err
 		}
 		payload, _ := json.Marshal(map[string]any{"findings": firing})
@@ -33,7 +33,9 @@ func (r *recorder) startIncident(ctx context.Context, t repository.Target, v liv
 		if gap != nil {
 			evs = append([]repository.IncidentEvent{*gap}, evs...)
 		}
-		r.publish(t.ID, prev.ID, "incident.updated")
+		if err := r.publish(ctx, t.ID, prev.ID, "incident.updated"); err != nil {
+			return err
+		}
 		return r.appendEvents(ctx, oi, now, evs, true)
 	case !errors.Is(err, repository.ErrNotFound):
 		return err
@@ -89,7 +91,7 @@ func (r *recorder) startIncident(ctx context.Context, t repository.Target, v liv
 	}
 	evs, truncated := r.capEvents(evs, 0, 0)
 	in.Truncated = truncated
-	id, err := r.store.CreateIncident(ctx, in, evs)
+	id, err := tx(ctx).CreateIncident(ctx, in, evs)
 	if err != nil {
 		return err
 	}
@@ -109,11 +111,13 @@ func (r *recorder) startIncident(ctx context.Context, t repository.Target, v liv
 			fids = append(fids, id)
 		}
 	}
-	if err := r.store.LinkFindingsToIncident(ctx, id, fids); err != nil {
+	if err := tx(ctx).LinkFindingsToIncident(ctx, id, fids); err != nil {
 		return err
 	}
 	r.metrics.IncidentsOpened.Inc(ruleID)
-	r.publish(t.ID, id, "incident.opened")
+	if err := r.publish(ctx, t.ID, id, "incident.opened"); err != nil {
+		return err
+	}
 	r.log.Info("incident opened", "incident_id", id, "target_id", t.ID, "rule", ruleID, "title", in.Title)
 	return nil
 }
@@ -168,7 +172,7 @@ func (r *recorder) continueIncident(ctx context.Context, t repository.Target, v 
 		}
 		if severityRank(f.Severity) > severityRank(rules.Severity(oi.severity)) {
 			oi.severity, oi.title = string(f.Severity), f.Title
-			if err := r.store.UpdateIncidentState(ctx, oi.id, "open", nil, nil, oi.severity, oi.title, false); err != nil {
+			if err := tx(ctx).UpdateIncidentState(ctx, oi.id, "open", nil, nil, oi.severity, oi.title, false); err != nil {
 				return err
 			}
 		}
@@ -182,7 +186,7 @@ func (r *recorder) continueIncident(ctx context.Context, t repository.Target, v 
 			oi.lastWorkload = last
 		}
 	}
-	if err := r.store.LinkFindingsToIncident(ctx, oi.id, newIDs); err != nil {
+	if err := tx(ctx).LinkFindingsToIncident(ctx, oi.id, newIDs); err != nil {
 		return err
 	}
 	if oi.clear >= r.cfg.ResolveAfterSamples {
@@ -192,7 +196,7 @@ func (r *recorder) continueIncident(ctx context.Context, t repository.Target, v 
 		return err
 	}
 	if len(evs) > 0 {
-		r.publish(t.ID, oi.id, "incident.updated")
+		return r.publish(ctx, t.ID, oi.id, "incident.updated")
 	}
 	return nil
 }
@@ -244,11 +248,13 @@ func (r *recorder) resolve(ctx context.Context, t repository.Target, ts *targetS
 		return err
 	}
 	res := why
-	if err := r.store.UpdateIncidentState(ctx, oi.id, "resolved", &now, &res, oi.severity, oi.title, oi.truncated); err != nil {
+	if err := tx(ctx).UpdateIncidentState(ctx, oi.id, "resolved", &now, &res, oi.severity, oi.title, oi.truncated); err != nil {
 		return err
 	}
 	delete(ts.open, oi.ruleID)
-	r.publish(t.ID, oi.id, "incident.resolved")
+	if err := r.publish(ctx, t.ID, oi.id, "incident.resolved"); err != nil {
+		return err
+	}
 	r.log.Info("incident resolved", "incident_id", oi.id, "target_id", t.ID, "resolution", why)
 	return nil
 }

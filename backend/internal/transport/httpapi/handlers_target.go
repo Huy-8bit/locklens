@@ -56,6 +56,16 @@ func (s *Server) view(r *http.Request, id int64) (live.View, bool) {
 	return s.d.Manager.View(r.Context(), id)
 }
 
+// views reads the live views of many targets at once (one store read for
+// those another server collects).
+func (s *Server) views(r *http.Request, ts []targets.View) map[int64]live.View {
+	ids := make([]int64, len(ts))
+	for i, t := range ts {
+		ids[i] = t.ID
+	}
+	return s.d.Manager.Views(r.Context(), ids)
+}
+
 // targetOr404 loads a target view or writes an error.
 func (s *Server) targetOr404(w http.ResponseWriter, r *http.Request) (targets.View, bool) {
 	id, ok := pathID(r, "id")

@@ -41,7 +41,7 @@ type WorkspacePolicy struct {
 // is stored).
 func (s *Store) WorkspacePolicy(ctx context.Context, id int64) (WorkspacePolicy, error) {
 	p := WorkspacePolicy{TargetID: id}
-	err := s.pool.QueryRow(ctx, queries.WorkspacePolicy, id).Scan(&p.Metadata, &p.Data, &p.SQL, &p.History, &p.HypoPG, &p.Ciphertext, &p.UpdatedAt)
+	err := s.db.QueryRow(ctx, queries.WorkspacePolicy, id).Scan(&p.Metadata, &p.Data, &p.SQL, &p.History, &p.HypoPG, &p.Ciphertext, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, nil
 	}
@@ -51,15 +51,15 @@ func (s *Store) WorkspacePolicy(ctx context.Context, id int64) (WorkspacePolicy,
 
 // SetWorkspacePolicy stores a target's workspace policy.
 func (s *Store) SetWorkspacePolicy(ctx context.Context, p WorkspacePolicy) error {
-	_, err := s.pool.Exec(ctx, queries.SetWorkspacePolicy, p.TargetID, p.Metadata, p.Data, p.SQL, p.History, p.HypoPG, p.Ciphertext)
+	_, err := s.db.Exec(ctx, queries.SetWorkspacePolicy, p.TargetID, p.Metadata, p.Data, p.SQL, p.History, p.HypoPG, p.Ciphertext)
 	return err
 }
 
 // AuditWorkspace records one workspace action and trims the audit log.
 func (s *Store) AuditWorkspace(ctx context.Context, id int64, actor, action, status string, duration time.Duration, rows int) error {
-	_, err := s.pool.Exec(ctx, queries.InsertWorkspaceAudit, id, actor, action, status, duration.Milliseconds(), rows)
+	_, err := s.db.Exec(ctx, queries.InsertWorkspaceAudit, id, actor, action, status, duration.Milliseconds(), rows)
 	if err == nil {
-		_, err = s.pool.Exec(ctx, queries.TrimWorkspaceAudit)
+		_, err = s.db.Exec(ctx, queries.TrimWorkspaceAudit)
 	}
 	return err
 }

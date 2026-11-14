@@ -10,79 +10,117 @@ import (
 	"github.com/locklens/locklens/internal/repository"
 )
 
+// Sending. The recorder writes each incident change to the notification
+// outbox, in the transaction of the change; the server running the
+// notification job (one per cluster) claims the rows, processes their
+// incidents, and removes them. A row claimed by a sender that stopped is
+// claimed again after outboxStale. outboxBatch counts incidents.
+const (
+	outboxEvery   = 2 * time.Second
+	outboxBatch   = 100
+	outboxStale   = 2 * time.Minute
+	reminderEvery = time.Minute
+)
+
 // Publish receives the recorder's incident events (incident.opened,
-// incident.updated, incident.resolved) and queues the incident. It never
-// blocks: an incident already queued is not queued twice, and when the queue
-// is full the event is dropped (the next update or the reminder sweep
-// catches up, because decisions use the incident's state).
-func (s *service) Publish(kind string, payload any) {
+// incident.updated, incident.resolved). The changes are already in the
+// outbox; this only wakes the sender when it runs on this server.
+func (s *service) Publish(kind string, _ any) {
 	switch kind {
 	case "incident.opened", "incident.updated", "incident.resolved":
 	default:
 		return
 	}
-	p, ok := payload.(map[string]any)
-	if !ok {
-		return
-	}
-	id, ok := p["incident_id"].(int64)
-	if !ok {
-		return
-	}
-	s.enqueue(id)
-}
-
-// enqueue queues an incident for processing once.
-func (s *service) enqueue(id int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.pending[id] {
-		return
-	}
 	select {
-	case s.queue <- id:
-		s.pending[id] = true
+	case s.wake <- struct{}{}:
 	default:
-		s.log.Warn("notification queue full; an incident update was not queued", "incident_id", id)
 	}
 }
 
-// Run processes queued incidents until ctx ends. Incidents are queued by
-// the server that records them, so each change is sent once.
-func (s *service) Run(ctx context.Context) {
+// Run sends notifications until ctx ends: the incident changes in the
+// outbox as they arrive, and every minute the open incidents, so due
+// reminders, escalation tiers, and Alertmanager refreshes are sent. With
+// several servers one runs it (a job); holder names it in outbox claims.
+func (s *service) Run(ctx context.Context, holder string) {
+	poll := time.NewTicker(outboxEvery)
+	defer poll.Stop()
+	remind := time.NewTicker(reminderEvery)
+	defer remind.Stop()
 	for {
+		s.drainOutbox(ctx, holder)
 		select {
 		case <-ctx.Done():
 			return
-		case id := <-s.queue:
-			s.mu.Lock()
-			delete(s.pending, id)
-			s.mu.Unlock()
-			s.process(ctx, id)
+		case <-poll.C:
+		case <-s.wake:
+		case <-remind.C:
+			s.remind(ctx)
 		}
 	}
 }
 
-// RunReminders queues the open incidents every minute, so due reminders,
-// escalation tiers, and Alertmanager refreshes are sent, until ctx ends.
-// With several servers, one runs it.
-func (s *service) RunReminders(ctx context.Context) {
-	tick := time.NewTicker(time.Minute)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
-		ins, err := s.store.OpenIncidents(ctx)
+// drainOutbox processes the outbox until it is empty.
+func (s *service) drainOutbox(ctx context.Context, holder string) {
+	for ctx.Err() == nil {
+		items, err := s.store.ClaimNotifications(ctx, holder, outboxBatch, outboxStale)
 		if err != nil {
-			s.log.Warn("notification reminders: list incidents failed", "error", err.Error())
-			continue
+			if ctx.Err() == nil {
+				s.log.Warn("notifications: reading the outbox failed", "error", err.Error())
+			}
+			return
 		}
-		for _, in := range ins {
-			s.enqueue(in.ID)
+		seen := map[int64]bool{}
+		ids := make([]int64, 0, len(items))
+		for _, it := range items {
+			ids = append(ids, it.ID)
+			if !seen[it.IncidentID] {
+				seen[it.IncidentID] = true
+				s.process(ctx, it.IncidentID)
+			}
 		}
+		if ctx.Err() != nil {
+			return // claimed rows are claimed again by the next sender
+		}
+		if err := s.store.DoneNotifications(ctx, ids, holder); err != nil {
+			s.log.Warn("notifications: removing processed outbox rows failed", "error", err.Error())
+			return
+		}
+		if len(seen) < outboxBatch {
+			s.observeOutbox(ctx)
+			return
+		}
+	}
+}
+
+// observeOutbox reports the outbox size and age.
+func (s *service) observeOutbox(ctx context.Context) {
+	if s.metrics == nil {
+		return
+	}
+	n, oldest, err := s.store.PendingNotifications(ctx)
+	if err != nil {
+		return
+	}
+	s.metrics.OutboxPending.Set(float64(n))
+	age := 0.0
+	if oldest != nil {
+		age = max(s.now().Sub(*oldest).Seconds(), 0)
+	}
+	s.metrics.OutboxAge.Set(age)
+}
+
+// remind processes the open incidents.
+func (s *service) remind(ctx context.Context) {
+	ins, err := s.store.OpenIncidents(ctx)
+	if err != nil {
+		s.log.Warn("notification reminders: list incidents failed", "error", err.Error())
+		return
+	}
+	for _, in := range ins {
+		if ctx.Err() != nil {
+			return
+		}
+		s.process(ctx, in.ID)
 	}
 }
 

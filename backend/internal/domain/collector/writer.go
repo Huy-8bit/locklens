@@ -16,6 +16,8 @@ type WriteOp struct {
 	Collector string
 	At        time.Time
 	Write     func(ctx context.Context, s Repositories, cache repository.IdentityCache) error
+	// queuedAt is set by Enqueue (for the queue wait metric).
+	queuedAt time.Time
 }
 
 // Writer decouples collection from the monitoring store with a bounded
@@ -53,11 +55,13 @@ func NewWriter(store Repositories, capacity int, metrics *obs.Metrics, log *slog
 
 // Enqueue adds an operation without blocking.
 func (w *Writer) Enqueue(op WriteOp) {
+	op.queuedAt = time.Now()
 	w.mu.Lock()
 	if len(w.queue) >= w.cap {
 		old := w.queue[0]
 		w.queue = w.queue[1:]
 		w.metrics.StoreDropped.Inc()
+		w.metrics.StoreDroppedOps.Inc("queue_full")
 		if len(w.dropped) < w.cap {
 			w.dropped = append(w.dropped, WriteOp{TargetID: old.TargetID, Collector: old.Collector, At: old.At})
 		}
@@ -117,9 +121,14 @@ func (w *Writer) writeWithRetry(ctx context.Context, op WriteOp) {
 	backoff := 200 * time.Millisecond
 	for attempt := 1; ; attempt++ {
 		wctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		from := time.Now()
 		err := op.Write(wctx, w.store, w.cache)
 		cancel()
 		if err == nil {
+			w.metrics.StoreWriteSeconds.Observe(time.Since(from).Seconds(), op.Collector)
+			if !op.queuedAt.IsZero() {
+				w.metrics.StoreQueueWait.Observe(time.Since(op.queuedAt).Seconds())
+			}
 			w.flushDropped(ctx)
 			return
 		}
@@ -137,6 +146,7 @@ func (w *Writer) writeWithRetry(ctx context.Context, op WriteOp) {
 			}
 			w.mu.Unlock()
 			w.metrics.StoreDropped.Inc()
+			w.metrics.StoreDroppedOps.Inc("gave_up")
 			return
 		}
 		select {

@@ -1130,3 +1130,164 @@ func TestAlertingStorage(t *testing.T) {
 		t.Fatalf("only the synced rule resolved: %+v", c)
 	}
 }
+
+// Batched lease, live view and status statements, as the collector manager
+// uses them with hundreds of targets.
+func TestClusterBatchStatements(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+
+	// HoldLeases takes free leases, renews its own, skips another holder's.
+	names := make([]string, 0, 300)
+	for i := range 300 {
+		names = append(names, fmt.Sprintf("target:%d", i+1))
+	}
+	got, err := s.HoldLeases(ctx, names[:200], "a", time.Minute)
+	if err != nil || len(got) != 200 {
+		t.Fatalf("a takes 200: %d %v", len(got), err)
+	}
+	got, err = s.HoldLeases(ctx, names[150:], "b", time.Minute)
+	if err != nil || len(got) != 100 {
+		t.Fatalf("b gets the 100 free ones only: %d %v", len(got), err)
+	}
+	got, err = s.HoldLeases(ctx, names[:200], "a", time.Minute)
+	if err != nil || len(got) != 200 {
+		t.Fatalf("a renews its 200: %d %v", len(got), err)
+	}
+	// Expired leases are taken over in the same statement.
+	if _, err := s.HoldLeases(ctx, names[200:], "b", time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	got, err = s.HoldLeases(ctx, names[200:], "a", time.Minute)
+	if err != nil || len(got) != 100 {
+		t.Fatalf("a takes b's expired leases: %d %v", len(got), err)
+	}
+	// ReleaseLeases only releases the holder's own.
+	if err := s.ReleaseLeases(ctx, names, "b"); err != nil {
+		t.Fatal(err)
+	}
+	if ls, _ := s.Leases(ctx, "target:"); len(ls) != 300 {
+		t.Fatalf("b released a's leases: %d left", len(ls))
+	}
+	if err := s.ReleaseLeases(ctx, names[:100], "a"); err != nil {
+		t.Fatal(err)
+	}
+	if ls, _ := s.Leases(ctx, "target:"); len(ls) != 200 {
+		t.Fatalf("after releasing 100: %d", len(ls))
+	}
+
+	// Two servers taking overlapping sets at the same time do not deadlock.
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, h := range []string{"c", "d"} {
+		wg.Go(func() {
+			for range 20 {
+				if _, err := s.HoldLeases(ctx, names, h, time.Millisecond); err != nil {
+					errs <- err
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent HoldLeases: %v", err)
+	}
+
+	// LiveStates reads many views in one statement.
+	t1, t2, t3 := target(t, s, "ls1"), target(t, s, "ls2"), target(t, s, "ls3")
+	for _, tg := range []repository.Target{t1, t2} {
+		if err := s.SaveLiveState(ctx, tg.ID, "a", time.Now(), []byte(`{"Connected":true}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	views, err := s.LiveStates(ctx, []int64{t1.ID, t2.ID, t3.ID})
+	if err != nil || len(views) != 2 {
+		t.Fatalf("live states: %d %v", len(views), err)
+	}
+
+	// SaveTargetStatuses writes a batch; a row that cannot be written (its
+	// target was deleted) does not hold back the others.
+	ok := repository.TargetStatus{TargetID: t1.ID, State: "healthy"}
+	gone := repository.TargetStatus{TargetID: 999999, State: "healthy"}
+	other := repository.TargetStatus{TargetID: t2.ID, State: "unreachable"}
+	failed, _, err := s.SaveTargetStatuses(ctx, []repository.TargetStatus{ok, gone, other}, nil)
+	if err == nil || len(failed) != 1 || failed[0] != 999999 {
+		t.Fatalf("failed rows: %v %v", failed, err)
+	}
+	if st, err := s.GetTargetStatus(ctx, t2.ID); err != nil || st.State != "unreachable" {
+		t.Fatalf("t2 status: %+v %v", st, err)
+	}
+	if failed, _, err := s.SaveTargetStatuses(ctx, []repository.TargetStatus{ok, other}, nil); err != nil || len(failed) != 0 {
+		t.Fatalf("batch: %v %v", failed, err)
+	}
+}
+
+// Roles in heartbeats (with a server that predates them) and batched live
+// view publishing.
+func TestServerRolesAndBatchedLiveStates(t *testing.T) {
+	s, dsn := freshStore(t)
+	ctx := context.Background()
+	if _, err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Heartbeat(ctx, repository.Server{ID: "api", Hostname: "h", Version: "v", StartedAt: time.Now(), Roles: []string{repository.RoleAPI}}); err != nil {
+		t.Fatal(err)
+	}
+	// An older server writes its heartbeat without roles: it gets every role.
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	if _, err := conn.Exec(ctx, `INSERT INTO servers (id, hostname, version, started_at, heartbeat_at) VALUES ('old', 'h', 'v', now(), now())`); err != nil {
+		t.Fatal(err)
+	}
+	sv, err := s.Servers(ctx, time.Minute)
+	if err != nil || len(sv) != 2 {
+		t.Fatalf("servers %+v %v", sv, err)
+	}
+	for _, x := range sv {
+		switch x.ID {
+		case "api":
+			if !x.Has(repository.RoleAPI) || x.Has(repository.RoleCollector) {
+				t.Fatalf("api roles %v", x.Roles)
+			}
+		case "old":
+			if len(x.Roles) != 3 {
+				t.Fatalf("a server that predates roles must have all: %v", x.Roles)
+			}
+		}
+	}
+
+	t1, t2 := target(t, s, "lv1"), target(t, s, "lv2")
+	held, err := s.HoldLeases(ctx, []string{fmt.Sprintf("target:%d", t1.ID), fmt.Sprintf("target:%d", t2.ID)}, "a", time.Minute)
+	if err != nil || len(held) != 2 {
+		t.Fatalf("leases %v %v", held, err)
+	}
+	epochs := []int64{held[fmt.Sprintf("target:%d", t1.ID)], held[fmt.Sprintf("target:%d", t2.ID)]}
+	at := time.Now().Add(-30 * time.Second).UTC().Truncate(time.Millisecond)
+	written, err := s.SaveLiveStates(ctx, "a", at, []int64{t1.ID, t2.ID}, [][]byte{[]byte(`{"Connected":true}`), []byte(`{"Connected":false}`)}, epochs)
+	if err != nil || len(written) != 2 {
+		t.Fatalf("written %v %v", written, err)
+	}
+	rows, err := s.LiveStates(ctx, []int64{t1.ID, t2.ID})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("live states %d %v", len(rows), err)
+	}
+	// Touching marks unchanged views current; another server's rows stay as they are.
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if got, err := s.TouchLiveStates(ctx, "b", now, []int64{t1.ID}, epochs[:1]); err != nil || len(got) != 0 {
+		t.Fatalf("b touched %v %v", got, err)
+	}
+	if got, err := s.TouchLiveStates(ctx, "a", now, []int64{t2.ID}, epochs[1:]); err != nil || len(got) != 1 {
+		t.Fatalf("a touched %v %v", got, err)
+	}
+	_, a1, _, _ := s.LiveState(ctx, t1.ID)
+	_, a2, v2, _ := s.LiveState(ctx, t2.ID)
+	if !a1.Equal(at) || !a2.Equal(now) || !strings.Contains(string(v2), `"Connected": false`) && !strings.Contains(string(v2), `"Connected":false`) {
+		t.Fatalf("touch: t1 at %v (want %v), t2 at %v (want %v) %s", a1, at, a2, now, v2)
+	}
+}

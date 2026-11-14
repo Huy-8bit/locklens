@@ -66,7 +66,7 @@ func (s *Store) SaveCatalog(ctx context.Context, targetID int64, c observe.Catal
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, queries.SaveCatalog, targetID, c.DatName, c.At, raw)
+	_, err = s.db.Exec(ctx, queries.SaveCatalog, targetID, c.DatName, c.At, raw)
 	return s.red.Error(err)
 }
 
@@ -75,7 +75,7 @@ func (s *Store) SaveCatalog(ctx context.Context, targetID int64, c observe.Catal
 func (s *Store) LatestCatalog(ctx context.Context, targetID int64) (observe.Catalog, error) {
 	var raw []byte
 	var c observe.Catalog
-	err := s.pool.QueryRow(ctx, queries.LatestCatalog, targetID).Scan(&raw)
+	err := s.db.QueryRow(ctx, queries.LatestCatalog, targetID).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return c, ErrNotFound
 	}
@@ -88,7 +88,7 @@ func (s *Store) LatestCatalog(ctx context.Context, targetID int64) (observe.Cata
 // Catalogs returns the stored catalogs of a target, one per database, by
 // database name.
 func (s *Store) Catalogs(ctx context.Context, targetID int64) ([]observe.Catalog, error) {
-	rows, err := s.pool.Query(ctx, queries.ListCatalogs, targetID)
+	rows, err := s.db.Query(ctx, queries.ListCatalogs, targetID)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -109,7 +109,7 @@ func (s *Store) PruneCatalogs(ctx context.Context, targetID int64, keep []string
 	if keep == nil {
 		keep = []string{}
 	}
-	_, err := s.pool.Exec(ctx, queries.PruneCatalogs, targetID, keep)
+	_, err := s.db.Exec(ctx, queries.PruneCatalogs, targetID, keep)
 	return s.red.Error(err)
 }
 
@@ -182,7 +182,7 @@ func scanRec(r pgx.CollectableRow) (Recommendation, error) {
 // recommendations that were not derived again are resolved ("no longer
 // applies"); a resolved one that comes back is open again.
 func (s *Store) SyncRecommendations(ctx context.Context, targetID int64, datname string, now time.Time, recs []RecommendationInput) error {
-	return s.red.Error(pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	return s.red.Error(s.inTx(ctx, func(tx pgx.Tx) error {
 		kinds, keys := make([]string, len(recs)), make([]string, len(recs))
 		for i, r := range recs {
 			details, err := json.Marshal(r.Details)
@@ -223,7 +223,7 @@ func (s *Store) ListRecommendations(ctx context.Context, f RecommendationFilter)
 	if f.Statuses == nil {
 		f.Statuses = []string{} // a nil slice is NULL, which would match nothing
 	}
-	rows, err := s.pool.Query(ctx, queries.ListRecommendations, f.TargetID, f.Statuses, f.Kind, f.Limit, f.Database)
+	rows, err := s.db.Query(ctx, queries.ListRecommendations, f.TargetID, f.Statuses, f.Kind, f.Limit, f.Database)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -236,7 +236,7 @@ func (s *Store) ListRecommendations(ctx context.Context, f RecommendationFilter)
 
 // GetRecommendation returns one recommendation of a target.
 func (s *Store) GetRecommendation(ctx context.Context, targetID, id int64) (Recommendation, error) {
-	rows, err := s.pool.Query(ctx, queries.GetRecommendation, targetID, id)
+	rows, err := s.db.Query(ctx, queries.GetRecommendation, targetID, id)
 	if err != nil {
 		return Recommendation{}, s.red.Error(err)
 	}
@@ -250,7 +250,7 @@ func (s *Store) GetRecommendation(ctx context.Context, targetID, id int64) (Reco
 // DecideRecommendation records a person's decision (accepted, dismissed, or
 // open again) with a note.
 func (s *Store) DecideRecommendation(ctx context.Context, targetID, id int64, status, by, note string) (Recommendation, error) {
-	tag, err := s.pool.Exec(ctx, queries.DecideRecommendation, targetID, id, status, by, note)
+	tag, err := s.db.Exec(ctx, queries.DecideRecommendation, targetID, id, status, by, note)
 	if err != nil {
 		return Recommendation{}, s.red.Error(err)
 	}
@@ -266,14 +266,14 @@ func (s *Store) DecideRecommendation(ctx context.Context, targetID, id int64, st
 // MarkApplied records that the change a recommendation proposes was made
 // (detected in the catalog) and the statement time before it.
 func (s *Store) MarkApplied(ctx context.Context, id int64, at time.Time, how string, beforeMS *float64) error {
-	_, err := s.pool.Exec(ctx, queries.MarkApplied, id, at.UTC(), how, beforeMS)
+	_, err := s.db.Exec(ctx, queries.MarkApplied, id, at.UTC(), how, beforeMS)
 	return s.red.Error(err)
 }
 
 // SetVerification records the statement time after the change and the
 // resulting status (verified, no_effect, regressed).
 func (s *Store) SetVerification(ctx context.Context, id int64, status string, afterMS float64, at time.Time) error {
-	_, err := s.pool.Exec(ctx, queries.SetVerification, id, status, afterMS, at.UTC())
+	_, err := s.db.Exec(ctx, queries.SetVerification, id, status, afterMS, at.UTC())
 	return s.red.Error(err)
 }
 
@@ -288,7 +288,7 @@ func (s *Store) SetWhatIf(ctx context.Context, targetID, id int64, whatif, confi
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, queries.SetWhatIf, targetID, id, w, c)
+	_, err = s.db.Exec(ctx, queries.SetWhatIf, targetID, id, w, c)
 	return s.red.Error(err)
 }
 
@@ -314,7 +314,7 @@ type WorkloadStatement struct {
 // since a time (at most limit), with their texts when the target collects
 // them.
 func (s *Store) StatementWorkload(ctx context.Context, targetID int64, since time.Time, limit int, includeText bool) ([]WorkloadStatement, error) {
-	rows, err := s.pool.Query(ctx, queries.StatementWorkload, targetID, since.UTC(), limit, includeText)
+	rows, err := s.db.Query(ctx, queries.StatementWorkload, targetID, since.UTC(), limit, includeText)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -335,7 +335,7 @@ func (s *Store) StatementWorkload(ctx context.Context, targetID int64, since tim
 func (s *Store) StatementMeanMS(ctx context.Context, targetID, identityID int64, from, to time.Time, minCalls int64) (float64, int, bool, error) {
 	var median *float64
 	var n int
-	err := s.pool.QueryRow(ctx, queries.StatementMeanMS,
+	err := s.db.QueryRow(ctx, queries.StatementMeanMS,
 		targetID, identityID, from.UTC(), to.UTC(), minCalls).Scan(&median, &n)
 	if err != nil {
 		return 0, 0, false, s.red.Error(err)

@@ -301,9 +301,10 @@ func (s *Server) fleetLive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]fleetLiveTarget, 0, len(ts))
+	views := s.views(r, ts)
 	for _, t := range ts {
 		e := fleetLiveTarget{Target: t, Latest: map[string]latestValue{}, ConnectionGroups: []observe.ConnectionGroup{}}
-		if v, ok := s.view(r, t.ID); ok {
+		if v, ok := views[t.ID]; ok {
 			e.Connected = v.Connected
 			e.Latest = latestValues(v)
 			e.Replication = v.Replication
@@ -418,9 +419,10 @@ func (s *Server) fleet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]fleetEntry, 0, len(ts))
+	views := s.views(r, ts)
 	for _, t := range ts {
 		e := fleetEntry{Target: t, Latest: map[string]latestValue{}, Counts: counts[t.ID]}
-		if v, ok := s.view(r, t.ID); ok {
+		if v, ok := views[t.ID]; ok {
 			e.Latest = latestValues(v)
 		}
 		out = append(out, e)

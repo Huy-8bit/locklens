@@ -27,7 +27,7 @@ type ManagedRole struct {
 
 // ManagedRoles returns the roles stored for a cluster, keyed by purpose.
 func (s *Store) ManagedRoles(ctx context.Context, systemIdentifier string) (map[string]ManagedRole, error) {
-	rows, err := s.pool.Query(ctx, queries.ManagedRoles, systemIdentifier)
+	rows, err := s.db.Query(ctx, queries.ManagedRoles, systemIdentifier)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
@@ -45,7 +45,7 @@ func (s *Store) ManagedRoles(ctx context.Context, systemIdentifier string) (map[
 
 // PutManagedRole stores or replaces the credentials of one managed role.
 func (s *Store) PutManagedRole(ctx context.Context, m ManagedRole) error {
-	_, err := s.pool.Exec(ctx, queries.PutManagedRole,
+	_, err := s.db.Exec(ctx, queries.PutManagedRole,
 		m.SystemIdentifier, m.Purpose, m.RoleName, m.PasswordCiphertext)
 	return s.red.Error(err)
 }

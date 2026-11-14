@@ -110,9 +110,18 @@ func freePort(t *testing.T) string {
 
 func start(t *testing.T, store, listen string) *instance {
 	t.Helper()
+	return startWith(t, store, listen, nil)
+}
+
+// startWith starts a server with extra settings (for example LOCKLENS_ROLES).
+func startWith(t *testing.T, store, listen string, extra map[string]string) *instance {
+	t.Helper()
 	vars := map[string]string{
 		"LOCKLENS_LISTEN": listen, "LOCKLENS_STORE_DSN": store, "LOCKLENS_MASTER_KEY": "dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktdGVzdDA=",
 		"LOCKLENS_ADMIN_PASSWORD": adminPassword, "LOCKLENS_DEMO_MODE": "true", "LOCKLENS_LOG_LEVEL": "warn",
+	}
+	for k, v := range extra {
+		vars[k] = v
 	}
 	cfg, err := config.LoadConfig(func(k string) string { return vars[k] })
 	if err != nil {
@@ -145,6 +154,10 @@ func start(t *testing.T, store, listen string) *instance {
 	}
 	jar, _ := cookiejar.New(nil)
 	inst.client = &http.Client{Jar: jar, Timeout: 30 * time.Second}
+	if roles, ok := extra["LOCKLENS_ROLES"]; ok && roles != "all" && !strings.Contains(roles, "api") {
+		t.Cleanup(func() { inst.stop(t) })
+		return inst // no API to sign in to
+	}
 	var sess struct {
 		CSRF string `json:"csrf_token"`
 	}

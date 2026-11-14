@@ -32,7 +32,9 @@ All problems are reported at once.
 | `LOCKLENS_HOUR_ROLLUP_RETENTION` | `2160h` (90 days) | Hourly metric rollups (minimum `24h`; never shorter than the minute rollups). |
 | `LOCKLENS_BASELINE_RETENTION` | `360h` (15 days) | Five-minute statement rollups and statement coverage, the source of query baselines (minimum `24h`; never shorter than `LOCKLENS_RETENTION`). See [query-intelligence.md](query-intelligence.md). |
 | `LOCKLENS_FINDING_RETENTION` | `720h` (30 days) | Resolved findings and collection-gap records (minimum `1h`). Incidents keep their own copy of the evidence, so this never changes an incident. |
-| `LOCKLENS_MAX_CONCURRENT_COLLECTIONS` | `4` | Global cap on collector runs executing at the same time across all targets (1–64). Each target also runs its own collectors one at a time. |
+| `LOCKLENS_MAX_CONCURRENT_COLLECTIONS` | `4` | Global cap on collector runs executing at the same time across all targets (1–64). Each target also runs its own collectors one at a time. Active session samples have their own cap (below). |
+| `LOCKLENS_MAX_CONCURRENT_LOAD_SAMPLES` | `4` | Cap on active session samples running at the same time across all targets (1–64). They run every few seconds per target and take milliseconds, so they have their own slots: they never wait behind the other collectors, nor delay them. |
+| `LOCKLENS_STORE_MAX_CONNS` | `8` | Connections of the pool to the monitoring store (2–1000). When unset, `pool_max_conns` in `LOCKLENS_STORE_DSN` applies if it sets one; otherwise 8. With several servers, the store must accept this many connections from each, plus its own. |
 | `LOCKLENS_LOAD_SAMPLING` | `true` | Active session sampling (database load): read `pg_stat_activity` every `LOCKLENS_LOAD_SAMPLE_INTERVAL` on each target (PostgreSQL 14+). |
 | `LOCKLENS_STATEMENTS_INTERVAL` | `15s` | pg_stat_statements collection interval (minimum `5s`; never shorter than the target's interval). Texts are read only for new statements, so short intervals stay cheap. |
 | `LOCKLENS_ADAPTIVE_SAMPLING` | `true` | Collect a target faster while it has a problem (open incident, statement running for long, blocking, slower statement). See [collectors.md](collectors.md#adaptive-sampling). |
@@ -53,6 +55,9 @@ All problems are reported at once.
 | `LOCKLENS_OTLP_ENDPOINT` | (none) | An OTLP/HTTP metrics URL (for example `http://otel-collector:4318/v1/metrics`); metrics are pushed there. |
 | `LOCKLENS_OTLP_HEADERS` | (none) | `name=value` pairs, comma-separated, sent with each push. |
 | `LOCKLENS_OTLP_INTERVAL` | `60s` | Time between two pushes (at least 10 s). |
+| `LOCKLENS_ROLES` | `all` | What this server does: `all`, or a comma-separated list of `api` (HTTP API, event stream, `/metrics/targets`), `collector` (collects instances by lease, records incidents, writes collected data), `jobs` (retention, rollups, baselines, the optimizer, sending notifications). See [Several servers](#several-servers). |
+| `LOCKLENS_COLLECTOR_CAPACITY` | `LOCKLENS_MAX_CONCURRENT_COLLECTIONS` | A collector's capacity (1–1000): with several collectors, each carries a share of the instances' measured collection cost proportional to it. Give a larger server a larger value. |
+| `LOCKLENS_MAX_TARGETS` | `0` (no limit) | The most instances this collector takes (0–100000). Instances every collector is too full to take are not collected and are counted in `locklens_cluster_unassigned_targets`. |
 | `LOCKLENS_SERVER_ID` | host name + random suffix | Names this server among the servers sharing the store (shown in Settings → Data and storage). Unique per running server. See [Several servers](#several-servers). |
 
 ## Users and the environment administrator
@@ -156,6 +161,32 @@ browser events to each other through the store, so a load balancer can send
 any request to any server (use sticky sessions so that a running SQL
 workspace statement can be cancelled). Nothing else needs configuring; when a
 server stops, the others take its instances over within about a minute.
+
+With many instances, servers can be given roles (`LOCKLENS_ROLES`):
+
+- `collector` servers share the instances (only they hold leases) and record
+  incidents. Without the `api` role a server answers only `/healthz`,
+  `/readyz`, and `/metrics`, so it needs no public address. Add collectors as
+  instances grow; nothing per instance changes. Collectors share the
+  instances by measured cost (collector time per minute) and capacity
+  (`LOCKLENS_COLLECTOR_CAPACITY`), with `LOCKLENS_MAX_TARGETS` as a limit; a
+  new collector receives instances gradually (5% of them per 15 s), and an
+  instance stays at least 10 minutes with a collector unless the cluster is
+  far out of balance. To make an instance count as more expensive than
+  measured: `UPDATE target_weights SET weight_override = <seconds per minute>
+  WHERE target_id = <id>` (insert the row if the instance has none yet).
+- `api` servers answer every request, for every instance, from the live views
+  the collectors publish (`live_state`). They also serve `/metrics/targets`
+  for every instance: point Prometheus at the API servers only, or at servers
+  with every role, not at both (each of those exports only what it collects).
+- `jobs` servers run the once-per-cluster jobs and send notifications. Keep
+  at least one alive: while none is, retention, rollups, baselines, the
+  optimizer and notifications stop (incident changes wait in the outbox and
+  are sent once a jobs server is back), each server logs a warning, and
+  `locklens_cluster_jobs_missing` is 1.
+
+A server with every role (the default) behaves as before roles existed; a
+single server needs no setting at all.
 
 ## Log agent
 

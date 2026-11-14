@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -22,12 +23,36 @@ type ClusterRepository interface {
 	HoldLease(ctx context.Context, name, holder string, ttl time.Duration) (held bool, acquired time.Time, err error)
 	// ReleaseLease gives up a lease the holder has.
 	ReleaseLease(ctx context.Context, name, holder string) error
+	// HoldLeases takes or renews many leases in one statement (as HoldLease)
+	// and returns the names the holder has afterwards with their epochs (a
+	// lease taken from another holder gets a new epoch).
+	HoldLeases(ctx context.Context, names []string, holder string, ttl time.Duration) (map[string]int64, error)
+	// ReleaseLeases gives up many leases the holder has in one statement.
+	ReleaseLeases(ctx context.Context, names []string, holder string) error
 	// Leases returns the leases whose names start with prefix.
 	Leases(ctx context.Context, prefix string) ([]Lease, error)
 	// SaveLiveState publishes a target's live view for the other servers.
 	SaveLiveState(ctx context.Context, targetID int64, serverID string, at time.Time, view []byte) error
+	// SaveLiveStates publishes the live views of many targets in one
+	// statement (views[i] and epochs[i] belong to targetIDs[i]). Fenced: a
+	// view is written only while serverID holds the target's lease with that
+	// epoch. Returns the IDs written.
+	SaveLiveStates(ctx context.Context, serverID string, at time.Time, targetIDs []int64, views [][]byte, epochs []int64) ([]int64, error)
+	// TouchLiveStates marks this server's published views of targets whose
+	// view did not change as current, without rewriting them; fenced as
+	// SaveLiveStates. Returns the IDs touched.
+	TouchLiveStates(ctx context.Context, serverID string, at time.Time, targetIDs []int64, epochs []int64) ([]int64, error)
+	// TargetWeights returns the measured cost and manual override of every
+	// target that has one.
+	TargetWeights(ctx context.Context) (map[int64]TargetWeight, error)
+	// SaveTargetWeights stores the measured cost of many targets (collector
+	// seconds per minute, busy[i] for targetIDs[i]); overrides are kept.
+	SaveTargetWeights(ctx context.Context, targetIDs []int64, busy []float64) error
 	// LiveState returns a target's published live view.
 	LiveState(ctx context.Context, targetID int64) (serverID string, at time.Time, view []byte, err error)
+	// LiveStates returns the published live views of many targets in one
+	// statement (targets without one are absent).
+	LiveStates(ctx context.Context, targetIDs []int64) ([]LiveState, error)
 	// Notify sends a message to every server listening on a channel.
 	Notify(ctx context.Context, channel, payload string) error
 	// Listen calls fn with every message on a channel until ctx ends. It holds
@@ -46,6 +71,57 @@ type Server struct {
 	StartedAt   time.Time `json:"started_at"`
 	HeartbeatAt time.Time `json:"heartbeat_at"`
 	Alive       bool      `json:"alive"`
+	// Roles are what the server does: api, collector, jobs (all three for
+	// servers that predate roles).
+	Roles []string `json:"roles"`
+	// Capacity is how many collections the server runs at once (its share
+	// of the targets grows with it), Load the collector seconds per minute of
+	// the targets it collects, MaxTargets its target limit. Nil for servers
+	// that predate them (and MaxTargets when there is no limit).
+	Capacity   *float64 `json:"capacity"`
+	Load       *float64 `json:"load"`
+	MaxTargets *int     `json:"max_targets"`
+}
+
+// TargetWeight is the cost of collecting a target.
+type TargetWeight struct {
+	// BusyPerMin is the measured collector time per minute (seconds),
+	// averaged; nil before the first measurement.
+	BusyPerMin *float64
+	// Override replaces the measurement when set.
+	Override *float64
+}
+
+// Value is the weight to plan with: the override, else the measurement.
+func (w TargetWeight) Value() (float64, bool) {
+	if w.Override != nil {
+		return *w.Override, true
+	}
+	if w.BusyPerMin != nil {
+		return *w.BusyPerMin, true
+	}
+	return 0, false
+}
+
+// Server roles.
+const (
+	RoleAPI       = "api"
+	RoleCollector = "collector"
+	RoleJobs      = "jobs"
+)
+
+// AllRoles are the roles of a server that does everything (the default).
+var AllRoles = []string{RoleAPI, RoleCollector, RoleJobs}
+
+// Has reports whether the server has a role.
+func (s Server) Has(role string) bool { return slices.Contains(s.Roles, role) }
+
+// LiveState is a target's live view as published by the server collecting it.
+type LiveState struct {
+	TargetID int64
+	ServerID string
+	At       time.Time
+	View     []byte
 }
 
 // Lease is a lease on a target's collection or a job.
@@ -55,23 +131,29 @@ type Lease struct {
 	AcquiredAt time.Time `json:"acquired_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
 	Live       bool      `json:"live"`
+	// Epoch changes whenever the lease changes holder (fencing).
+	Epoch int64 `json:"epoch"`
 }
 
 // Heartbeat registers a server or renews its heartbeat.
 func (s *Store) Heartbeat(ctx context.Context, sv Server) error {
-	_, err := s.pool.Exec(ctx, queries.Heartbeat, sv.ID, sv.Hostname, sv.Version, sv.StartedAt.UTC())
+	roles := sv.Roles
+	if len(roles) == 0 {
+		roles = AllRoles
+	}
+	_, err := s.db.Exec(ctx, queries.Heartbeat, sv.ID, sv.Hostname, sv.Version, sv.StartedAt.UTC(), roles, sv.Capacity, sv.Load, sv.MaxTargets)
 	return s.red.Error(err)
 }
 
 // Servers returns the known servers; Alive is a heartbeat within ttl.
 func (s *Store) Servers(ctx context.Context, ttl time.Duration) ([]Server, error) {
-	rows, err := s.pool.Query(ctx, queries.LiveServers, ttl.Seconds())
+	rows, err := s.db.Query(ctx, queries.LiveServers, ttl.Seconds())
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Server, error) {
 		var x Server
-		err := r.Scan(&x.ID, &x.Hostname, &x.Version, &x.StartedAt, &x.HeartbeatAt, &x.Alive)
+		err := r.Scan(&x.ID, &x.Hostname, &x.Version, &x.StartedAt, &x.HeartbeatAt, &x.Alive, &x.Roles, &x.Capacity, &x.Load, &x.MaxTargets)
 		return x, err
 	})
 	return out, s.red.Error(err)
@@ -81,7 +163,7 @@ func (s *Store) Servers(ctx context.Context, ttl time.Duration) ([]Server, error
 // it. acquired is when the holder took it (to tell a new lease from a
 // renewal).
 func (s *Store) HoldLease(ctx context.Context, name, holder string, ttl time.Duration) (held bool, acquired time.Time, err error) {
-	err = s.pool.QueryRow(ctx, queries.HoldLease, name, holder, ttl.Seconds()).Scan(&acquired)
+	err = s.db.QueryRow(ctx, queries.HoldLease, name, holder, ttl.Seconds()).Scan(&acquired)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, time.Time{}, nil
 	}
@@ -90,19 +172,51 @@ func (s *Store) HoldLease(ctx context.Context, name, holder string, ttl time.Dur
 
 // ReleaseLease gives up a lease the holder has.
 func (s *Store) ReleaseLease(ctx context.Context, name, holder string) error {
-	_, err := s.pool.Exec(ctx, queries.ReleaseLease, name, holder)
+	_, err := s.db.Exec(ctx, queries.ReleaseLease, name, holder)
+	return s.red.Error(err)
+}
+
+// HoldLeases takes or renews many leases in one statement (as HoldLease)
+// and returns the names the holder has afterwards. Names are sorted first, so
+// servers holding overlapping sets lock the rows in the same order.
+func (s *Store) HoldLeases(ctx context.Context, names []string, holder string, ttl time.Duration) (map[string]int64, error) {
+	if len(names) == 0 {
+		return map[string]int64{}, nil
+	}
+	sorted := slices.Clone(names)
+	slices.Sort(sorted)
+	rows, err := s.db.Query(ctx, queries.HoldLeases, sorted, holder, ttl.Seconds())
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	out := map[string]int64{}
+	var name string
+	var epoch int64
+	_, err = pgx.ForEachRow(rows, []any{&name, &epoch}, func() error {
+		out[name] = epoch
+		return nil
+	})
+	return out, s.red.Error(err)
+}
+
+// ReleaseLeases gives up many leases the holder has in one statement.
+func (s *Store) ReleaseLeases(ctx context.Context, names []string, holder string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	_, err := s.db.Exec(ctx, queries.ReleaseLeases, names, holder)
 	return s.red.Error(err)
 }
 
 // Leases returns the leases whose names start with prefix.
 func (s *Store) Leases(ctx context.Context, prefix string) ([]Lease, error) {
-	rows, err := s.pool.Query(ctx, queries.ListLeases, prefix)
+	rows, err := s.db.Query(ctx, queries.ListLeases, prefix)
 	if err != nil {
 		return nil, s.red.Error(err)
 	}
 	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Lease, error) {
 		var x Lease
-		err := r.Scan(&x.Name, &x.Holder, &x.AcquiredAt, &x.ExpiresAt, &x.Live)
+		err := r.Scan(&x.Name, &x.Holder, &x.AcquiredAt, &x.ExpiresAt, &x.Live, &x.Epoch)
 		return x, err
 	})
 	return out, s.red.Error(err)
@@ -110,22 +224,100 @@ func (s *Store) Leases(ctx context.Context, prefix string) ([]Lease, error) {
 
 // SaveLiveState publishes a target's live view for the other servers.
 func (s *Store) SaveLiveState(ctx context.Context, targetID int64, serverID string, at time.Time, view []byte) error {
-	_, err := s.pool.Exec(ctx, queries.SaveLiveState, targetID, serverID, at.UTC(), view)
+	_, err := s.db.Exec(ctx, queries.SaveLiveState, targetID, serverID, at.UTC(), view)
+	return s.red.Error(err)
+}
+
+// SaveLiveStates publishes the live views of many targets in one fenced
+// statement and returns the IDs written.
+func (s *Store) SaveLiveStates(ctx context.Context, serverID string, at time.Time, targetIDs []int64, views [][]byte, epochs []int64) ([]int64, error) {
+	if len(targetIDs) == 0 {
+		return nil, nil
+	}
+	texts := make([]string, len(views))
+	for i, v := range views {
+		texts[i] = string(v)
+	}
+	return s.ids(ctx, queries.SaveLiveStates, targetIDs, serverID, at.UTC(), texts, epochs)
+}
+
+// TouchLiveStates marks this server's unchanged published views as current
+// (fenced) and returns the IDs touched.
+func (s *Store) TouchLiveStates(ctx context.Context, serverID string, at time.Time, targetIDs []int64, epochs []int64) ([]int64, error) {
+	if len(targetIDs) == 0 {
+		return nil, nil
+	}
+	return s.ids(ctx, queries.TouchLiveStates, targetIDs, serverID, at.UTC(), epochs)
+}
+
+// ids runs a statement returning IDs.
+func (s *Store) ids(ctx context.Context, sql string, args ...any) ([]int64, error) {
+	rows, err := s.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	out, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	return out, s.red.Error(err)
+}
+
+// TargetWeights returns the measured cost and manual override of every
+// target that has one.
+func (s *Store) TargetWeights(ctx context.Context) (map[int64]TargetWeight, error) {
+	rows, err := s.db.Query(ctx, queries.TargetWeights)
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	out := map[int64]TargetWeight{}
+	var id int64
+	var w TargetWeight
+	_, err = pgx.ForEachRow(rows, []any{&id, &w.BusyPerMin, &w.Override}, func() error {
+		out[id] = w
+		w = TargetWeight{}
+		return nil
+	})
+	return out, s.red.Error(err)
+}
+
+// SaveTargetWeights stores the measured cost of many targets in one
+// statement; overrides are kept.
+func (s *Store) SaveTargetWeights(ctx context.Context, targetIDs []int64, busy []float64) error {
+	if len(targetIDs) == 0 {
+		return nil
+	}
+	_, err := s.db.Exec(ctx, queries.SaveTargetWeights, targetIDs, busy)
 	return s.red.Error(err)
 }
 
 // LiveState returns a target's published live view.
 func (s *Store) LiveState(ctx context.Context, targetID int64) (serverID string, at time.Time, view []byte, err error) {
-	err = s.pool.QueryRow(ctx, queries.LiveState, targetID).Scan(&serverID, &at, &view)
+	err = s.db.QueryRow(ctx, queries.LiveState, targetID).Scan(&serverID, &at, &view)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", time.Time{}, nil, ErrNotFound
 	}
 	return serverID, at, view, s.red.Error(err)
 }
 
+// LiveStates returns the published live views of many targets in one
+// statement (targets without one are absent).
+func (s *Store) LiveStates(ctx context.Context, targetIDs []int64) ([]LiveState, error) {
+	if len(targetIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.Query(ctx, queries.LiveStates, targetIDs)
+	if err != nil {
+		return nil, s.red.Error(err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (LiveState, error) {
+		var x LiveState
+		err := r.Scan(&x.TargetID, &x.ServerID, &x.At, &x.View)
+		return x, err
+	})
+	return out, s.red.Error(err)
+}
+
 // Notify sends a message to every server listening on a channel.
 func (s *Store) Notify(ctx context.Context, channel, payload string) error {
-	_, err := s.pool.Exec(ctx, queries.Notify, channel, payload)
+	_, err := s.db.Exec(ctx, queries.Notify, channel, payload)
 	return s.red.Error(err)
 }
 
