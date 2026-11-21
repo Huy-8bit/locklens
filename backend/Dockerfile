@@ -20,7 +20,7 @@ RUN CGO_ENABLED=1 go build -trimpath \
       -o /out/locklens ./cmd/locklens \
  && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/locklens-lab ./cmd/locklens-lab
 
-FROM alpine:3.22
+FROM alpine:3.24
 # Security fixes Alpine published after the base image was built.
 RUN apk upgrade --no-cache && adduser -D -H -u 10001 locklens
 COPY --from=build /out/locklens /usr/local/bin/locklens
