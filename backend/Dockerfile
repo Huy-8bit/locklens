@@ -7,7 +7,7 @@
 # built with cgo and linked statically against musl. cgo does not
 # cross-compile without a cross toolchain, so the build stage runs on the
 # target platform (emulated in multi-platform builds).
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 RUN apk add --no-cache build-base
 WORKDIR /src
 COPY go.mod go.sum ./
